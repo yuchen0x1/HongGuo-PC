@@ -1,0 +1,121 @@
+/* ============================================================
+   启动画面 splash.css —— 五阶段动态启动（黑暗空间 → 能量汇聚 → 品牌出现 → 系统初始化 → 转场）
+   全部为合成器友好动画（transform/opacity/clip），粒子与发光元素数量有上限。
+   ============================================================ */
+.splash-screen {
+  position: fixed; inset: 0; z-index: 2000; overflow: hidden;
+  display: flex; align-items: center; justify-content: center;
+  background: radial-gradient(ellipse 120% 90% at 50% 40%, #0a0d16 0%, #05060b 62%, #030408 100%);
+  color: #f5f7ff;
+  transition: opacity .55s var(--ease-out), visibility .55s;
+}
+.splash-screen.leaving { opacity: 0; visibility: hidden; }
+
+/* 阶段 1：黑暗空间 —— 微弱粒子 + 科技网格 */
+.splash-particles { position: absolute; inset: 0; }
+.splash-particles span {
+  position: absolute; width: 2px; height: 2px; border-radius: 50%; background: #8995aa;
+  opacity: 0; animation: dust-float linear infinite;
+}
+.splash-particles span:nth-child(3n) { background: #24dfff; }
+.splash-particles span:nth-child(4n) { background: #ff304f; width: 3px; height: 3px; }
+.splash-grid {
+  position: absolute; inset: 0; opacity: 0; animation: splash-grid-in 1.1s var(--ease-out) .2s forwards;
+  background-image: linear-gradient(#24dfff0d 1px, transparent 1px), linear-gradient(90deg, #24dfff0d 1px, transparent 1px);
+  background-size: 48px 48px;
+  -webkit-mask-image: radial-gradient(ellipse 80% 62% at 50% 46%, #000 0%, transparent 76%);
+  mask-image: radial-gradient(ellipse 80% 62% at 50% 46%, #000 0%, transparent 76%);
+}
+@keyframes splash-grid-in { to { opacity: 1; } }
+
+/* 阶段 2：能量汇聚 —— 红色能量线向中心收束 + 动态能量核心 */
+.splash-core { position: relative; width: 300px; height: 300px; display: flex; align-items: center; justify-content: center; }
+.splash-lines { position: absolute; inset: 0; }
+.splash-lines i {
+  position: absolute; left: 50%; top: 50%; width: 2px; height: 150px; border-radius: 2px;
+  background: linear-gradient(to top, transparent, #ff304f); opacity: 0;
+  transform-origin: 50% 100%;
+  animation: splash-line-in 1s var(--ease-out) forwards;
+}
+.splash-lines i:nth-child(1) { transform: translate(-50%, -100%) rotate(0deg); animation-delay: .45s; }
+.splash-lines i:nth-child(2) { transform: translate(-50%, -100%) rotate(72deg); animation-delay: .56s; }
+.splash-lines i:nth-child(3) { transform: translate(-50%, -100%) rotate(144deg); animation-delay: .67s; }
+.splash-lines i:nth-child(4) { transform: translate(-50%, -100%) rotate(216deg); animation-delay: .78s; }
+.splash-lines i:nth-child(5) { transform: translate(-50%, -100%) rotate(288deg); animation-delay: .89s; }
+@keyframes splash-line-in {
+  0% { opacity: 0; transform: translate(-50%, -100%) scale(0, .4); }
+  42% { opacity: .85; }
+  100% { opacity: 0; transform: translate(-50%, -100%) scale(1, 0); }
+}
+.splash-core-glow {
+  position: absolute; width: 96px; height: 96px; border-radius: 50%;
+  background: radial-gradient(circle, #ff304f66 0%, #ff304f22 42%, transparent 70%);
+  opacity: 0; animation: splash-core-pulse 1.6s var(--ease-out) .95s forwards;
+}
+@keyframes splash-core-pulse { 0% { opacity: 0; transform: scale(.3); } 55% { opacity: 1; } 100% { opacity: .85; transform: scale(1); } }
+.splash-orbit {
+  position: absolute; width: 190px; height: 190px; border-radius: 50%;
+  border: 1px solid #ff304f33; opacity: 0;
+  animation: splash-orbit-in .9s var(--ease-out) 1.05s forwards, spin 14s linear infinite 1.95s;
+}
+.splash-orbit::after {
+  content: ""; position: absolute; top: -3px; left: 50%; width: 6px; height: 6px; margin-left: -3px; border-radius: 50%;
+  background: #24dfff; box-shadow: 0 0 10px #24dfff;
+}
+.splash-orbit.inner { width: 132px; height: 132px; border-color: #24dfff2b; }
+.splash-orbit.inner::after { background: #ff304f; box-shadow: 0 0 10px #ff304f; }
+@keyframes splash-orbit-in { from { opacity: 0; transform: scale(.6) rotate(-70deg); } to { opacity: 1; transform: none; } }
+
+/* 阶段 3：品牌出现 —— Logo 成形 + 立体光影 + 环形扫描 */
+.splash-logo {
+  position: relative; z-index: 2; display: flex; flex-direction: column; align-items: center; gap: 18px;
+  opacity: 0; animation: splash-logo-in .7s var(--ease-out) 1.5s forwards;
+}
+@keyframes splash-logo-in { from { opacity: 0; transform: scale(.82) translateY(10px); filter: blur(6px); } to { opacity: 1; transform: none; filter: none; } }
+.splash-logo-mark {
+  width: 74px; height: 74px; border-radius: 20px; display: grid; place-items: center;
+  background: linear-gradient(150deg, #ff4a63, #c81b36);
+  box-shadow: 0 8px 34px #ff304f73, inset 0 1px 0 #ffffff4d;
+  position: relative;
+}
+.splash-logo-mark svg { width: 34px; height: 34px; fill: #fff; }
+.splash-scanline {
+  position: absolute; inset: -14px; border-radius: 26px;
+  background: conic-gradient(from 0deg, transparent 0deg, #24dfff3d 40deg, transparent 90deg);
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 1px));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 1px));
+  animation: spin 2.4s linear infinite;
+}
+.splash-title { display: flex; flex-direction: column; align-items: center; gap: 7px; }
+.splash-title-en { font-size: 13px; font-weight: 600; letter-spacing: .52em; text-indent: .52em; color: #ff6b80; text-transform: uppercase; }
+.splash-title-zh { font-size: 24px; font-weight: 700; letter-spacing: .18em; text-indent: .18em; }
+
+/* 阶段 4：系统初始化 —— 真实状态 + 动态进度条 */
+.splash-boot {
+  position: absolute; bottom: 11vh; left: 50%; transform: translateX(-50%); width: min(360px, 78vw);
+  text-align: center; opacity: 0; animation: fade-in .5s var(--ease-out) 1.9s forwards;
+}
+.splash-boot-status { min-height: 20px; font-size: 12px; color: #8995aa; letter-spacing: .05em; font-variant-numeric: tabular-nums; }
+.splash-boot-status b { color: #24dfff; font-weight: 500; }
+.splash-boot-bar { margin-top: 10px; height: 3px; border-radius: 999px; background: #ffffff12; overflow: hidden; }
+.splash-boot-fill {
+  height: 100%; width: 0%; border-radius: 999px;
+  background: linear-gradient(90deg, #ff304f, #8b5cff, #24dfff);
+  box-shadow: 0 0 12px #ff304f66;
+  transition: width .45s var(--ease-out);
+}
+.splash-boot-steps { margin-top: 9px; display: flex; justify-content: center; gap: 14px; font-size: 10px; color: #5f6b81; letter-spacing: .06em; }
+.splash-boot-steps span { transition: color var(--dur) var(--ease-out); }
+.splash-boot-steps span.done { color: #3ddc97; }
+.splash-boot-steps span.active { color: #f5f7ff; }
+.splash-boot-steps span.skip { color: #ffc24b; }
+
+/* 阶段 5：转场 —— Logo 收缩消散 + 粒子向外扩散 */
+.splash-screen.leaving .splash-core { animation: splash-core-out .5s var(--ease-out) forwards; }
+@keyframes splash-core-out { to { transform: scale(1.5); opacity: 0; filter: blur(8px); } }
+.splash-screen.leaving .splash-particles span { animation: dust-burst .6s var(--ease-out) forwards; }
+@keyframes dust-burst { to { transform: translate3d(var(--burst-x, 40px), var(--burst-y, -60px), 0) scale(2); opacity: 0; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .splash-particles span, .splash-lines i, .splash-scanline, .splash-orbit::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; }
+}
