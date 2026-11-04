@@ -30,6 +30,7 @@ export default function ReleaseNotesList() {
   const [notes, setNotes] = useState(null); // null=加载中
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [stale, setStale] = useState(null); // 非空=网络失败后回退到缓存内容 { fetchedAt }
   const request = useRef(0);
 
   const load = useCallback(async () => {
@@ -40,8 +41,12 @@ export default function ReleaseNotesList() {
       if (id !== request.current) return;
       if (!result?.success) throw new Error(result?.error || '更新日志读取失败，请稍后重试。');
       setNotes(result.notes || []);
+      setStale(result.cached ? { fetchedAt: Number(result.fetchedAt) || 0 } : null);
     } catch (cause) {
-      if (id === request.current) setError(cause.message || '更新日志读取失败，请稍后重试。');
+      if (id === request.current) {
+        setError(cause.message || '更新日志读取失败，请稍后重试。');
+        setStale(null);
+      }
     } finally {
       if (id === request.current) setLoading(false);
     }
@@ -62,6 +67,10 @@ export default function ReleaseNotesList() {
   return <div className="settings-group release-notes">
     <span className="settings-label">更新日志</span>
     {notes === null && !error && <p className="settings-hint" role="status"><RefreshCw size={13} className="spin" /> 正在读取更新日志…</p>}
+    {stale && <div role="status">
+      <p className="settings-hint">网络不佳，显示上次同步的更新日志{stale.fetchedAt ? `（${new Date(stale.fetchedAt).toLocaleString()}）` : ''}。</p>
+      <button type="button" className="btn btn-outline btn-sm" onClick={load} disabled={loading}>重新同步</button>
+    </div>}
     {error && <div role="alert">
       <p className="settings-hint">{error}</p>
       <button type="button" className="btn btn-outline btn-sm" onClick={load} disabled={loading}>重新读取</button>

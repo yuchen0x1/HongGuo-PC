@@ -54,6 +54,7 @@ const { searchHongguo } = require('./src/native/hongguo-search');
 const { fitWindowBounds, getWindowScale, saveWindowZoom, restoreMainWindowBounds, rememberMainWindowBounds } = require('./src/native/window-layout');
 const { createEpisodePanelController } = require('./src/native/episode-panel');
 const { availableRelease } = require('./src/native/app-update');
+const { createReleaseNotesService } = require('./src/native/release-notes');
 const { fetchPublicDetails } = require('./src/native/public-details');
 const { fetchEpisodeComments } = require('./src/native/episode-comments');
 const { fetchDanmaku, setDeviceIdentityFile } = require('./src/native/danmaku');
@@ -5069,29 +5070,16 @@ ipcMain.handle('open-app-update', async event => {
 });
 
 // 「更新日志」页：读取本仓库最近几个正式版的发行说明，供界面展示每个版本更新了什么。
+// GitHub 匿名 API 配额有限，读取服务内置 TTL 缓存、ETag 条件请求与缓存回退（见 src/native/release-notes.js）。
+const fetchReleaseNotes = createReleaseNotesService({
+  request: config => axios.get(config.url, config),
+  cacheFile: () => path.join(app.getPath('userData'), 'release-notes-cache.json'),
+});
 ipcMain.handle('get-release-notes', async event => {
   if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame) {
     return { success: false, error: 'Window unavailable' };
   }
-  try {
-    const response = await axios.get('https://api.github.com/repos/yuchen0x1/HongGuo-PC/releases?per_page=20', {
-      timeout: 12000, maxRedirects: 0, maxContentLength: 1024 * 1024,
-      headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'Hongguo-Drama-Release-Notes' },
-    });
-    const releases = Array.isArray(response.data) ? response.data : [];
-    const notes = releases
-      .filter(release => release && !release.draft && !release.prerelease && typeof release.body === 'string' && release.body.trim())
-      .map(release => ({
-        version: availableRelease(release, '0.0')?.version || String(release.tag_name || '').replace(/^v/, ''),
-        name: typeof release.name === 'string' ? release.name : '',
-        date: typeof release.published_at === 'string' ? release.published_at.slice(0, 10) : '',
-        body: release.body.slice(0, 20000),
-      }))
-      .filter(release => release.version);
-    return { success: true, notes };
-  } catch {
-    return { success: false, error: '暂时无法读取更新日志，请检查网络后重试。' };
-  }
+  return fetchReleaseNotes();
 });
 
 // ===== 应用信息 =====

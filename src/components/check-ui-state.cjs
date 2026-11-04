@@ -1715,6 +1715,13 @@ async function mount(file, api, props = {}, storage = null) {
     assert.ok(failUi.text().includes('暂时无法读取更新日志'), 'failure shows readable reason');
     assert.ok(failUi.button('重新读取'), 'failure offers retry');
     failUi.unmount();
+
+    const cachedUi = await mount('ReleaseNotesList', { getReleaseNotes: async () => ({ success: true, notes, cached: true, fetchedAt: Date.parse('2026-11-04T23:32:25Z') }) });
+    await cachedUi.flush();
+    assert.ok(cachedUi.text().includes('上次同步的更新日志'), 'cached fallback explains itself');
+    assert.ok(cachedUi.button('重新同步'), 'cached fallback offers resync');
+    assert.ok(cachedUi.text().includes('6.0') && cachedUi.text().includes('自定义标题栏'), 'cached entries still render');
+    cachedUi.unmount();
   });
   await test('custom title bar wires window controls and follows maximize state changes', async () => {
     const calls = [], states = [];
