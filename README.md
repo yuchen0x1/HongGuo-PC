@@ -20,31 +20,31 @@
   <a href="#声明">声明</a>
 </p>
 
-> 本仓库是 [jackotom/hongguo-drama](https://github.com/jackotom/hongguo-drama) 的社区二次开发版（GPL-3.0），当前版本线 **6.0**。应用内「检测更新」已指向本仓库。
+> 本仓库是 [jackotom/hongguo-drama](https://github.com/jackotom/hongguo-drama) 的社区二次开发版（GPL-3.0），当前版本线 **6.1**。应用内「检测更新」已指向本仓库。
 
 ## 下载与安装
 
-**当前正式版：6.0**（内部 `6.0.0`）。自定义标题栏、全新应用图标、搜索跨来源同名去重、内置六个短剧资源站、侧栏「更新日志」页。详见 [6.0 说明](docs/release-6.0.md)。
+**当前正式版：6.1**（内部 `6.1.0`）。「更新日志」页重构：顶部检测更新、下方逐版本更新说明（实时取自本仓库 Releases）；公告系统移除；应用内更新与公告源完整切换至本仓库。详见 [6.1 说明](docs/release-6.1.md)。
 
-| 系统 | 下载 6.0 | 安装方式 |
+| 系统 | 下载 6.1 | 安装方式 |
 |---|---|---|
-| Windows x64（推荐安装版） | [下载安装版 EXE](https://github.com/yuchen0x1/HongGuo-PC/releases/download/v6.0/hongguo-downloader-6.0-win-x64-setup.exe) | 按向导安装，后续支持应用内更新 |
-| Windows x64（便携版） | [下载便携 ZIP](https://github.com/yuchen0x1/HongGuo-PC/releases/download/v6.0/红果短剧-6.0-win-x64.zip) | 解压后运行「红果短剧-6.0」文件夹内的 EXE 即用 |
-| Mac（Apple 芯片 / Intel） | 暂未提供，[构建方法](#开发与构建) | 将在 Mac 上构建后补传至 [v6.0 Release](https://github.com/yuchen0x1/HongGuo-PC/releases/tag/v6.0) |
+| Windows x64（推荐安装版） | [下载安装版 EXE](https://github.com/yuchen0x1/HongGuo-PC/releases/download/v6.1/hongguo-downloader-6.1-win-x64-setup.exe) | 按向导安装，后续支持应用内更新 |
+| Windows x64（便携版） | [下载便携 ZIP](https://github.com/yuchen0x1/HongGuo-PC/releases/download/v6.1/红果短剧-6.1-win-x64.zip) | 解压后运行「红果短剧-6.0」文件夹内的 EXE 即用 |
+| Mac（Apple 芯片 / Intel） | 暂未提供，[构建方法](#开发与构建) | 将在 Mac 上构建后补传至 [v6.0 Release](https://github.com/yuchen0x1/HongGuo-PC/releases/tag/v6.1) |
 
 - **Windows 未签名提示**：安装版与便携版 EXE 未做代码签名，首次运行可能有 SmartScreen 提示，选择「更多信息 → 仍要运行」即可。
 - **便携版资料**：设置和下载记录放在程序目录的 `data` 文件夹，移动程序时请连同该文件夹一起保留。
 - **安装版与便携版不能同时运行**（同一应用只允许一个实例）；更换版本前请先退出正在运行的窗口。
 - 上游 5.5 及更早版本的 Mac/Windows 下载见[上游发行页](https://github.com/jackotom/hongguo-drama/releases/latest)；从上游 5.x 安装版升级到本仓库版本可直接运行安装包。
 
-## 6.0 亮点
+## 版本亮点
 
 - **自定义标题栏**（Windows）：无边框窗口，品牌区 + 平滑拖动 + 双击最大化，最小化/最大化/关闭带悬停动效；macOS 保持原生按钮。
 - **全新应用图标**：标题栏、侧栏、任务栏与安装包统一更新。
 - **搜索跨来源去重**：同一部短剧被多个平台收录时自动合并为一张卡片，显示「同剧 N 个来源」。
 - **更多短剧来源**：内置六个短剧资源站（金鹰/海盗/硕博默认开启，暴风/360/旺旺默认关闭），设置中随时开关。
 - **采集源可播放**：网页播放页地址自动转换为 HLS 直链播放。
-- **侧栏「更新日志」页**：公告通知与检测更新整合，设置页更清爽。
+- **「更新日志」页**：顶部检测更新，下方逐版本更新说明（实时取自 GitHub Releases），公告系统移除。
 
 ## 完整功能
 
