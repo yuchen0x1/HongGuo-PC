@@ -29,14 +29,15 @@
 
 ## Windows 发行资产（已随 v6.2 Release 发布）
 
-冻结源码提交 `5452094` 触发的 Windows 候选 CI `41856224017` 产出并上传资产；发布前已本地逐项核验：`WINDOWS-SHA256SUMS.txt` 覆盖以下 7 个文件且全部匹配，便携 ZIP 内仅包含同名便携 EXE，`latest.yml` 指向同名 NSIS 安装包且版本、大小与 SHA512 一致。FFmpeg/x264 对应源码包哈希与前一候选构建逐字节一致（媒体命中缓存，未重编译）。8 项资产已随 v6.2 Release 公开上传，远端大小与本地一致。
+冻结源码提交 `5452094` 触发的 Windows 候选 CI `41856224017` 产出并上传资产；发布前已本地逐项核验。发布时按用户决定精简了两个冗余项：便携单文件 EXE（内容与便携 ZIP 内的唯一文件完全相同）与应用源码 ZIP（GitHub 自动附带的标签 Source code 快照等同）；两项的哈希仍记录于候选核验回执，不随 Release 公开。随 Release 上传的资产为：
 
 - `hongguo-downloader-6.2-win-x64-setup.exe` 与 `.blockmap`
-- `hongguo-downloader-6.2-win-x64.exe` 与 `hongguo-downloader-6.2-win-x64.zip`
-- `latest.yml`
-- `hongguo-downloader-6.2-windows-source.zip`
+- `hongguo-downloader-6.2-win-x64.zip`（便携版，内含同名单文件 EXE）
+- `latest.yml`（版本、大小与安装包 SHA512 一致）
 - `ffmpeg-9.0.2-x264-b35605a-win-x64-corresponding-source.tar.gz`
-- `WINDOWS-SHA256SUMS.txt`
+- `WINDOWS-SHA256SUMS.txt`（覆盖上述 5 个文件，逐项 SHA256 匹配）
+
+GitHub 自动附带的 Source code（zip/tar.gz）即标签 `v6.2` 源码快照，承担应用对应源码义务；FFmpeg/x264 对应源码包哈希与前一候选构建逐字节一致（媒体命中缓存，未重编译）。
 
 本轮真实素材回执：CI 从红果官方来源随机下载《一念沉沦，霍总心动了》第 8、9 集，全程静音、各采样约 15 秒；安装器回执记录全新安装、同版本重装与真实 1.80→6.2 升级资料保留。先前候选 run `41843935004` 与 `41852868738` 的资产核验为历史记录，发布资产以 `41856224017` 为准。
 
