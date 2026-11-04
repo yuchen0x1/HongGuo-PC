@@ -14,7 +14,7 @@
 
 <p align="center">
   <a href="#下载与安装"><strong>下载与安装</strong></a> ·
-  <a href="#6-0-亮点">6.0 亮点</a> ·
+  <a href="#版本亮点">版本亮点</a> ·
   <a href="#完整功能">完整功能</a> ·
   <a href="#开发与构建">开发与构建</a> ·
   <a href="#声明">声明</a>
