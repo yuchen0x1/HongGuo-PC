@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const { transformSync } = require('esbuild');
 const idle = { supported: true, reason: '', status: 'idle', version: null, percent: 0, error: '' };
-const release = { version: '9.0', url: 'https://github.com/jackotom/hongguo-drama/releases/tag/v9.0' };
+const release = { version: '9.0', url: 'https://github.com/yuchen0x1/HongGuo-PC/releases/tag/v9.0' };
 function mount(api = {}, component = 'AppUpdateNotice', props = {}) {
   const slots = [], effects = [], cleanups = [], effectFns = [], events = new Map(), timers = new Map();
   let cursor = 0, tree, timerId = 0;
@@ -155,11 +155,22 @@ function mount(api = {}, component = 'AppUpdateNotice', props = {}) {
     assert.ok(ui.text().includes('系统安装器启动失败')); assert.ok(ui.button('前往发布页手动下载')); assert.ok(!ui.text().includes('已是最新版本'));
     await ui.button('前往发布页手动下载').props.onClick(); assert.equal(opened, 1); ui.unmount();
   });
-  await test('settings emits one check event and disables it for unsaved opt-out', async () => {
-    let checks = 0, events = 0;
-    const ui = mount({ checkAppUpdate: async () => { checks++; return { enabled: true, release }; } }, 'Settings'); await ui.flush();
-    ui.events.set('hongguo-check-app-update', () => { events++; }); assert.ok(ui.button('检查更新')); ui.button('检查更新').props.onClick(); assert.equal(events, 1); assert.equal(checks, 0);
-    ui.find(n => n.props['aria-label'] === '自动检测更新').props.onChange({ target: { checked: false } }); await ui.flush(); assert.equal(ui.button('检查更新').props.disabled, true); ui.unmount();
+  await test('update settings page emits one check event and saves the opt-out immediately', async () => {
+    let events = 0;
+    const saved = [];
+    const ui = mount({
+      getSettings: async () => ({ root: '/downloads', app_updates_enabled: true }),
+      saveSettings: async settings => { saved.push(settings); return { success: true }; },
+    }, 'UpdateCheckSettings');
+    await ui.flush();
+    ui.events.set('hongguo-check-app-update', () => { events++; });
+    assert.ok(ui.button('检查更新'));
+    ui.button('检查更新').props.onClick(); assert.equal(events, 1);
+    assert.equal(ui.find(n => n.props['aria-label'] === '自动检测更新').props.checked, true);
+    ui.find(n => n.props['aria-label'] === '自动检测更新').props.onChange({ target: { checked: false } }); await ui.flush();
+    assert.equal(saved.length, 1); assert.equal(saved[0].app_updates_enabled, false);
+    assert.equal(saved[0].root, '/downloads', 'opt-out saves the full settings with only the flag changed');
+    assert.equal(ui.button('检查更新').props.disabled, true); ui.unmount();
   });
   console.log(`App update UI: ${passed} passed, ${failed} failed`); process.exitCode = failed ? 1 : 0;
 })();

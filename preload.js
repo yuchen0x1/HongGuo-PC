@@ -223,6 +223,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('window-fullscreen-changed', listener);
     return () => ipcRenderer.removeListener('window-fullscreen-changed', listener);
   },
+
+  // 「更新日志」页：本仓库最近几个正式版的发行说明
+  getReleaseNotes: () => ipcRenderer.invoke('get-release-notes'),
   setEpisodePanelOpen: (value) => ipcRenderer.invoke('set-episode-panel-open', value),
   getSettings: () => ipcRenderer.invoke('get-settings'),
   saveSettings: (settings) => ipcRenderer.invoke('save-settings', settings),

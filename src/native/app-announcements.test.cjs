@@ -6,8 +6,8 @@ const vm = require('node:vm');
 const { test } = require('node:test');
 
 const servicePath = path.join(__dirname, 'app-announcements.js');
-const NORMAL = 'https://raw.githubusercontent.com/jackotom/hongguo-drama/main/announcements/normal.json';
-const EMERGENCY = 'https://raw.githubusercontent.com/jackotom/hongguo-drama/main/announcements/emergency.json';
+const NORMAL = 'https://raw.githubusercontent.com/yuchen0x1/HongGuo-PC/main/announcements/normal.json';
+const EMERGENCY = 'https://raw.githubusercontent.com/yuchen0x1/HongGuo-PC/main/announcements/emergency.json';
 const notice = (id = 'notice-1', active = true) => ({ id, title: '播放提示', body: '平台接口、设备校验或网络可能影响播放。', active });
 const response = data => ({ status: 200, headers: { 'content-type': 'text/plain; charset=utf-8' }, data: JSON.stringify(data) });
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };

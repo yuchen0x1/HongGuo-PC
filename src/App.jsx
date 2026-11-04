@@ -20,6 +20,7 @@ import Backdrop from './components/Backdrop';
 import TitleBar from './components/TitleBar';
 import AnnouncementSettings from './components/AnnouncementSettings';
 import UpdateCheckSettings from './components/UpdateCheckSettings';
+import ReleaseNotesList from './components/ReleaseNotesList';
 import brandIcon from './assets/hongguo.ico';
 
 const SIDEBAR_COLLAPSED_KEY = 'hongguo:sidebar-collapsed';
@@ -176,12 +177,15 @@ export default function App() {
         return <DownloadManager active={page === id} onNavigate={navigate} />;
       case 'announcements':
         return <div className="settings-container">
-          <div className="settings-header"><Megaphone size={22} /><div><h2>更新日志</h2><p className="page-description">版本更新说明与公告，以及新版检测。</p></div></div>
-          <section className="settings-card" aria-label="更新日志设置">
-            {appInfo?.preview ? <p className="settings-hint">功能预览版不接收公告通知。</p> : <AnnouncementSettings />}
-          </section>
+          <div className="settings-header"><Megaphone size={22} /><div><h2>更新日志</h2><p className="page-description">检查新版本，查看每个版本更新了什么。</p></div></div>
           <section className="settings-card" aria-label="检测更新设置">
             {appInfo?.preview ? <p className="settings-hint">功能预览版不接收正式版更新。</p> : <UpdateCheckSettings />}
+          </section>
+          <section className="settings-card" aria-label="版本更新日志">
+            <ReleaseNotesList />
+          </section>
+          <section className="settings-card" aria-label="公告接收设置">
+            {appInfo?.preview ? <p className="settings-hint">功能预览版不接收公告通知。</p> : <AnnouncementSettings />}
           </section>
         </div>;
       case 'settings':

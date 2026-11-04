@@ -1696,6 +1696,26 @@ async function mount(file, api, props = {}, storage = null) {
     assert.ok(ui.text().includes('磁盘空间不足')); assert.equal(ui.find(n => n.props['aria-label'] === '下载目录').props.value, '/new');
     assert.ok(!ui.text().includes('已保存')); ui.unmount();
   });
+  await test('release notes list renders version entries and recovers from failures', async () => {
+    const notes = [
+      { version: '6.0', name: '红果短剧 6.0（Windows x64）', date: '2026-11-04', body: '## 新增与改进\n\n- **自定义标题栏**：Windows 无边框窗口\n- 更多短剧来源：内置六个短剧资源站\n' },
+      { version: '5.5', name: '', date: '2026-11-03', body: '修复播放身份复用与受校验备用取源。' },
+    ];
+    const ui = await mount('ReleaseNotesList', { getReleaseNotes: async () => ({ success: true, notes }) });
+    await ui.flush();
+    assert.ok(ui.text().includes('6.0') && ui.text().includes('2026-11-04'), 'first version entry renders with its date');
+    assert.ok(ui.text().includes('自定义标题栏'), 'bold list content renders');
+    assert.ok(ui.text().includes('5.5') && ui.text().includes('修复播放身份复用'), 'plain-paragraph body renders');
+    assert.ok(ui.nodes().some(n => n.props.className === 'release-note-heading' && n.children.includes('新增与改进')), 'markdown headings become styled rows');
+    assert.ok(ui.nodes().filter(n => n.props.className === 'release-note-item').length >= 2, 'list items render as items');
+    ui.unmount();
+
+    const failUi = await mount('ReleaseNotesList', { getReleaseNotes: async () => ({ success: false, error: '暂时无法读取更新日志，请检查网络后重试。' }) });
+    await failUi.flush();
+    assert.ok(failUi.text().includes('暂时无法读取更新日志'), 'failure shows readable reason');
+    assert.ok(failUi.button('重新读取'), 'failure offers retry');
+    failUi.unmount();
+  });
   await test('custom title bar wires window controls and follows maximize state changes', async () => {
     const calls = [], states = [];
     let notifyMaximized = null;

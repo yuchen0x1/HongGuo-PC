@@ -1,4 +1,4 @@
-const RELEASES_URL = 'https://github.com/jackotom/hongguo-drama/releases';
+const RELEASES_URL = 'https://github.com/yuchen0x1/HongGuo-PC/releases';
 
 function versionParts(value) {
   const match = /^v?(\d+)\.(\d+)(?:\.(\d+))?$/.exec(String(value || ''));

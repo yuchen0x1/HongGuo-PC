@@ -43,7 +43,7 @@ export default function AnnouncementSettings() {
     finally { manualPending.current = false; setReading(false); }
   };
   return <div className="settings-group">
-    <span className="settings-label">更新日志</span>
+    <span className="settings-label">公告接收</span>
     <label className="proxy-switch-row"><input type="checkbox" checked={preferences?.normalEnabled === false} disabled={!preferences || saving}
       onChange={event => update('normalEnabled', !event.target.checked)} /><span className="proxy-switch-text">关闭普通公告<em>开启后不读取、不展示普通公告；软件升级后也保持关闭</em></span></label>
     <label className="proxy-switch-row"><input type="checkbox" checked={preferences?.emergencyEnabled === false} disabled={!preferences || saving}

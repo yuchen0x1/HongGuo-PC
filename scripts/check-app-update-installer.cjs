@@ -54,8 +54,8 @@ function macFixture() {
   assert.equal(f.updater.disableWebInstaller, true);
   assert.equal(f.updater.disableDifferentialDownload, true);
   assert.equal(f.updater.feed.provider, 'github');
-  assert.equal(f.updater.feed.owner, 'jackotom');
-  assert.equal(f.updater.feed.repo, 'hongguo-drama');
+  assert.equal(f.updater.feed.owner, 'yuchen0x1');
+  assert.equal(f.updater.feed.repo, 'HongGuo-PC');
   assert.equal(f.controller.install().success, false);
   const first = f.controller.download('1.81');
   const duplicate = f.controller.download('1.81');

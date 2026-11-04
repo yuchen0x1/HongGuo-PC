@@ -1,6 +1,6 @@
 const ANNOUNCEMENT_URLS = Object.freeze({
-  normal: 'https://raw.githubusercontent.com/jackotom/hongguo-drama/main/announcements/normal.json',
-  emergency: 'https://raw.githubusercontent.com/jackotom/hongguo-drama/main/announcements/emergency.json',
+  normal: 'https://raw.githubusercontent.com/yuchen0x1/HongGuo-PC/main/announcements/normal.json',
+  emergency: 'https://raw.githubusercontent.com/yuchen0x1/HongGuo-PC/main/announcements/emergency.json',
 });
 const EMERGENCY_INTERVAL_MS = 5 * 60 * 1000;
 const MAX_RESPONSE_BYTES = 32 * 1024;

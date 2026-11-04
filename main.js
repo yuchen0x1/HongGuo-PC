@@ -5047,17 +5047,17 @@ ipcMain.handle('check-app-update', async event => {
     return { enabled: false, release: null };
   }
   if (!updateRequest) {
-    updateRequest = axios.get('https://api.github.com/repos/jackotom/hongguo-drama/releases/latest', {
+    updateRequest = axios.get('https://api.github.com/repos/yuchen0x1/HongGuo-PC/releases/latest', {
       timeout: 10000, maxRedirects: 0, maxContentLength: 1024 * 1024,
       headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'Hongguo-Drama-Update-Check' },
-    }).catch(() => axios.get('https://github.com/jackotom/hongguo-drama/releases/latest', {
+    }).catch(() => axios.get('https://github.com/yuchen0x1/HongGuo-PC/releases/latest', {
       // GitHub's public release endpoint does not consume the anonymous API quota.
       timeout: 10000, maxRedirects: 0, maxContentLength: 1024 * 1024,
       headers: { Accept: 'application/json', 'User-Agent': 'Hongguo-Drama-Update-Check' },
       validateStatus: status => status === 200 || status === 302,
     }).then(response => {
       if (response.status !== 302) return response;
-      const tag = /^https:\/\/github\.com\/jackotom\/hongguo-drama\/releases\/tag\/(v?\d+\.\d+(?:\.\d+)?)$/.exec(response.headers.location || '');
+      const tag = /^https:\/\/github\.com\/yuchen0x1\/HongGuo-PC\/releases\/tag\/(v?\d+\.\d+(?:\.\d+)?)$/.exec(response.headers.location || '');
       if (!tag) throw new Error('Unexpected update redirect');
       return { data: { tag_name: tag[1] } };
     })).then(response => ({ release: availableRelease(response.data, APP_VERSION), error: '' }))
@@ -5073,8 +5073,34 @@ ipcMain.handle('open-app-update', async event => {
   if (IS_PREVIEW || !mainWindow || event.sender !== mainWindow.webContents || getCurrentSettings().app_updates_enabled === false) {
     return { success: false, error: '更新信息已失效，请稍后重试' };
   }
-  try { await shell.openExternal(latestAppRelease?.url || 'https://github.com/jackotom/hongguo-drama/releases/latest'); return { success: true }; }
+  try { await shell.openExternal(latestAppRelease?.url || 'https://github.com/yuchen0x1/HongGuo-PC/releases/latest'); return { success: true }; }
   catch { return { success: false, error: '无法打开浏览器，请稍后重试' }; }
+});
+
+// 「更新日志」页：读取本仓库最近几个正式版的发行说明，供界面展示每个版本更新了什么。
+ipcMain.handle('get-release-notes', async event => {
+  if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame) {
+    return { success: false, error: 'Window unavailable' };
+  }
+  try {
+    const response = await axios.get('https://api.github.com/repos/yuchen0x1/HongGuo-PC/releases?per_page=20', {
+      timeout: 12000, maxRedirects: 0, maxContentLength: 1024 * 1024,
+      headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'Hongguo-Drama-Release-Notes' },
+    });
+    const releases = Array.isArray(response.data) ? response.data : [];
+    const notes = releases
+      .filter(release => release && !release.draft && !release.prerelease && typeof release.body === 'string' && release.body.trim())
+      .map(release => ({
+        version: availableRelease(release, '0.0')?.version || String(release.tag_name || '').replace(/^v/, ''),
+        name: typeof release.name === 'string' ? release.name : '',
+        date: typeof release.published_at === 'string' ? release.published_at.slice(0, 10) : '',
+        body: release.body.slice(0, 20000),
+      }))
+      .filter(release => release.version);
+    return { success: true, notes };
+  } catch {
+    return { success: false, error: '暂时无法读取更新日志，请检查网络后重试。' };
+  }
 });
 
 // ===== 应用信息 =====
