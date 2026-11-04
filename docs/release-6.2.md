@@ -1,6 +1,6 @@
 # 红果短剧 6.2
 
-状态：Windows x64 发行候选，内部版本 `6.2.0`，拟发布标签 `v6.2`。尚未创建正式 Release；已验证候选源码提交为 `2dc31202dcd836eefb48871dc9032bd7ee734d6e`。自 6.2 起项目仅发布和维护 Windows x64，macOS 不属于发行范围。Windows EXE 未配置代码签名。
+状态：Windows x64 发行候选，内部版本 `6.2.0`，拟发布标签 `v6.2`。尚未创建正式 Release；本轮最终候选源码提交为 `91a6b1f957904110b159567db031103bb81a141e`，Windows 候选 CI 为 [`41852868738`](https://github.com/yuchen0x1/HongGuo-PC/actions/runs/41852868738)。自 6.2 起项目仅发布和维护 Windows x64，macOS 不属于发行范围。Windows EXE 未配置代码签名。
 
 ## 主要变化
 
