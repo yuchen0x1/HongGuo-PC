@@ -1,4 +1,4 @@
-# Hongguo Drama 6.2: Windows release candidate; publication is coordinated separately.
+# Hongguo Drama 6.3: Windows release candidate; publication is coordinated separately.
 name: Windows x64 release candidate
 on:
   workflow_dispatch:

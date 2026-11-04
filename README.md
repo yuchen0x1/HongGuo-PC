@@ -23,6 +23,12 @@
 
 ## ✨ 版本亮点
 
+### 🩹 6.3 · Windows x64 发行候选
+
+| | |
+|---|---|
+| 🩹 **更新日志加载修复** | 读取 Release 说明增加配额保护、条件请求与缓存回退；限速或网络波动时显示上次同步内容，不再整页报错 |
+
 ### 🖥 6.2 · Windows x64 正式版
 
 | | |
@@ -51,12 +57,12 @@
 
 ## 📥 下载与安装
 
-**当前正式版：6.2**（内部 `6.2.0`；标签 `v6.2`）· 本项目当前及后续正式发行仅面向 Windows x64
+**当前 Windows x64 发行候选：6.3**（内部 `6.3.0`）· 本项目当前及后续正式发行仅面向 Windows x64 · 已发布正式版 [v6.2](../../releases/tag/v6.2)
 
 | 系统 | 下载 | 安装方式 |
 |---|---|---|
-| **Windows x64**（安装版，推荐） | [v6.2 Release](../../releases/latest) | 向导安装，支持应用内更新 |
-| **Windows x64**（便携版） | [v6.2 Release](../../releases/latest) | 解压即用，无需安装 |
+| **Windows x64**（安装版，推荐） | 6.3 候选构建中，待正式发布 | 向导安装，支持应用内更新 |
+| **Windows x64**（便携版） | 6.3 候选构建中，待正式发布 | 解压即用，无需安装 |
 | **macOS** | 不再作为发行目标 | 本仓库后续发行仅维护 Windows x64 |
 
 <details>
@@ -65,7 +71,7 @@
 - Windows 包**未做代码签名**，首次运行若出现 SmartScreen 提示，选择「更多信息 → 仍要运行」
 - 便携版的设置与下载记录在程序目录 `data` 文件夹内，移动或备份请连同保留
 - 安装版与便携版不能同时运行（单实例）；换版本前先退出正在运行的窗口
-- SHA256 校验值见 [docs/release-6.2.md](docs/release-6.2.md)
+- SHA256 校验值见 [docs/release-6.3.md](docs/release-6.3.md)
 - 上游 5.5 及更早版本（含 Mac 包）见[上游发行页](https://github.com/jackotom/hongguo-drama/releases/latest)；从上游 5.x 安装版升级，直接运行本仓库安装包即可
 
 </details>
@@ -130,7 +136,7 @@ npm run build:mac           # 可选的本地构建能力，不属于发行目�
 └── build/                # 打包资源（图标、FFmpeg 许可证）
 ```
 
-每个版本的变更、验证范围与已知限制见 `docs/release-*.md`；当前源码发行目标见 [release-6.2.md](docs/release-6.2.md)。
+每个版本的变更、验证范围与已知限制见 `docs/release-*.md`；当前源码发行目标见 [release-6.3.md](docs/release-6.3.md)。
 
 </details>
 

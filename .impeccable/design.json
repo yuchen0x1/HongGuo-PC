@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "sourceRelease": "6.2",
+  "sourceRelease": "6.3",
   "releasePlatforms": ["windows-x64"],
   "name": "红果短剧",
   "mode": "operate",
