@@ -12,7 +12,7 @@ on:
         type: boolean
         default: false
   push:
-    branches: ['windows/**']
+    tags: ['v*']
 permissions:
   contents: read
 jobs:
