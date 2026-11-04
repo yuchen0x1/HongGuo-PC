@@ -1,0 +1,24 @@
+/* 选集页「同系列各季」切换行：复用全局 btn-chip，仅补充布局与当前季高亮。 */
+.season-switcher {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0;
+}
+
+.season-switcher-label {
+  font-size: var(--fs-sm);
+  color: var(--text-tertiary);
+}
+
+.season-chip {
+  flex: none;
+}
+
+.season-chip.season-current {
+  border-color: var(--accent);
+  color: var(--primary);
+  background: var(--accent-soft);
+  cursor: default;
+}

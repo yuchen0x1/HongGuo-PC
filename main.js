@@ -1,5 +1,5 @@
 /**
- * main.js - 红果短剧 6.1 下载器（独立版）主进程
+ * main.js - 红果短剧 6.2 下载器（独立版）主进程
  *
  * 功能：
  *   1. 红果短剧解析（分享链接 / series_id -> 全剧集列表）
@@ -1800,6 +1800,16 @@ ipcMain.handle('find-series-sequels', async (_event, seriesId, options = {}) => 
   return seriesSearch.findSeriesSequels(entry, seriesRegistry.filter(item => !item.forgotten),
     (kw, call) => searchAtSource(kw, { source: watchHistory.sourceOf(String(entry.series_id)), deadline, ...(call || {}) }),
     { localOnly: options?.localOnly === true, deadline });
+});
+
+// 选集页「同系列各季」：同一族（含低季与无季号）全部返回，交由渲染层展示与切换
+ipcMain.handle('find-series-seasons', async (_event, seriesId) => {
+  const entry = seriesRegistry.find(item => String(item.series_id) === String(seriesId));
+  if (!entry) return { success: false, seasons: [], error: '未找到该剧档案，请先打开剧集详情。' };
+  const deadline = Date.now() + 15000;
+  return seriesSearch.findSeriesSeasons(entry, seriesRegistry.filter(item => !item.forgotten),
+    (kw, call) => searchAtSource(kw, { source: seriesSearch.sourceFamilyOf(String(entry.series_id)), deadline, ...(call || {}) }),
+    { deadline });
 });
 
 // 搜索选中某部剧后，拉取完整分集并登记档案

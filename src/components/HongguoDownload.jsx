@@ -5,6 +5,7 @@ import SearchPanel from './SearchPanel';
 import useMediaSources from './useMediaSources';
 import { mediaSourceLabel } from './mediaSourcesModel.mjs';
 import { isSubmitKey, parseEpisodeRange } from './episodeRange';
+import SeasonSwitcher from './SeasonSwitcher';
 
 
 function HongguoDownload({ onNavigate, active = true, seedTerm = '' }) {
@@ -139,13 +140,44 @@ function HongguoDownload({ onNavigate, active = true, seedTerm = '' }) {
       } else {
         setErrorMsg(res?.error || '解析失败，请检查链接或网络');
       }
-    } catch (err) {
-      if (request === resolveRequest.current) setErrorMsg('解析过程出现错误: ' + err.message);
-    } finally {
-      if (pendingResolve.current?.request === request) pendingResolve.current = null;
-      if (request === resolveRequest.current) setLoading(false);
+  } catch (err) {
+    if (request === resolveRequest.current) setErrorMsg('解析过程出现错误: ' + err.message);
+  } finally {
+    if (pendingResolve.current?.request === request) pendingResolve.current = null;
+    if (request === resolveRequest.current) setLoading(false);
+  }
+};
+
+// 同系列各季切换：与手动解析共用同一套请求令牌，避免旧响应覆盖新季。
+const handleSeasonPick = async (season) => {
+  if (!season?.series_id) return;
+  const request = ++resolveRequest.current;
+  pendingResolve.current = null;
+  setRangeInput('');
+  setLoading(true);
+  setErrorMsg('');
+  setSuccessMsg('');
+  setSeriesData(null);
+  clearTextExport();
+  setSelectedVids(new Set());
+  try {
+    const res = await window.electronAPI.searchResolve(season.series_id);
+    if (request !== resolveRequest.current) return;
+    if (res?.success && res.data) {
+      setSeriesData(res.data);
+      // 默认全选，网页未提供的集数自动尝试 App 片源。
+      const allVids = new Set(res.data.episodes.filter((ep) => !ep.locked).map((ep) => ep.vid));
+      setSelectedVids(allVids);
+      setSuccessMsg(`已切换到《${res.data.series_title}》共 ${res.data.total} 集，可直接播放或提交下载`);
+    } else {
+      setErrorMsg(res?.error || '切换季失败，请重试');
     }
-  };
+  } catch (err) {
+    if (request === resolveRequest.current) setErrorMsg('切换季出现错误: ' + err.message);
+  } finally {
+    if (request === resolveRequest.current) setLoading(false);
+  }
+};
 
   // 勾选/取消勾选单集
   const toggleVid = (vid) => {
@@ -445,6 +477,8 @@ function HongguoDownload({ onNavigate, active = true, seedTerm = '' }) {
               )}
             </div>
           </div>
+
+          <SeasonSwitcher seriesId={seriesData.series_id} onPick={handleSeasonPick} />
 
           <p className="settings-hint batch-quality-hint" id="batch-quality-hint">新建下载任务生效；红果片源所选清晰度不可用或下载失败时，自动尝试更低清晰度，并在下载管理中提示。已有文件不自动删除或覆盖。</p>
 

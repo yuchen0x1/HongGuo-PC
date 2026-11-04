@@ -1,6 +1,6 @@
 # 同步发行规则
 
-6.1（内部 6.1.0）已于 2026-11-04 正式发布于二次开发仓库 yuchen0x1/HongGuo-PC，标签 v6.1。Windows x64 安装包与便携 zip 随 Release 发布（大小/SHA256 见 release-6.1.md），EXE 未签名；Mac arm64/x64 未构建。check-release-version 通过 1600 版本对；npm test 相关项通过（3 项 Windows symlink 环境预置失败）；构建产物启动冒烟通过。本版重构「更新日志」页（检测更新上移、版本说明列表实时取自 Releases）并移除公告系统；应用内更新源补全切换至本仓库。详见 [6.1说明](release-6.1.md)。
+6.2 当前为源码发行目标，内部版本 6.2.0，拟发布标签 v6.2；发行状态与各平台资产见 [6.2说明](release-6.2.md)。
 
 6.0（内部 `6.0.0`）已于 2026-11-04 正式发布于二次开发仓库 yuchen0x1/HongGuo-PC，标签 `v6.0`。Windows x64 安装包与便携 zip 随 Release 发布（大小/SHA256 见 release-6.0.md），EXE 未签名；Mac arm64/x64 未构建（构建机为 Windows，`npm run build:mac` 就绪待补）。`node scripts/check-release-version.cjs` 通过 1521 版本对；npm test 相关项通过（3 项 Windows symlink 环境预置失败）；构建产物启动冒烟通过。应用内更新来源切换至 yuchen0x1/HongGuo-PC。详见 [6.0说明](release-6.0.md)。
 

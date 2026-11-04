@@ -12,11 +12,26 @@ function rankedUnique(results, keyword) {
   }).sort((a, b) => score(normalizeTitle(a.series_title), normalized) - score(normalizeTitle(b.series_title), normalized));
 }
 
+// 「第X季」中文数字标签；超过两位退回阿拉伯数字，保证展示稳定。
+function seasonLabel(season) {
+  if (!Number.isInteger(season) || season < 1 || season > 999) return '';
+  const digits = '零一二三四五六七八九';
+  const chinese = season < 10 ? digits[season]
+    : season < 100 ? `${season < 20 ? '' : digits[Math.floor(season / 10)]}十${season % 10 ? digits[season % 10] : ''}`
+    : String(season);
+  return `第${chinese}季`;
+}
+
 function nextSeasonQueries(base, season) {
   if (!base || !Number.isInteger(season) || season < 2 || season > 99) return [];
-  const digits = '零一二三四五六七八九';
-  const chinese = season < 10 ? digits[season] : `${season < 20 ? '' : digits[Math.floor(season / 10)]}十${season % 10 ? digits[season % 10] : ''}`;
-  return [`${base}第${chinese}季`, `${base}第${season}季`];
+  return [`${base}${seasonLabel(season)}`, `${base}第${season}季`];
+}
+
+// 归组用的来源族：采集源以 custom:<sourceId> 为一族，其余按 ID 形状识别。
+function sourceFamilyOf(id) {
+  const text = String(id || '');
+  if (text.startsWith('custom:')) return `custom:${text.split(':')[1] || ''}`;
+  return sourceOf(text) || '';
 }
 
 // One primary search plus at most two supplements; never recursively expand upstream results.
@@ -71,4 +86,40 @@ async function findSeriesSequels(series, localCandidates, search, { localOnly = 
   }
 }
 
-module.exports = { searchSeries, findSeriesSequels };
+// 与 5.0 季号归组同语义：同来源 + 基名完全相等；无季号按第一季；双向（含低季）收录，供选集页切换各季。
+async function findSeriesSeasons(series, localCandidates, search, { deadline = 0 } = {}) {
+  const parsed = seasonTitle(series?.series_title), source = sourceFamilyOf(series?.series_id);
+  if (!source) return { success: false, seasons: [], error: '此来源暂不支持查找同系列各季，请按完整剧名搜索。' };
+  if (!parsed.base || parsed.invalid || parsed.season > 99) return { success: false, seasons: [], error: '剧名或季数无法识别，请按完整剧名搜索。' };
+  const currentId = String(series?.series_id || '');
+  const collect = (candidates) => {
+    const seen = new Set(), seasons = [];
+    for (const candidate of candidates) {
+      const id = String(candidate?.series_id || '');
+      if (!id || seen.has(id) || sourceFamilyOf(id) !== source) continue;
+      const next = seasonTitle(candidate.series_title);
+      if (next.invalid || next.base !== parsed.base || next.season > 99) continue;
+      seen.add(id);
+      seasons.push({ series_id: id, series_title: String(candidate.series_title || ''), cover: candidate.cover || '',
+        season: next.season, explicit: next.explicit, is_current: id === currentId, label: seasonLabel(next.season) });
+    }
+    return seasons;
+  };
+  const local = collect([series, ...(localCandidates || [])]);
+  let seasons = local, partial = false, error = '';
+  try {
+    const response = await searchSeries(parsed.base, search, [series, ...(localCandidates || [])], { afterSeason: parsed.season, deadline });
+    if (!response?.success) throw new Error(response?.error || '来源搜索失败');
+    seasons = collect([series, ...(localCandidates || []), ...(response.results || [])]);
+    partial = response.partial === true;
+    error = response.error || '';
+  } catch (failure) {
+    partial = true;
+    error = `联网查找未完成：${failure.message}${local.length ? '；已保留本机候选。' : ''}`;
+  }
+  // 同一季先显式季号、后无季号；数量上限避免同名系列异常膨胀。
+  seasons.sort((a, b) => a.season - b.season || (a.explicit === b.explicit ? 0 : a.explicit ? -1 : 1));
+  return { success: true, seasons: seasons.slice(0, 12), ...(partial ? { partial: true, error } : {}) };
+}
+
+module.exports = { searchSeries, findSeriesSequels, findSeriesSeasons, seasonLabel, nextSeasonQueries, sourceFamilyOf };

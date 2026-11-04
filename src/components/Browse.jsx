@@ -5,6 +5,7 @@ import useMediaSources from './useMediaSources';
 import { mediaSourceLabel } from './mediaSourcesModel.mjs';
 import { Film, RefreshCw, ExternalLink, Download, Play, Check, X, Search, Heart } from './icons';
 import { isSubmitKey, parseEpisodeRange } from './episodeRange';
+import SeasonSwitcher from './SeasonSwitcher';
 import { rememberCatalogTitles } from '../searchHistory';
 import { readLocalLibrary, saveLocalSeries, subscribeLocalLibrary } from '../localLibrary';
 
@@ -729,6 +730,13 @@ function Browse({ onNavigate, active = true }) {
                 <X size={16} />
               </button>
             </div>
+
+            {detail && (
+              <SeasonSwitcher
+                seriesId={detail.series_id}
+                onPick={(season) => openSeries({ series_id: season.series_id })}
+              />
+            )}
 
             {detailLoading && (
               <div className="browse-loading">

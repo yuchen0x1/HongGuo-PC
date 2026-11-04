@@ -23,7 +23,15 @@
 
 ## ✨ 版本亮点
 
-### 🖥 6.1 · 当前版本
+### 🖥 6.2 · 源码发行目标
+
+| | |
+|---|---|
+| 🧭 **同系列跨季切换** | 选集页直接列出同来源同剧名基组的各季；点选即可切换，单季剧不显示入口 |
+| 🧹 **界面滚动打磨** | 隐藏滚动条但保留滚轮、触摸与键盘滚动；选集区更清爽 |
+| 📜 **继承 6.1 更新体验** | 更新日志实时读取本仓库 Releases；应用内检查与下载由本仓库提供 |
+
+### 📜 6.1 · 更新日志与自主更新
 
 | | |
 |---|---|
@@ -43,13 +51,13 @@
 
 ## 📥 下载与安装
 
-**当前正式版：6.1**（内部 `6.1.0`）· 完整变更见 [Release 说明](https://github.com/yuchen0x1/HongGuo-PC/releases/tag/v6.1)
+**当前源码发行目标：6.2**（内部 `6.2.0`）· 发布完成后更新为正式版
 
 | 系统 | 下载 | 安装方式 |
 |---|---|---|
-| **Windows x64**（安装版，推荐） | [⬇ hongguo-downloader-6.1-setup.exe](https://github.com/yuchen0x1/HongGuo-PC/releases/download/v6.1/hongguo-downloader-6.1-win-x64-setup.exe) | 向导安装，支持应用内更新 |
-| **Windows x64**（便携版） | [⬇ 红果短剧-6.1-win-x64.zip](https://github.com/yuchen0x1/HongGuo-PC/releases/download/v6.1/红果短剧-6.1-win-x64.zip) | 解压即用，无需安装 |
-| **macOS**（Apple 芯片 / Intel） | 🚧 构建中，将在 Mac 上补传至 [v6.1 Release](https://github.com/yuchen0x1/HongGuo-PC/releases/tag/v6.1) | `npm run build:mac`（见[开发构建](#-开发与构建)） |
+| **Windows x64**（安装版，推荐） | ⏳ 发布构建中 | 向导安装，支持应用内更新 |
+| **Windows x64**（便携版） | ⏳ 发布构建中 | 解压即用，无需安装 |
+| **macOS**（Apple 芯片 / Intel） | 🚧 待 Mac 构建 | 将在同一 v6.2 Release 补传 |
 
 <details>
 <summary><b>安装须知（点击展开）</b></summary>
@@ -57,7 +65,7 @@
 - Windows 包**未做代码签名**，首次运行若出现 SmartScreen 提示，选择「更多信息 → 仍要运行」
 - 便携版的设置与下载记录在程序目录 `data` 文件夹内，移动或备份请连同保留
 - 安装版与便携版不能同时运行（单实例）；换版本前先退出正在运行的窗口
-- SHA256 校验值见 [docs/release-6.1.md](docs/release-6.1.md)
+- SHA256 校验值见 [docs/release-6.2.md](docs/release-6.2.md)
 - 上游 5.5 及更早版本（含 Mac 包）见[上游发行页](https://github.com/jackotom/hongguo-drama/releases/latest)；从上游 5.x 安装版升级，直接运行本仓库安装包即可
 
 </details>
@@ -122,7 +130,7 @@ npm run build:mac           # 在 macOS 上构建 Apple Silicon + Intel 包
 └── build/                # 打包资源（图标、FFmpeg 许可证）
 ```
 
-每个版本的变更、验证范围与已知限制见 `docs/release-*.md`；当前版本见 [release-6.1.md](docs/release-6.1.md)。
+每个版本的变更、验证范围与已知限制见 `docs/release-*.md`；当前源码发行目标见 [release-6.2.md](docs/release-6.2.md)。
 
 </details>
 
