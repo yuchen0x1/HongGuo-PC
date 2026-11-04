@@ -1,6 +1,6 @@
 # 红果短剧 6.2
 
-状态：Windows x64 发行候选，内部版本 `6.2.0`，拟发布标签 `v6.2`。尚未创建正式 Release；本轮最终候选源码提交为 `91a6b1f957904110b159567db031103bb81a141e`，Windows 候选 CI 为 [`41852868738`](https://github.com/yuchen0x1/HongGuo-PC/actions/runs/41852868738)。自 6.2 起项目仅发布和维护 Windows x64，macOS 不属于发行范围。Windows EXE 未配置代码签名。
+状态：Windows x64 正式发布（2026-11-04），内部版本 `6.2.0`，标签 `v6.2`，冻结源码提交 `5452094dd5d1d250d1906131e64b28f257753288`。源码 CI `41856223962` 与 Windows 候选 CI [`41856224017`](https://github.com/yuchen0x1/HongGuo-PC/actions/runs/41856224017) 全部通过；公开 Release 见仓库 Releases 页。自 6.2 起项目仅发布和维护 Windows x64，macOS 不属于发行范围。Windows EXE 未配置代码签名。
 
 ## 主要变化
 
@@ -27,9 +27,9 @@
 - Windows 候选包与 SHA256 已逐项核对；更新清单版本 `6.2.0`、安装包文件名、大小和 SHA512 对应。详见下方资产表。
 - macOS 不再属于当前或未来发行范围，不构成待补资产。
 
-## Windows 候选资产（尚未发布）
+## Windows 发行资产（已随 v6.2 Release 发布）
 
-候选构建：Windows x64 release candidate 工作流已成功完成。最终以与冻结源码 SHA 对应的 Windows 候选 artifact 为准，其 `WINDOWS-SHA256SUMS.txt` 覆盖以下文件并逐项验证；便携 ZIP 内仅包含同名便携 EXE。`latest.yml` 指向同名 NSIS 安装包，版本、大小与 SHA512 必须一致。
+冻结源码提交 `5452094` 触发的 Windows 候选 CI `41856224017` 产出并上传资产；发布前已本地逐项核验：`WINDOWS-SHA256SUMS.txt` 覆盖以下 7 个文件且全部匹配，便携 ZIP 内仅包含同名便携 EXE，`latest.yml` 指向同名 NSIS 安装包且版本、大小与 SHA512 一致。FFmpeg/x264 对应源码包哈希与前一候选构建逐字节一致（媒体命中缓存，未重编译）。8 项资产已随 v6.2 Release 公开上传，远端大小与本地一致。
 
 - `hongguo-downloader-6.2-win-x64-setup.exe` 与 `.blockmap`
 - `hongguo-downloader-6.2-win-x64.exe` 与 `hongguo-downloader-6.2-win-x64.zip`
@@ -38,11 +38,11 @@
 - `ffmpeg-9.0.2-x264-b35605a-win-x64-corresponding-source.tar.gz`
 - `WINDOWS-SHA256SUMS.txt`
 
-先前候选 run `41843935004` 的对应资产已完成逐项哈希核对；正式发行时应使用冻结提交所触发的候选构建所产资产和清单，不能复用旧源码 SHA 的应用源码 ZIP。
+本轮真实素材回执：CI 从红果官方来源随机下载《一念沉沦，霍总心动了》第 8、9 集，全程静音、各采样约 15 秒；安装器回执记录全新安装、同版本重装与真实 1.80→6.2 升级资料保留。先前候选 run `41843935004` 与 `41852868738` 的资产核验为历史记录，发布资产以 `41856224017` 为准。
 
 ## 限制
 
-- 当前尚未正式发布；不要将候选构建状态误认为 Release 已创建。
+- 6.2 已正式发布；标签与已发布包绑定冻结源码 `5452094`，后续文档提交不改变标签和已发布包。
 - Windows 安装器及便携 EXE 均未签名。
 - 本机 Windows 环境 3 项 symlink 用例因 `EPERM` 失败；对应源码 CI 和 Windows 候选 CI 测试通过。
 - 自动化播放验收的音轨解码不等同于人工听音；未覆盖实体用户电脑、GPU/HEVC 兼容差异和长期稳定性。
