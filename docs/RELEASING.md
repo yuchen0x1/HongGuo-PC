@@ -1,5 +1,7 @@
 # 同步发行规则
 
+6.0（内部 `6.0.0`）已于 2026-11-04 正式发布于二次开发仓库 yuchen0x1/HongGuo-PC，标签 `v6.0`。Windows x64 安装包与便携 zip 随 Release 发布（大小/SHA256 见 release-6.0.md），EXE 未签名；Mac arm64/x64 未构建（构建机为 Windows，`npm run build:mac` 就绪待补）。`node scripts/check-release-version.cjs` 通过 1521 版本对；npm test 相关项通过（3 项 Windows symlink 环境预置失败）；构建产物启动冒烟通过。应用内更新来源切换至 yuchen0x1/HongGuo-PC。详见 [6.0说明](release-6.0.md)。
+
 5.5（内部 `5.5.0`）已于 2026-11-03 20:59（Asia/Shanghai）正式发布，标签 `v5.5`，冻结源码 `4c0855dc9fe28d06ac09cac48f24f6a4179a6928`。修复播放身份复用与受校验备用取源、NAS 下载安全，简化下载资料并完善单集评论与本机互动。三端16附件大小/SHA256匹配；双Mac签名、四份Apple公证Accepted/装订、只读挂载和更新ZIP恢复核对通过。Windows build-only CI41637195985成功，EXE未签名；本轮按用户要求未重跑功能、单元、集成、桌面及硬件测试，旧候选测试不代表新修复。详见 [5.5说明](release-5.5.md)。
 
 5.4（内部 `5.4.0`）已于 2026-11-02 18:25（Asia/Shanghai）正式发布，标签 `v5.4`，冻结源码 `e7595c040d328655212a2fb0b315286a6ee914b2`。恢复播放请求签名，增加官网登录、按剧清缓存、观看记录分组与 DLNA 单集投屏。三端16附件远端大小及SHA256匹配；双Mac App与DMG四份Apple公证Accepted、签名/装订、只读挂载与更新ZIP恢复通过。源码CI41425248571、Windows CI41425313110通过232单元及102平台检查；Windows便携11项、安装/重装/真实1.80升级资料保留9项通过，EXE未签名。最终arm64包随机真实两集1080P HEVC/AAC下载和静音约10秒播放通过；x64 Rosetta启动退出通过。 详见 [5.4说明](release-5.4.md)。

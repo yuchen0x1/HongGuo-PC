@@ -176,8 +176,8 @@
     },
     "publish": {
       "provider": "github",
-      "owner": "jackotom",
-      "repo": "hongguo-drama"
+      "owner": "yuchen0x1",
+      "repo": "HongGuo-PC"
     }
   },
   "engines": {
