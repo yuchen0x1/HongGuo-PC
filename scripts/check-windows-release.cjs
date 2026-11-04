@@ -227,7 +227,7 @@ async function realFootage(mediaDir, ffmpeg) {
     fixtureEpisodes = samples.map((savePath, index) => ({ id: `fixture-${index + 1}`, status: 'completed', savePath, hongguoInfo: { series_id: sid, series_title: 'Windows verification', vid: `fixture-${index + 1}`, vid_index: index + 1 } }));
   }
   // Keep remote notices from covering trusted pointer playback checks in this disposable profile.
-  fs.writeFileSync(path.join(profile, 'data.json'), JSON.stringify({ announcement: { preferences: { normalEnabled: false, emergencyEnabled: false } }, settings: { root: mediaDir, watch_updates_enabled: false, watch_sequels_enabled: false, cache_next_episode: false }, tasks: fixtureEpisodes, series: skipPlayback ? [] : [{ series_id: sid, series_title: 'Windows verification', episodes: fixtureEpisodes.map(task => ({ ...task.hongguoInfo, title: 'Real Hongguo acceptance footage' })) }] }));
+  fs.writeFileSync(path.join(profile, 'data.json'), JSON.stringify({ settings: { root: mediaDir, watch_updates_enabled: false, watch_sequels_enabled: false, cache_next_episode: false }, tasks: fixtureEpisodes, series: skipPlayback ? [] : [{ series_id: sid, series_title: 'Windows verification', episodes: fixtureEpisodes.map(task => ({ ...task.hongguoInfo, title: 'Real Hongguo acceptance footage' })) }] }));
   child = spawn(portable, ['--mute-audio', '--disable-renderer-backgrounding', '--disable-background-timer-throttling',
     '--disable-backgrounding-occluded-windows', '--user-data-dir=' + profile, '--remote-debugging-address=127.0.0.1',
     '--remote-debugging-port=9439', '--autoplay-policy=no-user-gesture-required'], { stdio: 'ignore' });
@@ -257,8 +257,6 @@ async function realFootage(mediaDir, ffmpeg) {
   assert.equal(info.version, pkg.version); assert.equal(info.platform, 'win32');
   const settings = await evaluate('window.electronAPI.getSettings()');
   assert.equal(settings.root, mediaDir, 'Temporary profile must isolate all user state');
-  assert.deepEqual(await evaluate('window.electronAPI.getAnnouncementPreferences()'), { normalEnabled: false, emergencyEnabled: false }, 'Disposable playback profile must opt out of remote notices');
-  assert(await evaluate('!document.querySelector(".announcement-dialog")'), 'Remote notice must not cover playback controls');
   assert(await evaluate('document.querySelector("#root").children.length > 0'));
   const media = await evaluate('window.electronAPI.getFfmpegStatus()');
   assert(media.available);

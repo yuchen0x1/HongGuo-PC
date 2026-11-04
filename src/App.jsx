@@ -11,14 +11,12 @@ import { initializeTheme } from './theme';
 import useStealthWindow from './components/useStealthWindow';
 import './components/StealthWindow.css';
 import AppUpdateNotice from './components/AppUpdateNotice';
-import AnnouncementNotice from './components/AnnouncementNotice';
 import DramaFeed from './components/DramaFeed';
 import ReleaseCalendar from './components/ReleaseCalendar';
 import AccountManagement from './components/AccountManagement';
 import CommandPalette from './components/CommandPalette';
 import Backdrop from './components/Backdrop';
 import TitleBar from './components/TitleBar';
-import AnnouncementSettings from './components/AnnouncementSettings';
 import UpdateCheckSettings from './components/UpdateCheckSettings';
 import ReleaseNotesList from './components/ReleaseNotesList';
 import brandIcon from './assets/hongguo.ico';
@@ -184,9 +182,6 @@ export default function App() {
           <section className="settings-card" aria-label="版本更新日志">
             <ReleaseNotesList />
           </section>
-          <section className="settings-card" aria-label="公告接收设置">
-            {appInfo?.preview ? <p className="settings-hint">功能预览版不接收公告通知。</p> : <AnnouncementSettings />}
-          </section>
         </div>;
       case 'settings':
         return <SettingsPage active={page === id} preview={appInfo?.preview} appInfo={appInfo} />;
@@ -301,7 +296,6 @@ export default function App() {
           })}
         </nav>
         {!appInfo?.preview && <AppUpdateNotice />}
-        {!appInfo?.preview && <AnnouncementNotice />}
         {stealthMode && <div className="stealth-toolbar"><span>移开暂停隐藏 · 移回继续</span><button className="btn btn-outline btn-sm" onClick={() => toggleStealth(false)}>退出小窗</button></div>}
         {stealthError && <div className="app-storage-error" role="alert">{stealthError}</div>}
         {storageError && <div className="app-storage-error" role="alert"><span>{storageError}</span><button className="btn btn-outline btn-sm" onClick={() => setStorageError('')}>关闭提示</button></div>}

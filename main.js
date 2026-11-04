@@ -54,7 +54,6 @@ const { searchHongguo } = require('./src/native/hongguo-search');
 const { fitWindowBounds, getWindowScale, saveWindowZoom, restoreMainWindowBounds, rememberMainWindowBounds } = require('./src/native/window-layout');
 const { createEpisodePanelController } = require('./src/native/episode-panel');
 const { availableRelease } = require('./src/native/app-update');
-const { createAnnouncementService } = require('./src/native/app-announcements');
 const { fetchPublicDetails } = require('./src/native/public-details');
 const { fetchEpisodeComments } = require('./src/native/episode-comments');
 const { fetchDanmaku, setDeviceIdentityFile } = require('./src/native/danmaku');
@@ -4955,24 +4954,6 @@ ipcMain.handle('open-folder', async (event, taskId) => {
     }
   }
   return { success: false, error: '文件夹不存在' };
-});
-
-// ===== 远程公告：固定公共 JSON，普通和紧急偏好独立于 settings =====
-const appAnnouncements = createAnnouncementService({
-  store,
-  version: APP_VERSION,
-  request: (url, options) => axios.get(url, options),
-  isEnabled: () => !IS_PREVIEW && !proxyStartupFallback,
-});
-ipcMain.handle('check-announcements', (_event, options) => appAnnouncements.checkAnnouncements(options));
-ipcMain.handle('get-current-announcement', () => appAnnouncements.getCurrentAnnouncement());
-ipcMain.handle('acknowledge-announcement', (_event, payload) => appAnnouncements.acknowledgeAnnouncement(payload));
-ipcMain.handle('dismiss-announcement', (_event, payload) => appAnnouncements.dismissAnnouncement(payload));
-ipcMain.handle('get-announcement-preferences', () => appAnnouncements.getAnnouncementPreferences());
-ipcMain.handle('set-announcement-preferences', (_event, patch) => {
-  const result = appAnnouncements.setAnnouncementPreferences(patch);
-  if (result.success) sendToRenderer('announcement-preferences-changed', result.preferences);
-  return result;
 });
 
 // ===== 应用内更新：固定官方源，下载和重启均由用户确认 =====
