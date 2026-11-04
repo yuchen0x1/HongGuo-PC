@@ -1,5 +1,7 @@
 {
   "schemaVersion": 1,
+  "sourceRelease": "6.2",
+  "releasePlatforms": ["windows-x64"],
   "name": "红果短剧",
   "mode": "operate",
   "colors": {"canvas": "#faf9f7", "sidebar": "#f0eeeb", "surface": "#ffffff", "text": "#252523", "secondary": "#686661", "accent": "#c8383d", "selection": "#fae9e7", "border": "#e4e1dc"},

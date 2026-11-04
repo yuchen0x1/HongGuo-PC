@@ -1,4 +1,5 @@
 ---
+release: "6.2"
 version: 1
 slug: "src-components-dramafeed-jsx"
 primary_target: "src/components/DramaFeed.jsx"

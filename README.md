@@ -23,7 +23,7 @@
 
 ## ✨ 版本亮点
 
-### 🖥 6.2 · 源码发行目标
+### 🖥 6.2 · Windows x64 发行候选
 
 | | |
 |---|---|
@@ -51,13 +51,13 @@
 
 ## 📥 下载与安装
 
-**当前源码发行目标：6.2**（内部 `6.2.0`）· 发布完成后更新为正式版
+**当前 Windows x64 发行候选：6.2**（内部 `6.2.0`；release: 6.2）· 本项目当前及后续正式发行仅面向 Windows x64
 
 | 系统 | 下载 | 安装方式 |
 |---|---|---|
-| **Windows x64**（安装版，推荐） | ⏳ 发布构建中 | 向导安装，支持应用内更新 |
-| **Windows x64**（便携版） | ⏳ 发布构建中 | 解压即用，无需安装 |
-| **macOS**（Apple 芯片 / Intel） | 🚧 待 Mac 构建 | 将在同一 v6.2 Release 补传 |
+| **Windows x64**（安装版，推荐） | 6.2 候选已构建，待正式发布 | 向导安装，支持应用内更新 |
+| **Windows x64**（便携版） | 6.2 候选已构建，待正式发布 | 解压即用，无需安装 |
+| **macOS** | 不再作为发行目标 | 本仓库后续发行仅维护 Windows x64 |
 
 <details>
 <summary><b>安装须知（点击展开）</b></summary>
@@ -113,7 +113,7 @@ npm test                    # 单元测试与平台检查
 npm run setup-ffmpeg        # 下载 FFmpeg 二进制（打包前必须，约 167 MB，不入库）
 npm run build               # 构建 Windows x64 安装包 → dist/
 npm run zip                 # 构建便携 ZIP
-npm run build:mac           # 在 macOS 上构建 Apple Silicon + Intel 包
+npm run build:mac           # 可选的本地构建能力，不属于发行目标
 ```
 
 <details>

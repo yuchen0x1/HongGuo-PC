@@ -1,6 +1,6 @@
 # 红果短剧 6.2
 
-状态：源码发行目标，内部版本 `6.2.0`，公开标签拟为 `v6.2`。正式发布状态、冻结提交和资产回执将在完成各平台构建、校验与 Release 后补齐。Windows EXE 未配置代码签名；macOS arm64/x64 需在 Mac 构建机补齐，未验收前不标记为已发布。
+状态：Windows x64 发行候选，内部版本 `6.2.0`，拟发布标签 `v6.2`。尚未创建正式 Release；已验证候选源码提交为 `2dc31202dcd836eefb48871dc9032bd7ee734d6e`。自 6.2 起项目仅发布和维护 Windows x64，macOS 不属于发行范围。Windows EXE 未配置代码签名。
 
 ## 主要变化
 
@@ -17,21 +17,33 @@
 
 ## 验证
 
-- `node scripts/check-release-version.cjs`：待执行。
-- `npm test`：本机 Windows 全量测试有 3 项因创建符号链接返回 `EPERM`；其他现有用例与本轮新增用例通过。此限制须在最终发行回执中保留。
-- `npm run build:react`：待发行候选构建。
-- 开发版 UI：使用独立 userData 目录打开多季剧《谁让这个悍匪修仙的！第五季》，选季行正确显示第一至第五季；点击第二季后页面更新至第二季并提示已切换。未播放视频、未下载测试素材。
-- Windows 安装包、便携包、清单、安装升级与真实素材播放验收：待构建/验证，不得将待验证项标为通过。
-- macOS arm64/x64：需 Mac 构建机签名、公证与验证；本机 Windows 未构建。
+- `node scripts/check-release-version.cjs`：通过，检查 1681 组版本对、等价版本、无效版本与未发行版本。
+- `npm run build:react`：通过；Vite 有约 3.45 MB chunk 提示及既有 CJS Node API deprecation 提示。
+- `npm test`：GitHub Ubuntu 源码 CI `41843935090` 全部通过。本机 Windows 有 3 项符号链接测试因 `EPERM` 失败；其余测试通过。
+- 开发版 UI：使用独立 userData 目录打开《谁让这个悍匪修仙的！第五季》，第一至第五季切换显示正常；切到第二季后标题、集数和成功提示更新。此手动 UI 检查未下载媒体；Windows 候选 CI 另完成了下述真实素材专项。
+- Windows 候选 CI：[`41843935004`](https://github.com/yuchen0x1/HongGuo-PC/actions/runs/41843935004) 所有步骤成功，包括 FFmpeg 源码构建、单元/平台测试、FFmpeg 发现、便携版验收、安装/同版本重装、真实 1.80 升级、资产组装与上传。
+- 真实素材专项：Windows CI 从红果官方来源随机下载《妈咪受辱，大小姐回国掀翻全场》第 6、7 集；各采样约 15 秒，全程静音。实际验证 H.264/AAC 解码、本地播放器、暂停、快捷键切集、自动连播及全屏控件隐藏恢复。报告注明没有执行真实平台下载清晰度选择的下载专项，也没有人工听音。
+- 安装器专项：真实 SHA256 固定的官方 1.80 安装器升级到 6.2，验证设置、观看记录、本机存储与既有下载保留；新装和同版本重装也通过。安装器和应用均未签名。
+- Windows 候选包与 SHA256 已逐项核对；更新清单版本 `6.2.0`、安装包文件名、大小和 SHA512 对应。详见下方资产表。
+- macOS 不再属于当前或未来发行范围，不构成待补资产。
 
-## 附件（待补）
+## Windows 候选资产（尚未发布）
 
-Windows 安装版、便携版 EXE/ZIP、`latest.yml`、对应源码归档及总 SHA256 清单待候选构建和发行汇总后填写。Mac App/DMG/更新 ZIP 及对应更新清单待 Mac 构建后补传。
+候选构建：Windows x64 release candidate 工作流已成功完成。最终以与冻结源码 SHA 对应的 Windows 候选 artifact 为准，其 `WINDOWS-SHA256SUMS.txt` 覆盖以下文件并逐项验证；便携 ZIP 内仅包含同名便携 EXE。`latest.yml` 指向同名 NSIS 安装包，版本、大小与 SHA512 必须一致。
+
+- `hongguo-downloader-6.2-win-x64-setup.exe` 与 `.blockmap`
+- `hongguo-downloader-6.2-win-x64.exe` 与 `hongguo-downloader-6.2-win-x64.zip`
+- `latest.yml`
+- `hongguo-downloader-6.2-windows-source.zip`
+- `ffmpeg-9.0.2-x264-b35605a-win-x64-corresponding-source.tar.gz`
+- `WINDOWS-SHA256SUMS.txt`
+
+先前候选 run `41843935004` 的对应资产已完成逐项哈希核对；正式发行时应使用冻结提交所触发的候选构建所产资产和清单，不能复用旧源码 SHA 的应用源码 ZIP。
 
 ## 限制
 
-- 当前尚未正式发布；不要将本文件中的候选构建状态误认为 Release 已创建。
-- Windows EXE 未签名。
-- Mac 平台资产未构建、未签名、公证或验收。
-- 全量测试中 3 项 Windows symlink 用例受当前环境 `EPERM` 限制；需通过对应 Windows CI 或具备权限的环境复核。
-- 未执行本轮真实素材下载/播放验收；按项目要求，后续若进行播放验收必须从红果短剧随机选择真实剧集，隔离测试资料，全程静音。
+- 当前尚未正式发布；不要将候选构建状态误认为 Release 已创建。
+- Windows 安装器及便携 EXE 均未签名。
+- 本机 Windows 环境 3 项 symlink 用例因 `EPERM` 失败；对应源码 CI 和 Windows 候选 CI 测试通过。
+- 自动化播放验收的音轨解码不等同于人工听音；未覆盖实体用户电脑、GPU/HEVC 兼容差异和长期稳定性。
+- macOS 不属于 6.2 或未来发行范围。
