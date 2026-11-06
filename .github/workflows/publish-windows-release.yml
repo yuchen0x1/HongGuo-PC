@@ -1,0 +1,90 @@
+name: Publish validated Windows release
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag
+        required: true
+        type: string
+      candidate_run_id:
+        description: Successful Windows candidate workflow run ID
+        required: true
+        type: string
+      test_run_id:
+        description: Successful source test workflow run ID
+        required: true
+        type: string
+      expected_commit:
+        description: Exact commit SHA expected for the tag and CI runs
+        required: true
+        type: string
+permissions:
+  actions: read
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+      - name: Validate tag and successful CI runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+          TEST_RUN_ID: ${{ inputs.test_run_id }}
+          EXPECTED_COMMIT: ${{ inputs.expected_commit }}
+        run: |
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+$ ]]
+          [[ "$CANDIDATE_RUN_ID" =~ ^[0-9]+$ && "$TEST_RUN_ID" =~ ^[0-9]+$ ]]
+          [[ "$EXPECTED_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          VERSION=${TAG#v}
+          [[ "$(jq -r .version package.json)" == "$VERSION.0" ]]
+          [[ "$VERSION" == "6.4" ]]
+          test "$(git rev-parse "$TAG^{commit}")" = "$EXPECTED_COMMIT"
+          candidate=$(gh run view "$CANDIDATE_RUN_ID" --json conclusion,headSha,workflowName --jq '[.conclusion, .headSha, .workflowName] | join(" ")')
+          test "$candidate" = "success $EXPECTED_COMMIT Windows x64 release candidate"
+          source_test=$(gh run view "$TEST_RUN_ID" --json conclusion,headSha,workflowName --jq '[.conclusion, .headSha, .workflowName] | join(" ")')
+          test "$source_test" = "success $EXPECTED_COMMIT Test"
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-release-candidate
+          run-id: ${{ inputs.candidate_run_id }}
+          github-token: ${{ github.token }}
+          path: release-assets
+      - name: Verify assets and SHA-256 manifest
+        run: |
+          cd release-assets
+          test -s WINDOWS-SHA256SUMS.txt
+          awk 'NF == 2 {print $2}' WINDOWS-SHA256SUMS.txt | sort > /tmp/manifest-files
+          printf '%s\n' \
+            hongguo-downloader-6.4-win-x64-setup.exe \
+            hongguo-downloader-6.4-win-x64-setup.exe.blockmap \
+            hongguo-downloader-6.4-win-x64.exe \
+            hongguo-downloader-6.4-win-x64.zip \
+            latest.yml \
+            ffmpeg-9.0.2-x264-b35605a-win-x64-corresponding-source.tar.gz \
+            hongguo-downloader-6.4-windows-source.zip | sort > /tmp/expected-files
+          diff -u /tmp/expected-files /tmp/manifest-files
+          sha256sum --check WINDOWS-SHA256SUMS.txt
+          for asset in \
+            hongguo-downloader-6.4-win-x64-setup.exe \
+            hongguo-downloader-6.4-win-x64.exe \
+            hongguo-downloader-6.4-win-x64.zip \
+            latest.yml \
+            ffmpeg-9.0.2-x264-b35605a-win-x64-corresponding-source.tar.gz \
+            hongguo-downloader-6.4-windows-source.zip; do
+            test -s "$asset"
+          done
+      - name: Attach validated assets to draft and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          gh release view "$TAG" --json isDraft,tagName --jq 'select(.isDraft == true and .tagName == env.TAG)' >/dev/null
+          gh release upload "$TAG" release-assets/* --clobber
+          gh release edit "$TAG" --draft=false --prerelease=false
+          published=$(gh release view "$TAG" --json isDraft,tagName,assets --jq '[.isDraft, .tagName, (.assets | length)] | @tsv')
+          test "$published" = "false $TAG 7"

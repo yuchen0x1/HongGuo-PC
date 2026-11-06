@@ -1,6 +1,6 @@
 # 红果短剧 6.4
 
-状态：发行候选（内部版本 `6.4.0`，标签 `v6.4`）。自 6.2 起项目仅发布和维护 Windows x64，macOS 不属于发行范围。Windows EXE 未配置代码签名。
+状态：发行候选 CI 已通过，GitHub Release 暂存为草稿；待验证资产完整后转为正式发布（内部版本 `6.4.0`，标签 `v6.4`），冻结源码 `98f4e8b196cf9690ab2e11813ca7713ae0a53667`。仅维护 Windows x64；macOS 不属于发行范围。Windows EXE 未配置代码签名。
 
 ## 主要变化
 
@@ -41,26 +41,28 @@
 
 ## 验证
 
-- `npm test`：单元与平台检查全部通过（279 项单元用例、98 项平台检查），退出码 0。
-- `node scripts/check-release-version.cjs`：通过 1849 组版本对、等价版本、无效版本与未发行版本。
-- `npm run build:react`：前端生产构建通过。
-- `node --check main.js`：主进程语法检查通过。
-- `npm audit`：0 vulnerabilities（运行时与构建期依赖均无已知公告）。
-- 本机 Windows 环境未重复执行真实素材播放验收（需红果官方账号与真实下载，耗时且涉及外部服务），相关结论以 Windows 候选 CI 为准。
+- 本机：`npm test`、`node scripts/check-release-version.cjs`（1849 组版本断言）、`npm run build:react`、`node --check main.js` 均通过；6.4 本机审计时 `npm audit` 报告 0 vulnerabilities。GitHub push 回执另报告默认分支存在 24 项 Dependabot 警报（9 high、12 moderate、3 low）；其与本机候选依赖快照的差异及告警版本需另行复核，不将本机审计结果等同于远端告警清零。
+- GitHub Actions 源码 Test：运行 [42222636143](https://github.com/yuchen0x1/HongGuo-PC/actions/runs/42222636143) 通过，绑定冻结提交 `98f4e8b196cf9690ab2e11813ca7713ae0a53667`。
+- Windows x64 候选构建及验收：[42222636136](https://github.com/yuchen0x1/HongGuo-PC/actions/runs/42222636136) 通过，FFmpeg/x264 对应源码、x64 FFmpeg/FFprobe、便携 EXE 与 NSIS 安装包均在同一工作流构建。
+- 真实素材验收：从红果官方来源随机下载《王妈在顾家当保姆后全家只会搞笑了》第2、3集；确认静音后，每集抽样播放约15秒。内置播放器播放 H.264/AAC 成功；手动切集、自动连播、快捷键切集、全屏和控件隐藏／恢复检查通过。下载画质选项持久化检查使用独立隔离资料，未执行额外平台下载。
+- Windows 安装验收：便携版启动；全新安装、同版本重装；从真实 1.80.0 安装包升级至 6.4.0，设置、观看记录、本地存储与既有下载均保留。EXE 未签名。
+- 首次候选运行在远程 FFmpeg 源码下载时遭连接重置（curl 35）；相同标签重跑后源码获取、构建和其余验收全部通过。
+- CI 人工验收证据位于工作流 `windows-verification` artifact；未在文档中记录账号凭据或带签名媒体地址。
 
 ## Windows 发行资产
 
-随 `v6.4` Release 发布（沿用 6.2／6.3 精简资产先例）：
+候选工作流产物将经校验后附加至 `v6.4` Release（沿用 6.2／6.3 精简资产先例）：
 
 - `hongguo-downloader-6.4-win-x64-setup.exe` 与 `.blockmap`
-- `hongguo-downloader-6.4-win-x64.zip`（便携版）
+- `hongguo-downloader-6.4-win-x64.exe` 与 `.zip`（便携版）
 - `latest.yml`
+- `hongguo-downloader-6.4-windows-source.zip`
 - `ffmpeg-9.0.2-x264-b35605a-win-x64-corresponding-source.tar.gz`
 - `WINDOWS-SHA256SUMS.txt`
 
 ## 限制
 
-- 6.4 为发行候选；正式发布状态与 CI 回执在发布完成后补记于本文档。
+- GitHub Release 目前为草稿；验证完候选资产完整性后才公开发布。
 - Windows 安装器及便携 EXE 均未签名，SmartScreen 可能提示未知发布者。
 - 自动化检查不等同于人工听音与长期稳定性验收；未覆盖实体用户电脑、GPU/HEVC 兼容差异。
 - 临时 2 倍速仅作用于内置播放器；系统播放器播放不回写进度、不接管连播与自动删除。
