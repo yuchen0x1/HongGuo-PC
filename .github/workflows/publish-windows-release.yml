@@ -58,7 +58,8 @@ jobs:
         run: |
           cd release-assets
           test -s WINDOWS-SHA256SUMS.txt
-          awk 'NF == 2 {print $2}' WINDOWS-SHA256SUMS.txt | sort > /tmp/manifest-files
+          sed '1s/^\xEF\xBB\xBF//' WINDOWS-SHA256SUMS.txt | tr -d '\r' > /tmp/WINDOWS-SHA256SUMS.txt
+          awk 'NF == 2 {print $2}' /tmp/WINDOWS-SHA256SUMS.txt | sort > /tmp/manifest-files
           mapfile -t blockmaps < <(find . -maxdepth 1 -type f -name '*.blockmap' -printf '%f\n' | sort)
           test "${#blockmaps[@]}" -ge 1
           {
@@ -72,7 +73,7 @@ jobs:
             printf '%s\n' "${blockmaps[@]}"
           } | sort > /tmp/expected-files
           diff -u /tmp/expected-files /tmp/manifest-files
-          sha256sum --check WINDOWS-SHA256SUMS.txt
+          sha256sum --check /tmp/WINDOWS-SHA256SUMS.txt
           for asset in \
             hongguo-downloader-6.4-win-x64-setup.exe \
             hongguo-downloader-6.4-win-x64.exe \
