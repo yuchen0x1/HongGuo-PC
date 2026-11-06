@@ -89,8 +89,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.tag }}
         run: |
-          gh release view "$TAG" --json isDraft,tagName --jq 'select(.isDraft == true and .tagName == env.TAG)' >/dev/null
+          release=$(gh release view "$TAG" --json tagName --jq .tagName)
+          test "$release" = "$TAG"
           gh release upload "$TAG" release-assets/* --clobber
           gh release edit "$TAG" --draft=false --prerelease=false
           published=$(gh release view "$TAG" --json isDraft,tagName,assets --jq '[.isDraft, .tagName, (.assets | length)] | @tsv')
-          test "$published" = "false $TAG 7"
+          expected=$(printf 'false\t%s\t8' "$TAG")
+          test "$published" = "$expected"

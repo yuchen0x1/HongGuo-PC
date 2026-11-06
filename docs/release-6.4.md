@@ -1,6 +1,6 @@
 # 红果短剧 6.4
 
-状态：发行候选 CI 已通过，GitHub Release 暂存为草稿；待验证资产完整后转为正式发布（内部版本 `6.4.0`，标签 `v6.4`），冻结源码 `98f4e8b196cf9690ab2e11813ca7713ae0a53667`。仅维护 Windows x64；macOS 不属于发行范围。Windows EXE 未配置代码签名。
+状态：已正式发布（内部版本 `6.4.0`，标签 `v6.4`），冻结源码 `98f4e8b196cf9690ab2e11813ca7713ae0a53667`。发布日期：2026-11-06。Release：https://github.com/yuchen0x1/HongGuo-PC/releases/tag/v6.4。仅维护 Windows x64；macOS 不属于发行范围。Windows EXE 未配置代码签名。
 
 ## 主要变化
 
@@ -51,7 +51,7 @@
 
 ## Windows 发行资产
 
-候选工作流产物将经校验后附加至 `v6.4` Release（沿用 6.2／6.3 精简资产先例）：
+通过校验的 Windows 候选工件已附加至正式 `v6.4` Release（沿用 6.2／6.3 精简资产先例）：
 
 - `hongguo-downloader-6.4-win-x64-setup.exe` 与 `.blockmap`
 - `hongguo-downloader-6.4-win-x64.exe` 与 `.zip`（便携版）
@@ -60,9 +60,13 @@
 - `ffmpeg-9.0.2-x264-b35605a-win-x64-corresponding-source.tar.gz`
 - `WINDOWS-SHA256SUMS.txt`
 
-## 限制
+## 发布回执
 
-- GitHub Release 目前为草稿；验证完候选资产完整性后才公开发布。
+- 已于 2026-11-06 发布正式 GitHub Release：[`v6.4`](https://github.com/yuchen0x1/HongGuo-PC/releases/tag/v6.4)，绑定冻结源码 `98f4e8b196cf9690ab2e11813ca7713ae0a53667`。
+- Release 共附 8 项资产；发布流水线在上传前核对候选构建及源码测试均绑定冻结提交，并通过全部附件的 SHA-256 清单检查。GitHub Release API 回报八个附件均为 `uploaded`，并提供每个附件的 SHA-256 digest；下载回来的 `WINDOWS-SHA256SUMS.txt` 大小 745 字节，SHA-256 与 API digest 一致。
+- 发布流水线首次执行在已完成上传后，被发布后检查错误地期望 7 项而失败；核实 Release 已公开且含 8 项资产后，修正检查计数与 TSV 比较。该检查修复仅更新 `main` 的发布辅助流水线，不改变已冻结的 `v6.4` 标签与发行资产。
+
+## 限制
 - Windows 安装器及便携 EXE 均未签名，SmartScreen 可能提示未知发布者。
 - 自动化检查不等同于人工听音与长期稳定性验收；未覆盖实体用户电脑、GPU/HEVC 兼容差异。
 - 临时 2 倍速仅作用于内置播放器；系统播放器播放不回写进度、不接管连播与自动删除。
