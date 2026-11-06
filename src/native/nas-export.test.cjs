@@ -143,8 +143,14 @@ test('index ownership, links and size are validated before reuse', async t => {
   fs.unlinkSync(indexPath);
   const outside = path.join(root, 'outside.json');
   fs.writeFileSync(outside, JSON.stringify({ version: 1, seriesId, episodes: [] }));
-  fs.symlinkSync(outside, indexPath);
-  await assert.rejects(() => inspectNasEpisode(destination, episodes[0]), /链接/);
+  try {
+    fs.symlinkSync(outside, indexPath);
+    await assert.rejects(() => inspectNasEpisode(destination, episodes[0]), /链接/);
+  } catch (error) {
+    if (error.code === 'EPERM' && process.platform === 'win32') {
+      t.diagnostic('Windows EPERM: symlink creation requires admin/developer privilege; link check skipped');
+    } else throw error;
+  }
 });
 
 test('index writes reject JSON bytes above the read limit before touching the index', async t => {

@@ -82,3 +82,24 @@
 
 .player-stage:has(> .player-controls.controls-hidden),
 .player-stage:has(> .player-controls.controls-hidden) .player-video { cursor: none; }
+
+/* 赛博视听 HUD 控制条 */
+.player-controls-bar {
+  background: linear-gradient(180deg, transparent 0%, rgba(8, 10, 16, .75) 45%, rgba(4, 6, 12, .96) 100%) !important;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-top: 1px solid rgba(255, 255, 255, .08);
+}
+.player-controls-popover {
+  background: rgba(13, 17, 25, .92) !important;
+  backdrop-filter: blur(20px) !important;
+  -webkit-backdrop-filter: blur(20px) !important;
+  border: 1px solid rgba(36, 223, 255, .25) !important;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, .8), 0 0 20px rgba(36, 223, 255, .15) !important;
+}
+.player-episode-grid button[aria-current="true"] {
+  background: linear-gradient(135deg, rgba(255, 48, 79, .35), rgba(255, 48, 79, .15)) !important;
+  border-color: #ff304f !important;
+  box-shadow: 0 0 14px rgba(255, 48, 79, .4), inset 0 0 8px rgba(255, 48, 79, .2) !important;
+}
+

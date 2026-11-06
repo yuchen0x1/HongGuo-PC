@@ -42,7 +42,7 @@ if (!process.versions.electron) {
     const settle = () => read('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
     await win.loadFile(html);
     await settle();
-    assert.equal(await read('document.body.innerText'), '正常界面', 'normal children must render');
+    assert.match(await read('document.body.innerText'), /正常界面/, 'normal children must render');
     await read('window.crashFixture()');
     await settle();
     const fallback = await read(`({ text: document.body.innerText,

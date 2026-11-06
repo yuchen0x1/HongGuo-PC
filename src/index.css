@@ -536,3 +536,142 @@ select.input-field:focus { border-color: var(--accent); box-shadow: 0 0 0 3px va
 .release-note-item::before { content: "·"; position: absolute; left: 4px; color: var(--text-tertiary); }
 .release-note-item strong, .release-note-paragraph strong { color: var(--text-primary); }
 .release-notes-link { align-self: flex-start; }
+
+/* ============================================================
+   红果短剧 · CYBER HUD 科技感终极视觉升级层
+   未来科幻交互 + 赛博霓虹流光 + 动态全息呼吸态 + 玻璃拟态深度打磨
+   全部使用纯 CSS 合成器属性与设计系统 token，严格保证无侵入无重排
+   ============================================================ */
+
+/* 1. 顶栏、标题栏与视窗边缘的赛博流光科技线 */
+.titlebar {
+  border-bottom: 1px solid rgba(255, 48, 79, .18);
+  box-shadow: 0 1px 18px rgba(0, 0, 0, .45), 0 1px 0 rgba(36, 223, 255, .08);
+}
+:root[data-theme="dark"] .titlebar::before {
+  content: "";
+  position: absolute;
+  top: 0; left: 0; right: 0; height: 1px;
+  background: linear-gradient(90deg, transparent 0%, rgba(36, 223, 255, .3) 25%, rgba(255, 48, 79, .6) 50%, rgba(139, 92, 255, .35) 75%, transparent 100%);
+  opacity: .75;
+  pointer-events: none;
+}
+
+/* 2. 侧边栏赛博科技感与全息高亮 */
+:root[data-theme="dark"] .sidebar {
+  border-right: 1px solid rgba(255, 255, 255, .06);
+  background: linear-gradient(180deg, rgba(13, 16, 23, .88) 0%, rgba(8, 10, 16, .95) 100%);
+  box-shadow: inset -1px 0 0 rgba(36, 223, 255, .06), 4px 0 24px rgba(0, 0, 0, .35);
+}
+
+.sidebar-item {
+  position: relative;
+  overflow: hidden;
+  transition: all .2s cubic-bezier(.22, 1, .36, 1);
+}
+.sidebar-item::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, .04), transparent);
+  transform: translateX(-100%);
+  transition: transform .4s ease;
+  pointer-events: none;
+}
+.sidebar-item:hover::after {
+  transform: translateX(100%);
+}
+:root[data-theme="dark"] .sidebar-item.active {
+  background: linear-gradient(90deg, rgba(255, 48, 79, .16), rgba(255, 48, 79, .03));
+  border: 1px solid rgba(255, 48, 79, .28);
+  box-shadow: 0 0 16px rgba(255, 48, 79, .15), inset 0 0 10px rgba(255, 48, 79, .08);
+}
+:root[data-theme="dark"] .sidebar-item.active::before {
+  box-shadow: 0 0 12px #ff304f, 0 0 20px #ff304f88;
+}
+
+/* 3. 科技按钮与输入框：外发光呼吸与 HUD 聚焦点 */
+.btn-primary, .btn-chip-primary {
+  position: relative;
+  overflow: hidden;
+  letter-spacing: .02em;
+  background: linear-gradient(135deg, #ff4160 0%, #d61b36 100%) !important;
+  box-shadow: 0 2px 14px rgba(255, 48, 79, .4), 0 0 0 1px rgba(255, 255, 255, .15) inset;
+}
+.btn-primary::before, .btn-chip-primary::before {
+  content: "";
+  position: absolute;
+  top: -50%; left: -50%; width: 200%; height: 200%;
+  background: linear-gradient(45deg, transparent 40%, rgba(255, 255, 255, .18) 50%, transparent 60%);
+  transform: translateX(-100%);
+  pointer-events: none;
+  transition: transform .6s ease;
+}
+.btn-primary:hover:not(:disabled)::before, .btn-chip-primary:hover:not(:disabled)::before {
+  transform: translateX(100%);
+}
+.btn-primary:hover:not(:disabled) {
+  box-shadow: 0 4px 22px rgba(255, 48, 79, .6), 0 0 12px rgba(255, 48, 79, .4);
+}
+
+.input-field {
+  background: rgba(13, 17, 25, .75);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, .12);
+  transition: all .2s var(--ease-out);
+}
+.input-field:focus {
+  border-color: #ff304f;
+  background: rgba(16, 21, 32, .9);
+  box-shadow: 0 0 0 3px rgba(255, 48, 79, .22), 0 0 16px rgba(255, 48, 79, .18);
+}
+
+/* 4. 顶栏全局搜索 HUD 态质感 */
+.toolbar-search {
+  position: relative;
+  background: rgba(13, 17, 25, .6);
+  border: 1px solid rgba(255, 255, 255, .1);
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, .4);
+}
+.toolbar-search:hover {
+  border-color: rgba(36, 223, 255, .4);
+  box-shadow: 0 0 12px rgba(36, 223, 255, .15);
+}
+.toolbar-search:focus-visible {
+  border-color: #24dfff;
+  box-shadow: 0 0 0 2px rgba(36, 223, 255, .3), 0 0 18px rgba(36, 223, 255, .25);
+}
+.toolbar-search kbd {
+  background: rgba(255, 255, 255, .06);
+  border-color: rgba(255, 255, 255, .12);
+  color: var(--tech-blue);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, .3);
+}
+
+/* 5. 命令面板 (Ctrl+K) 电影感 HUD 全息悬浮 */
+.command-palette {
+  background: rgba(13, 17, 25, .88) !important;
+  backdrop-filter: blur(28px) !important;
+  -webkit-backdrop-filter: blur(28px) !important;
+  border: 1px solid rgba(36, 223, 255, .25) !important;
+  box-shadow: 0 24px 72px rgba(0, 0, 0, .8), 0 0 30px rgba(36, 223, 255, .12) !important;
+}
+
+/* 6. 极客分集芯片 (ep-chip) 交互质感增强 */
+.ep-chip {
+  background: rgba(255, 255, 255, .03);
+  border: 1px solid rgba(255, 255, 255, .08);
+  backdrop-filter: blur(6px);
+  transition: all .16s cubic-bezier(.22, 1, .36, 1);
+}
+.ep-chip:hover:not(:disabled) {
+  border-color: rgba(36, 223, 255, .45);
+  box-shadow: 0 0 14px rgba(36, 223, 255, .18);
+  transform: translateY(-1px);
+}
+.ep-current {
+  border-color: #ff304f !important;
+  background: linear-gradient(135deg, rgba(255, 48, 79, .22), rgba(255, 48, 79, .06)) !important;
+  box-shadow: 0 0 16px rgba(255, 48, 79, .3), inset 0 0 8px rgba(255, 48, 79, .15) !important;
+}
+

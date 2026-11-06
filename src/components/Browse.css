@@ -176,3 +176,31 @@
 .browse-completion-filter > span { line-height: 1.7; }
 .browse-completion-label { color: var(--text-secondary); font-size: var(--fs-xs); margin-top: 4px; }
 .browse-filter-empty { display: flex; flex-direction: column; align-items: center; gap: 14px; padding: 40px 16px; text-align: center; color: var(--text-secondary); }
+
+/* ============ 发现页科技感电影级流光增强层 ============ */
+.browse-cover {
+  border: 1px solid rgba(255, 255, 255, .08);
+  transition: transform .26s cubic-bezier(.22, 1, .36, 1), box-shadow .26s cubic-bezier(.22, 1, .36, 1), border-color .26s ease;
+}
+.browse-card:hover .browse-cover {
+  transform: translateY(-5px) scale(1.02);
+  border-color: rgba(36, 223, 255, .4);
+  box-shadow: 0 16px 36px rgba(0, 0, 0, .6), 0 0 24px rgba(36, 223, 255, .22), 0 0 0 1px rgba(36, 223, 255, .3);
+}
+.browse-ep-badge {
+  background: rgba(13, 16, 23, .85) !important;
+  border: 1px solid rgba(255, 255, 255, .15);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, .5);
+  letter-spacing: .02em;
+}
+.browse-dl-badge {
+  background: linear-gradient(135deg, rgba(61, 220, 151, .9), rgba(43, 182, 125, .9)) !important;
+  box-shadow: 0 0 12px rgba(61, 220, 151, .4);
+}
+.browse-hover-play {
+  background: linear-gradient(135deg, #ff4160, #d61b36) !important;
+  border: 1px solid rgba(255, 255, 255, .25);
+  box-shadow: 0 0 20px rgba(255, 48, 79, .7), inset 0 1px 0 rgba(255, 255, 255, .35) !important;
+  letter-spacing: .04em;
+}
+

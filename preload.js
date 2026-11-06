@@ -121,6 +121,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // 播放器
   getSeriesEpisodes: (seriesId) => ipcRenderer.invoke('get-series-episodes', seriesId),
+  openEpisodeExternal: (seriesId, vidIndex) => ipcRenderer.invoke('open-episode-external', seriesId, vidIndex),
   downloadSingleEpisode: (seriesId, vidIndex, quality) =>
     ipcRenderer.invoke('download-single-episode', seriesId, vidIndex, quality),
   savePlaybackPosition: (seriesId, vidIndex, currentTime, metadata) =>

@@ -80,9 +80,15 @@ test('NAS rejects detached roots, unsafe folder names, symlinks and fake posters
   const root = temp(t);
   await assert.rejects(() => nas.prepareNasExport({ root, folderName: '../outside', series }), /目录|路径/);
   const other = temp(t); fs.writeFileSync(path.join(other, 'foreign.nfo'), 'foreign');
-  fs.symlinkSync(path.join(other, 'foreign.nfo'), path.join(root, 'tvshow.nfo'));
-  await assert.rejects(() => prepare(root), /目录|链接/);
-  fs.unlinkSync(path.join(root, 'tvshow.nfo'));
+  try {
+    fs.symlinkSync(path.join(other, 'foreign.nfo'), path.join(root, 'tvshow.nfo'));
+    await assert.rejects(() => prepare(root), /目录|链接/);
+    fs.unlinkSync(path.join(root, 'tvshow.nfo'));
+  } catch (error) {
+    if (error.code === 'EPERM' && process.platform === 'win32') {
+      t.diagnostic('Windows EPERM: symlink creation skipped on Windows without privilege');
+    } else throw error;
+  }
   const { destination } = await prepare(root);
   fs.renameSync(root, `${root}-detached`); t.after(() => fs.rmSync(`${root}-detached`, { recursive: true, force: true }));
   await assert.rejects(() => nas.inspectNasEpisode(destination, series.episodes[0]), /NAS|目录/);

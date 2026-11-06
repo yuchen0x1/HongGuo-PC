@@ -430,14 +430,16 @@ function parseAppPlayModel(info, vid, options, inline, requireEncryptionMetadata
     if (!info) throw Object.assign(new Error('App 接口未返回本集片源模型'), { code: 'MISSING_MODEL' });
     const compatibleRows = Object.values(info?.video_list || {}).filter(item => item && (item.main_url || item.backup_url || Array.isArray(item.backup_url_list))).map(item => {
         const codec = str(item.codec_type || item.video_meta?.codec_type).toLowerCase();
-        const codecRank = ['h264', 'avc', 'avc1'].includes(codec) ? 0 : ['hevc', 'h265', 'hvc1', 'hev1', 'bytevc1'].includes(codec) ? 1 : 2;
+        const codecRank = ['h264', 'avc', 'avc1'].includes(codec) ? 0 : ['hevc', 'h265', 'hvc1', 'hev1', 'bytevc1'].includes(codec) ? 1 : codec === 'bytevc2' ? 2 : 3;
         const quality = str(item.quality_desc || item.definition || item.video_meta?.definition || item.height || item.vheight);
         const meta = item.video_meta || {};
         const [width, height] = [[item.vwidth, item.vheight], [item.width, item.height], [meta.vwidth, meta.vheight], [meta.width, meta.height]]
             .map(pair => pair.map(Number)).find(pair => pair.every(value => Number.isFinite(value) && value > 0)) || [0, 0];
         const pixels = width && height ? Math.min(width, height) : Number(quality.match(/\d+/)?.[0] || 0);
         return { item, codec, codecRank, quality, pixels, width, height };
-    }).filter(row => row.codecRank < 2 && (!minimumPixels || Math.min(row.width, row.height) >= minimumPixels));
+    }).filter(row => row.codecRank < 3 && (!minimumPixels || Math.min(row.width, row.height) >= minimumPixels)
+        && (row.codecRank !== 2 || (row.width > 0 && row.height > 0 && typeof info.video_id === 'string'
+            && info.video_id.trim() && Number.isFinite(Number(info.video_duration)) && Number(info.video_duration) > 0)));
     const rows = compatibleRows.filter(row => allowLowerQuality || meetsDownloadQuality(row, requestedQuality)).sort((a, b) => {
         if (requestedQuality === 'auto') return a.codecRank - b.codecRank || b.pixels - a.pixels;
         const aMeets = meetsDownloadQuality(a, requestedQuality), bMeets = meetsDownloadQuality(b, requestedQuality);
@@ -449,7 +451,9 @@ function parseAppPlayModel(info, vid, options, inline, requireEncryptionMetadata
         const strictQuality = compatibleRows.length > 0 && requestedQuality !== 'auto' && !allowLowerQuality;
         throw Object.assign(new Error(strictQuality
             ? `本集暂无尺寸可确认且满足 ${requestedQuality} 的 H.264/HEVC 片源，未降级`
-            : '本集暂未提供兼容的 H.264/HEVC 片源'), {
+            : Object.values(info.video_list || {}).some(item => str(item?.codec_type || item?.video_meta?.codec_type).toLowerCase() === 'bytevc2')
+                ? '本集仅提供播放器不支持的 ByteVC2 编码，当前无法播放或下载，请在官方 App 观看'
+                : '本集暂未提供兼容的 H.264/HEVC 片源'), {
             code: strictQuality ? 'QUALITY_UNAVAILABLE' : 'NO_COMPATIBLE_SOURCE',
             ...(strictQuality ? { quality: requestedQuality } : {}),
         });
@@ -467,8 +471,9 @@ function parseAppPlayModel(info, vid, options, inline, requireEncryptionMetadata
     for (const selected of selectedRows) {
         try {
             const spade = selected.item.spade_a || selected.item.encrypt_info?.spade_a;
-            if (requireEncryptionMetadata && !spade && ![false, 0, '0', 'false'].includes(selected.item.encrypt_info?.encrypt)) {
-                if (selected.item.encrypt_info?.encrypt == null) incompleteEncryptionMetadata = true;
+            const encrypt = selected.item.encrypt_info?.encrypt ?? selected.item.encrypt;
+            if (requireEncryptionMetadata && !spade && ![false, 0, '0', 'false'].includes(encrypt)) {
+                if (encrypt == null) incompleteEncryptionMetadata = true;
                 throw Object.assign(new Error('本集片源缺少有效解密信息'), { code: 'INVALID_RESPONSE' });
             }
             const key = spade ? deriveContentKey(spade) : null;

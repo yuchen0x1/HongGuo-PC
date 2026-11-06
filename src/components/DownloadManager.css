@@ -487,6 +487,39 @@
 /* 状态徽章：统一 pill */
 .status-tag { border-radius: 999px; padding: 2px 9px; font-size: var(--fs-xs); font-weight: 500; }
 
+/* 赛博未来下载进度条与任务流光 */
+.dm-progress-bar {
+  background: rgba(255, 255, 255, .08);
+  border-radius: 999px;
+  overflow: hidden;
+  height: 5px;
+}
+.dm-progress-fill {
+  background: linear-gradient(90deg, #ff304f, #24dfff) !important;
+  box-shadow: 0 0 10px rgba(36, 223, 255, .6);
+  border-radius: 999px;
+  position: relative;
+}
+.dm-progress-fill::after {
+  content: "";
+  position: absolute;
+  top: 0; bottom: 0; right: 0; width: 14px;
+  background: #fff;
+  filter: blur(2px);
+  opacity: .8;
+}
+:root[data-theme="dark"] .dm-queue-bar {
+  background: rgba(13, 17, 25, .7);
+  border: 1px solid rgba(36, 223, 255, .2);
+  backdrop-filter: blur(12px);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, .3), inset 0 0 12px rgba(36, 223, 255, .05);
+}
+.dm-queue-pulse {
+  background: #24dfff !important;
+  box-shadow: 0 0 8px #24dfff;
+}
+
+
 /* 任务行：安静的分隔与悬停反馈 */
 .dm-task { border-bottom: 1px solid var(--border-muted); transition: background var(--dur-fast) var(--ease-out); }
 .dm-task:hover { background: var(--bg-hover); }

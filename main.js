@@ -2166,6 +2166,22 @@ ipcMain.handle('show-in-folder', async (event, filePath) => {
   }
 });
 
+ipcMain.handle('open-episode-external', async (_event, seriesId, vidIndex) => {
+  try {
+    const task = downloadTasks.find(item => item.status === 'completed'
+      && String(item.hongguoInfo?.series_id) === String(seriesId)
+      && Number(item.hongguoInfo?.vid_index) === Number(vidIndex) && hasCompleteTaskFile(item));
+    if (!task || !/\.mp4$/i.test(task.savePath)
+      || !isRecordedMediaFile(task.savePath, { seriesId, vidIndex, vid: task.hongguoInfo.vid })) {
+      return { success: false, error: '请先完整下载本集，再使用系统播放器打开' };
+    }
+    const error = await shell.openPath(task.savePath);
+    return error ? { success: false, error: '无法打开系统播放器，请检查 MP4 的默认打开方式' } : { success: true };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+});
+
 ipcMain.handle('get-merge-tasks', async () => mergeTasks.map(({ child, ...rest }) => rest));
 
 function seriesDownloadDir(root, seriesId, seriesTitle) {

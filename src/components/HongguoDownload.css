@@ -103,3 +103,39 @@
 
 /* ===== 跨来源同名去重标识（搜索合并层追加） ===== */
 .badge-multi { font-size: 11px; line-height: 1.5; color: var(--text-secondary); background: var(--bg-inset); border: 1px solid var(--border-color); border-radius: 5px; padding: 1px 5px; white-space: nowrap; }
+
+/* 赛博未来卡片打磨 */
+:root[data-theme="dark"] .hongguo-card {
+  background: rgba(13, 17, 25, .75);
+  border: 1px solid rgba(255, 255, 255, .08);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, .4), inset 0 1px 0 rgba(255, 255, 255, .08);
+}
+.mode-tabs {
+  background: rgba(255, 255, 255, .04);
+  border: 1px solid rgba(255, 255, 255, .08);
+  padding: 4px;
+}
+.mode-tab.active {
+  background: linear-gradient(135deg, rgba(255, 48, 79, .24), rgba(255, 48, 79, .1)) !important;
+  border: 1px solid rgba(255, 48, 79, .3) !important;
+  color: #fff !important;
+  box-shadow: 0 0 12px rgba(255, 48, 79, .25) !important;
+}
+.episode-card {
+  border: 1px solid rgba(255, 255, 255, .08);
+  background: rgba(255, 255, 255, .03);
+  backdrop-filter: blur(8px);
+}
+.episode-card:hover:not(:disabled) {
+  border-color: rgba(36, 223, 255, .35);
+  box-shadow: 0 0 12px rgba(36, 223, 255, .15);
+  transform: translateY(-1px);
+}
+.episode-card.selected {
+  border-color: #ff304f !important;
+  background: linear-gradient(135deg, rgba(255, 48, 79, .2), rgba(255, 48, 79, .05)) !important;
+  box-shadow: 0 0 14px rgba(255, 48, 79, .3), inset 0 0 8px rgba(255, 48, 79, .15) !important;
+}
+

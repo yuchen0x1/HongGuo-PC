@@ -1,6 +1,6 @@
 {
   "name": "hongguo-downloader",
-  "version": "6.3.0",
+  "version": "6.4.0",
   "description": "红果短剧播放与下载",
   "main": "main.js",
   "license": "GPL-3.0",
@@ -31,18 +31,40 @@
     "concurrently": "^8.2.2",
     "electron": "44.9.1",
     "electron-builder": "26.15.3",
-    "esbuild": "0.21.5",
+    "esbuild": "^0.25.12",
     "js-yaml": "4.3.2",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "semver": "7.7.4",
-    "vite": "^5.4.11",
+    "vite": "^6.4.5",
     "wait-on": "^7.2.0"
   },
   "overrides": {
     "shell-quote": "1.12.0",
-    "joi": "17.13.8",
-    "source-map-js": "1.2.2"
+    "joi": "^17.13.9",
+    "source-map-js": "1.2.2",
+    "app-builder-lib": {
+      "minimatch": "^11.0.5",
+      "@electron/asar": {
+        "minimatch": "3.1.5",
+        "glob": {
+          "minimatch": "3.1.5"
+        }
+      },
+      "ejs": {
+        "jake": {
+          "filelist": {
+            "minimatch": "5.1.9"
+          }
+        }
+      }
+    },
+    "@electron/universal": {
+      "minimatch": "^11.0.5",
+      "dir-compare": {
+        "minimatch": "3.1.5"
+      }
+    }
   },
   "build": {
     "appId": "io.github.jackotom.hongguo-drama-mac",
@@ -59,7 +81,7 @@
       "build/icon.ico"
     ],
     "asar": true,
-    "artifactName": "hongguo-downloader-6.3-${os}-${arch}.${ext}",
+    "artifactName": "hongguo-downloader-6.4-${os}-${arch}.${ext}",
     "win": {
       "target": [
         {
@@ -100,7 +122,7 @@
       ]
     },
     "portable": {
-      "artifactName": "${productName}-6.3-便携版.${ext}"
+      "artifactName": "${productName}-6.4-便携版.${ext}"
     },
     "nsis": {
       "oneClick": false,
@@ -108,7 +130,7 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "红果短剧下载器",
-      "artifactName": "hongguo-downloader-6.3-win-x64-setup.${ext}"
+      "artifactName": "hongguo-downloader-6.4-win-x64-setup.${ext}"
     },
     "mac": {
       "target": [

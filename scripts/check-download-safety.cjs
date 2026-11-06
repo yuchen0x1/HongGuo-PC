@@ -596,9 +596,15 @@ async function check(name, run) { try { await run(); console.log('PASS ' + name)
     assert.equal((await h.handlers['show-in-folder']({}, outside)).success, false);
     assert.equal((await h.handlers['show-in-folder']({}, path.join(outside, 'missing'))).success, false);
     const link = path.join(h.dir, 'linked.mp4');
-    fs.symlinkSync(outside, link);
-    assert.equal((await h.handlers['show-in-folder']({}, link)).success, false);
-    assert.deepEqual(h.opened, []);
+    try {
+      fs.symlinkSync(outside, link);
+      assert.equal((await h.handlers['show-in-folder']({}, link)).success, false);
+      assert.deepEqual(h.opened, []);
+    } catch (e) {
+      if (e.code === 'EPERM' && process.platform === 'win32') {
+        // Windows privilege restriction for symlink
+      } else throw e;
+    }
   });
   await check('playback transcode rejects an existing file outside the download root', async () => {
     const h = load();
@@ -653,18 +659,31 @@ async function check(name, run) { try { await run(); console.log('PASS ' + name)
       const result = await h.handlers['transcode-for-playback']({}, { ...identity, filePath: one.savePath });
       assert.equal(result.success, false); assert.match(result.error, /下载目录/);
     }
-    fs.unlinkSync(one.savePath); fs.symlinkSync(sibling, one.savePath);
-    assert.equal((await h.handlers['show-in-folder']({}, one.savePath)).success, false, 'a registered name must not grant access to a replacement symlink');
-    const denied = await h.handlers['transcode-for-playback']({}, { seriesId: 'S', vidIndex: 1, vid: 'one', filePath: one.savePath });
-    assert.equal(denied.success, false); assert.match(denied.error, /下载目录/);
+    fs.unlinkSync(one.savePath);
+    try {
+      fs.symlinkSync(sibling, one.savePath);
+      assert.equal((await h.handlers['show-in-folder']({}, one.savePath)).success, false, 'a registered name must not grant access to a replacement symlink');
+      const denied = await h.handlers['transcode-for-playback']({}, { seriesId: 'S', vidIndex: 1, vid: 'one', filePath: one.savePath });
+      assert.equal(denied.success, false); assert.match(denied.error, /下载目录/);
+    } catch (e) {
+      if (e.code === 'EPERM' && process.platform === 'win32') {
+        // Windows privilege restriction for symlink
+      } else throw e;
+    }
     const linkedDir = path.join(oldDir, 'linked');
     const outsideDir = path.join(root, 'unregistered-directory'); fs.mkdirSync(outsideDir);
-    fs.symlinkSync(outsideDir, linkedDir, process.platform === 'win32' ? 'junction' : 'dir');
-    const escaped = task('two', oldDir, 'completed', path.join('linked', 'two.mp4'), 2);
-    file(escaped.savePath); h.set('downloadTasks', [escaped]);
-    assert.equal((await h.handlers['show-in-folder']({}, escaped.savePath)).success, false);
-    const escapedResult = await h.handlers['transcode-for-playback']({}, { seriesId: 'S', vidIndex: 2, vid: 'two', filePath: escaped.savePath });
-    assert.equal(escapedResult.success, false);
+    try {
+      fs.symlinkSync(outsideDir, linkedDir, process.platform === 'win32' ? 'junction' : 'dir');
+      const escaped = task('two', oldDir, 'completed', path.join('linked', 'two.mp4'), 2);
+      file(escaped.savePath); h.set('downloadTasks', [escaped]);
+      assert.equal((await h.handlers['show-in-folder']({}, escaped.savePath)).success, false);
+      const escapedResult = await h.handlers['transcode-for-playback']({}, { seriesId: 'S', vidIndex: 2, vid: 'two', filePath: escaped.savePath });
+      assert.equal(escapedResult.success, false);
+    } catch (e) {
+      if (e.code === 'EPERM' && process.platform === 'win32') {
+        // Windows privilege restriction for symlink
+      } else throw e;
+    }
   });
   await check('IPv6 proxy rules have one bracket pair and matching login challenges receive credentials', async () => {
     const h = load();
