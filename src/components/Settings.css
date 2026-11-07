@@ -410,3 +410,88 @@
 /* 开关：主色滑动更利落 */
 .builtin-source-row input { transition: background var(--dur) var(--ease-out), border-color var(--dur) var(--ease-out); }
 .builtin-source-row input::before { transition: transform var(--dur) var(--ease-out); }
+
+/* ============ 设置页分组锚点导航 ============ */
+.settings-search {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 40px;
+  padding: 0 11px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--bg-input);
+  color: var(--text-tertiary);
+  transition: border-color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out);
+}
+
+.settings-search:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--focus-soft);
+}
+
+.settings-search input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+}
+
+.settings-search input::placeholder { color: var(--text-tertiary); }
+.settings-search input::-webkit-search-cancel-button { display: none; }
+
+.settings-search-clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+}
+
+.settings-search-clear:hover { background: var(--bg-hover); color: var(--text-primary); }
+.settings-search-meta { min-height: 20px; padding: 6px 2px 0; color: var(--text-tertiary); font-size: var(--fs-xs); }
+.settings-quicknav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 4px 2px 18px;
+  margin-bottom: 6px;
+}
+
+.settings-quicknav-item {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1;
+  padding: 7px 12px;
+  cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out);
+}
+
+.settings-quicknav-item:hover {
+  border-color: var(--accent);
+  color: var(--accent-text);
+}
+
+.settings-quicknav-item.active {
+  border-color: var(--accent);
+  color: var(--accent-text);
+  background: var(--accent-soft);
+  box-shadow: 0 0 0 3px rgba(var(--accent-rgb, 120, 120, 255), 0.18);
+}
+
+/* 锚点目标被标题栏/导航条遮挡时留出滚动间距 */
+[id^="settings-anchor-"] {
+  scroll-margin-top: 18px;
+}

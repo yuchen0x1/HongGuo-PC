@@ -6,7 +6,7 @@ import AppearanceSettings from './AppearanceSettings';
 import ShortcutSettings from './ShortcutSettings';
 import CustomSources from './CustomSources';
 import BuiltinSources from './BuiltinSources';
-import { Settings, Folder, Check, Globe, X, RefreshCw, AlertCircle } from './icons';
+import { Settings, Folder, Check, Globe, X, RefreshCw, AlertCircle, Search } from './icons';
 
 
 const FORMAT_PRESETS = [
@@ -46,8 +46,25 @@ function describeProxy(settings) {
   return { on: true, text: '接口/下载跟随启动环境，浏览器跟随系统' };
 }
 
+// 设置页顶部锚点导航：点击平滑滚动到对应卡片并高亮。
+const SETTING_ANCHORS = [
+  { id: 'appearance', label: '外观', keywords: '主题 缩放 字号 海报' },
+  { id: 'shortcuts', label: '快捷键', keywords: '播放 老板键 按键' },
+  { id: 'pip', label: '画中画', keywords: '小窗 原生 置顶' },
+  { id: 'builtin', label: '内置来源', keywords: '来源 采集 搜索' },
+  { id: 'custom', label: '自定义源', keywords: '播放源 苹果cms api 接口' },
+  { id: 'playback', label: '播放缓存', keywords: '缓存 兼容 自动删除 连播 红果 app' },
+  { id: 'danmaku', label: '弹幕', keywords: '评论 时间轴 显示' },
+  { id: 'download', label: '下载', keywords: '目录 命名 清晰度 并发 文件夹' },
+  { id: 'proxy', label: '代理', keywords: '网络 直连 系统代理' },
+  { id: 'watch', label: '追剧', keywords: '提醒 新集 新一季 通知' },
+  { id: 'storage', label: '配置位置', keywords: '配置文件 密码 便携版 数据' },
+];
+
 function SettingsPage({ active = true, preview = false, appInfo = null }) {
   const danmakuSource = useDanmakuSource();
+  const [activeAnchor, setActiveAnchor] = useState('');
+  const [settingsSearch, setSettingsSearch] = useState('');
   const [settings, setSettings] = useState(null);
   const [saved, setSaved] = useState(false);
   const [proxyOpen, setProxyOpen] = useState(false);
@@ -180,6 +197,23 @@ function SettingsPage({ active = true, preview = false, appInfo = null }) {
   };
   const save = () => persist(settings);
 
+  const scrollToSection = (id) => {
+    const el = document.getElementById(`settings-anchor-${id}`);
+    if (!el) return;
+    setActiveAnchor(id);
+    el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+
+  const normalizedSettingsSearch = settingsSearch.trim().toLocaleLowerCase('zh-CN');
+  const matchingAnchors = normalizedSettingsSearch
+    ? SETTING_ANCHORS.filter(anchor => `${anchor.label} ${anchor.keywords}`.toLocaleLowerCase('zh-CN').includes(normalizedSettingsSearch))
+    : SETTING_ANCHORS;
+
+  const submitSettingsSearch = (event) => {
+    event.preventDefault();
+    if (matchingAnchors[0]) scrollToSection(matchingAnchors[0].id);
+  };
+
   const closeProxy = () => {
     testVersion.current++;
     setTesting(false);
@@ -244,9 +278,39 @@ function SettingsPage({ active = true, preview = false, appInfo = null }) {
         <div><h2>设置</h2><p className="page-description">让下载、保存和网络连接，按你的习惯运行。</p></div>
       </div>
 
-      <section className="settings-card" aria-label="外观设置"><AppearanceSettings active={active} /></section>
-      <ShortcutSettings active={active} />
-      <section className="settings-card" aria-label="画中画小窗设置">
+      <form className="settings-search" role="search" onSubmit={submitSettingsSearch}>
+        <Search size={16} />
+        <input
+          type="search"
+          value={settingsSearch}
+          onChange={(event) => setSettingsSearch(event.target.value)}
+          placeholder="搜索设置，例如：下载、弹幕、代理"
+          aria-label="搜索设置"
+          aria-describedby="settings-search-hint"
+        />
+        {settingsSearch && <button type="button" className="settings-search-clear" onClick={() => setSettingsSearch('')} aria-label="清除设置搜索">
+          <X size={15} />
+        </button>}
+      </form>
+      <div className="settings-search-meta" id="settings-search-hint" aria-live="polite">
+        {normalizedSettingsSearch
+          ? (matchingAnchors.length > 0 ? `找到 ${matchingAnchors.length} 个设置分类，按 Enter 跳转到第一个结果` : '没有匹配的设置分类')
+          : '输入关键词快速定位设置分类'}
+      </div>
+      <nav className="settings-quicknav" aria-label="设置分类">
+        {matchingAnchors.map((anchor) => (
+          <button key={anchor.id} type="button"
+            className={`settings-quicknav-item ${activeAnchor === anchor.id ? 'active' : ''}`}
+            aria-current={activeAnchor === anchor.id ? 'true' : undefined}
+            onClick={() => scrollToSection(anchor.id)}>
+            {anchor.label}
+          </button>
+        ))}
+      </nav>
+
+      <section className="settings-card" id="settings-anchor-appearance" aria-label="外观设置"><AppearanceSettings active={active} /></section>
+      <div id="settings-anchor-shortcuts"><ShortcutSettings active={active} /></div>
+      <section className="settings-card" id="settings-anchor-pip" aria-label="画中画小窗设置">
         <div className="settings-group">
           <label className="settings-label" htmlFor="picture-in-picture-mode">画中画小窗</label>
           <select id="picture-in-picture-mode" className="input-field select-field"
@@ -262,18 +326,18 @@ function SettingsPage({ active = true, preview = false, appInfo = null }) {
           {pictureModeError && <p className="appearance-error" role="alert">{pictureModeError}</p>}
         </div>
       </section>
-      <BuiltinSources />
-      <CustomSources active={active} />
+      <div id="settings-anchor-builtin"><BuiltinSources /></div>
+      <div id="settings-anchor-custom"><CustomSources active={active} /></div>
       <p className="settings-hint">播放页顶部可开启小窗模式：窗口缩小、置顶并在支持的系统上跨虚拟桌面可见；鼠标移开时暂停隐藏，移回继续，Esc 或 Dock 可恢复主窗口。</p>
       <fieldset className="settings-card" disabled={saving}>
-        <div className="settings-group">
+        <div className="settings-group" id="settings-anchor-playback">
           <span className="settings-label">播放与缓存</span>
           <label className="proxy-switch-row"><input type="checkbox" checked={settings.cache_next_episode !== false} onChange={event => update('cache_next_episode', event.target.checked)} /><span className="proxy-switch-text">缓存后续 2 集<em>开始播放后最多预取接下来两集可在线播放的分集，减少连续切集等待；会使用网络流量。</em></span></label>
           <label className="proxy-switch-row"><input type="checkbox" checked={settings.compat_mode !== false} onChange={event => update('compat_mode', event.target.checked)} /><span className="proxy-switch-text">自动兼容模式<em>无法解码时尝试转码播放，解决部分黑屏有声问题。</em></span></label>
           <label className="proxy-switch-row"><input type="checkbox" checked={settings.auto_delete_watched === true} onChange={event => update('auto_delete_watched', event.target.checked)} /><span className="proxy-switch-text">看完自动删除<em>看完一集后删除该集已下载的视频、在线播放缓存和转码缓存。下载文件会永久删除；需要时可重新下载。保存后生效。</em></span></label>
           <label className="proxy-switch-row"><input type="checkbox" aria-label="优先使用红果 App 搜索" checked={settings.search_app_enabled === true} onChange={event => update('search_app_enabled', event.target.checked)} /><span className="proxy-switch-text">优先使用红果 App 搜索<em>失败或空结果自动回退官网；关闭此项时，官网不可用仍会尝试 App 备用搜索。</em></span></label>
         </div>
-        <div className="settings-group">
+        <div className="settings-group" id="settings-anchor-danmaku">
           <span className="settings-label">弹幕按钮设置</span>
           <div className="settings-inline-save">
           <label className="proxy-switch-row"><input type="checkbox" aria-label="显示弹幕按钮" checked={settings.show_danmaku_controls !== false} onChange={event => update('show_danmaku_controls', event.target.checked)} /><span className="proxy-switch-text">显示弹幕按钮<em>保存后生效。关闭时隐藏弹幕及弹幕设置按钮，并停用弹幕；再次开启会恢复原有弹幕偏好。</em></span></label>
@@ -293,7 +357,7 @@ function SettingsPage({ active = true, preview = false, appInfo = null }) {
             } catch (error) { setSaveError(error.message || '来源链接打开失败'); }
           }}>弹幕实现参考 dawei233/hongguo-drama（GPL-3.0）</button>
         </div>
-        <div className="settings-group">
+        <div className="settings-group" id="settings-anchor-download">
           <label className="settings-label">下载目录</label>
           <div className="folder-row">
             <input
@@ -370,7 +434,7 @@ function SettingsPage({ active = true, preview = false, appInfo = null }) {
           </p>
         </div>
 
-        <div className="settings-group">
+        <div className="settings-group" id="settings-anchor-proxy">
           <label className="settings-label">网络代理</label>
           <div className="proxy-status-row">
             <span className={`proxy-dot ${proxyInfo.on ? 'proxy-dot-on' : 'proxy-dot-off'}`} />
@@ -387,14 +451,14 @@ function SettingsPage({ active = true, preview = false, appInfo = null }) {
           </p>
         </div>
 
-        <div className="settings-group">
+        <div className="settings-group" id="settings-anchor-watch">
           <span className="settings-label">追剧提醒</span>
           <label className="proxy-switch-row"><input type="checkbox" checked={settings.watch_updates_enabled !== false} onChange={event => update('watch_updates_enabled', event.target.checked)} /><span className="proxy-switch-text">自动检查新集<em>应用运行期间，每部剧约 6 小时检查一次；列表较多时分批检查</em></span></label>
           <label className="proxy-switch-row"><input type="checkbox" checked={settings.watch_sequels_enabled !== false} onChange={event => update('watch_sequels_enabled', event.target.checked)} /><span className="proxy-switch-text">查找疑似新一季<em>约每天按剧名搜索一次，仅提示同名且季数更高的剧；可能遗漏或误报</em></span></label>
           <label className="proxy-switch-row"><input type="checkbox" checked={settings.watch_notifications_enabled === true} onChange={event => update('watch_notifications_enabled', event.target.checked)} /><span className="proxy-switch-text">发送系统通知<em>默认关闭。开启后还需允许 macOS 通知；关闭不影响观看记录红点</em></span></label>
         </div>
 
-        <div className="settings-group">
+        <div className="settings-group" id="settings-anchor-storage">
           <span className="settings-label">配置文件位置</span>
           {settings.proxy_password_warning && <p className="alert alert-error" role="alert">{settings.proxy_password_warning}</p>}
           <p className="settings-hint">代理密码由本机系统安全存储加密；更换电脑后可能需要重新输入。</p>

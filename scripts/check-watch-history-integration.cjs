@@ -113,6 +113,18 @@ async function check(name, fn) {
       assert.equal((await rows()).length, replay ? 1 : 0, 'unmount must preserve removal across restart');
     }
   });
+  await check('batch history removal validates IDs, deduplicates and preserves the series registry', async () => {
+    assert.equal((await ipc('remove-watch-history-batch', 'not-an-array')).success, false);
+    assert.equal((await ipc('save-playback-position', sid, 1, 10)).success, true);
+    assert.equal((await ipc('save-playback-position', '1000003', 1, 12)).success, true);
+    const result = await ipc('remove-watch-history-batch', [sid, ` ${sid} `, '1000003', null, {}, 'missing']);
+    assert.deepEqual(clone(result), { success: true, count: 2 });
+    assert.equal((await rows()).length, 0);
+    assert.equal(store.getSeries().length, 2, 'batch removal must not delete registered series');
+    assert.deepEqual(events.at(-1), { name: 'watch-history-updated', payload: {
+      removedSeriesIds: [sid, '1000003', 'missing'],
+    } });
+  });
   await check('completion evidence crosses IPC and survives persistence', async () => {
     assert.equal((await ipc('save-playback-position', sid, 3, 100, { duration: 100, ended: true })).success, true);
     store.init(dataFile);

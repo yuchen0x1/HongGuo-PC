@@ -4252,6 +4252,26 @@ ipcMain.handle('remove-watch-history', async (_event, seriesId) => {
   } catch (error) { return { success: false, error: error.message }; }
 });
 
+ipcMain.handle('remove-watch-history-batch', async (_event, seriesIds) => {
+  try {
+    if (!Array.isArray(seriesIds)) return { success: false, error: '观看记录编号格式无效' };
+    const ids = [...new Set(seriesIds
+      .filter(id => typeof id === 'string' || typeof id === 'number')
+      .map(id => String(id).trim())
+      .filter(Boolean))];
+    const map = { ...store.getPlayback() };
+    let count = 0;
+    for (const id of ids) {
+      if (!Object.hasOwn(map, id)) continue;
+      delete map[id];
+      count++;
+    }
+    store.savePlayback(map);
+    sendToRenderer('watch-history-updated', { removedSeriesIds: ids });
+    return { success: true, count };
+  } catch (error) { return { success: false, error: error.message }; }
+});
+
 ipcMain.handle('get-watch-history', async () => ({ success: true, results: historyRows() }));
 ipcMain.handle('refresh-watch-history', async (_event, options) => refreshWatchHistory({ force: true, scope: options?.scope }));
 ipcMain.handle('check-watch-history-item', async (_event, seriesId) => {

@@ -1,5 +1,5 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Play, RefreshCw, Clock } from './icons';
+import { Play, RefreshCw, Clock, CheckSquare, Trash2, X } from './icons';
 import './WatchHistory.css';
 import { groupHistory } from './historyGroups.mjs';
 
@@ -12,6 +12,9 @@ export default function WatchHistory({ active = true, onNavigate }) {
   const [checkingRow, setCheckingRow] = useState('');
   const [opening, setOpening] = useState('');
   const [removing, setRemoving] = useState('');
+  const [selected, setSelected] = useState(() => new Set());
+  const [batchRemoving, setBatchRemoving] = useState(false);
+  const [confirmBatchRemove, setConfirmBatchRemove] = useState(false);
   const [error, setError] = useState('');
   const [status, setStatus] = useState('');
   const [expanded, setExpanded] = useState({});
@@ -44,6 +47,21 @@ export default function WatchHistory({ active = true, onNavigate }) {
   const listedRows = groups.flatMap(items => hideLowSeasons && !expanded[items[0].series_id] ? items.slice(0, 1) : items);
   const completedCount = listedRows.filter(row => row.completed === true).length;
   const visibleRows = listedRows.filter(row => filter === 'all' || (row.completed === true) === (filter === 'completed'));
+  const visibleIds = visibleRows.map(row => String(row.series_id));
+  const selectedVisibleCount = visibleIds.filter(id => selected.has(id)).length;
+  const allVisibleSelected = visibleRows.length > 0 && selectedVisibleCount === visibleRows.length;
+
+  useEffect(() => {
+    const ids = new Set(rows.map(row => String(row.series_id)));
+    setSelected(previous => new Set([...previous].filter(id => ids.has(id))));
+  }, [rows]);
+
+  useEffect(() => {
+    if (!confirmBatchRemove) return undefined;
+    const close = event => { if (event.key === 'Escape') setConfirmBatchRemove(false); };
+    document.addEventListener('keydown', close);
+    return () => document.removeEventListener('keydown', close);
+  }, [confirmBatchRemove]);
 
   const savePreferences = next => {
     setPreferences(next);
@@ -115,6 +133,41 @@ export default function WatchHistory({ active = true, onNavigate }) {
     finally { setRemoving(''); }
   };
 
+  const toggleSelected = (seriesId) => {
+    const id = String(seriesId);
+    setSelected(previous => {
+      const next = new Set(previous);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleVisibleSelection = () => {
+    setSelected(previous => {
+      const next = new Set(previous);
+      if (allVisibleSelected) visibleIds.forEach(id => next.delete(id));
+      else visibleIds.forEach(id => next.add(id));
+      return next;
+    });
+  };
+
+  const clearSelection = () => setSelected(new Set());
+
+  const removeSelected = async () => {
+    const ids = rows.filter(row => selected.has(String(row.series_id))).map(row => String(row.series_id));
+    if (!ids.length || batchRemoving) return;
+    setBatchRemoving(true); setConfirmBatchRemove(false); setError(''); setStatus('');
+    try {
+      const result = await window.electronAPI.removeWatchHistoryBatch(ids);
+      if (!result?.success) throw new Error(result?.error || '批量移除失败，请重试');
+      setRows(current => current.filter(row => !ids.includes(String(row.series_id))));
+      setSelected(new Set());
+      setStatus(`已移除 ${result.count ?? ids.length} 条观看记录，视频文件不受影响。`);
+      void load();
+    } catch (failure) { setError(failure.message || '批量移除失败，请重试'); }
+    finally { setBatchRemoving(false); }
+  };
+
   const resume = async (row, sequel = null) => {
     if (!active || openingRef.current) return;
     const version = ++openingRequest.current;
@@ -172,14 +225,34 @@ export default function WatchHistory({ active = true, onNavigate }) {
           ['all', '全部', listedRows.length],
           ['unfinished', '未看完', listedRows.length - completedCount],
           ['completed', '已看完', completedCount],
-        ].map(([value, label, count]) => <button key={value} type="button" aria-pressed={filter === value} disabled={loading} onClick={() => setFilter(value)}>{label} {count}</button>)}
+        ].map(([value, label, count]) => <button key={value} type="button" aria-pressed={filter === value} disabled={loading || batchRemoving} onClick={() => setFilter(value)}>{label} {count}</button>)}
       </div>
       <label className="history-display-option" title="只调整当前列表；批量检测范围不变，也不会删除记录">
-        <input type="checkbox" checked={hideLowSeasons} disabled={loading} onChange={event => savePreferences({ ...preferences, hideLowSeasons: event.target.checked })} />
+        <input type="checkbox" checked={hideLowSeasons} disabled={loading || batchRemoving} onChange={event => savePreferences({ ...preferences, hideLowSeasons: event.target.checked })} />
         <span>折叠同剧低季</span>
       </label>
     </div>
-    <p className="history-hint">按当前最后一集的片尾进度判断；隐藏低季后，计数仅代表列表中的季，旧记录可能显示未看完。</p>
+    {rows.length > 0 && (
+      <div className="history-selection-bar" role="region" aria-label="观看记录批量操作">
+        <div className="history-selection-info">
+          <CheckSquare size={16} />
+          <b>已选 {selected.size} 条</b>
+          <span>{selected.size > selectedVisibleCount ? `当前列表 ${selectedVisibleCount} 条` : '可跨筛选保留'}</span>
+        </div>
+        <div className="history-selection-actions">
+          <button type="button" className="btn btn-outline btn-sm" onClick={toggleVisibleSelection} disabled={loading || batchRemoving}>
+            <CheckSquare size={14} />{allVisibleSelected ? '取消选中当前列表' : '全选当前列表'}
+          </button>
+          <button type="button" className="btn btn-danger-solid btn-sm" onClick={() => setConfirmBatchRemove(true)} disabled={!selected.size || loading || batchRemoving}>
+            <Trash2 size={14} />{batchRemoving ? '移除中…' : `移除选中（${selected.size}）`}
+          </button>
+          <button type="button" className="btn btn-outline btn-sm" onClick={clearSelection} disabled={!selected.size || batchRemoving}>
+            <X size={14} />取消选择
+          </button>
+        </div>
+      </div>
+    )}
+    <p className="history-hint">按当前最后一集的片尾进度判断；隐藏低季后，计数仅代表列表中的季，旧记录可能显示未看完。批量移除只清理观看记录，不删除视频文件。</p>
     {error && <div className="history-error" role="alert"><span>{error}</span><button className="btn btn-outline btn-sm" onClick={load}>重新加载</button></div>}
     {status && <p className="history-hint" role="status">{status}</p>}
     {checking && progress?.total > 0 && <p className="history-hint" role="status">
@@ -191,9 +264,10 @@ export default function WatchHistory({ active = true, onNavigate }) {
     </div> : !visibleRows.length ? <div className="history-empty" role="status">
       <Clock size={30} /><h2>{emptyTitle}</h2>
       <button type="button" className="btn btn-outline" onClick={() => setFilter('all')}>查看全部</button>
-    </div> : <ul className="history-list">{visibleRows.map(row => <li className={`history-row ${groupById.get(row.series_id)?.[0] !== row ? 'history-child' : ''}`} key={row.series_id}>
+    </div> : <ul className="history-list">{visibleRows.map(row => <li className={`history-row ${groupById.get(row.series_id)?.[0] !== row ? 'history-child' : ''} ${selected.has(String(row.series_id)) ? 'history-selected' : ''}`} key={row.series_id}>
       <div className="history-main">
-      <button className="history-resume" onClick={() => resume(row)} disabled={!active || !!opening || !!removing} aria-label={`继续观看 ${row.series_title} 第${row.vid_index}集${row.hasUpdates ? `，有更新${row.unreadEpisodes ? `，新增${row.unreadEpisodes}集` : '，发现疑似续作'}` : ''}`}>
+      <input className="history-select" type="checkbox" checked={selected.has(String(row.series_id))} disabled={batchRemoving || !!removing || !!opening || !!checkingRow} aria-label={`选择观看记录《${row.series_title}》`} onChange={() => toggleSelected(row.series_id)} />
+      <button className="history-resume" onClick={() => resume(row)} disabled={!active || !!opening || !!removing || batchRemoving} aria-label={`继续观看 ${row.series_title} 第${row.vid_index}集${row.hasUpdates ? `，有更新${row.unreadEpisodes ? `，新增${row.unreadEpisodes}集` : '，发现疑似续作'}` : ''}`}>
         {row.cover ? <img className="history-cover" src={row.cover} alt="" loading="lazy" /> : <span className="history-cover history-cover-empty"><Play size={20} /></span>}
         <span className="history-copy">
           <span className="history-name">{row.completed && <span className="history-completed">已看完 · </span>}{row.hasUpdates && <span className="history-dot" role="img" aria-label="有更新" />}{row.series_title}</span>
@@ -207,10 +281,10 @@ export default function WatchHistory({ active = true, onNavigate }) {
         {groupById.get(row.series_id)?.length > 1 && groupById.get(row.series_id)[0] === row && <button className="btn btn-outline btn-sm" aria-expanded={!hideLowSeasons || !!expanded[row.series_id]} onClick={() => { if (!hideLowSeasons) savePreferences({ ...preferences, hideLowSeasons: true }); setExpanded(value => ({ ...value, [row.series_id]: hideLowSeasons ? !value[row.series_id] : false })); }}>{!hideLowSeasons || expanded[row.series_id] ? '折叠' : '展开'} {groupById.get(row.series_id).length} 季</button>}
         {groupById.get(row.series_id)?.length > 1 && <button className="btn btn-outline btn-sm" onClick={() => decide(row.series_id, null)}>移出分组</button>}
         {Object.hasOwn(decisions, row.series_id) && <button className="btn btn-outline btn-sm" onClick={() => decide(row.series_id, undefined)}>恢复自动分组</button>}
-        <button type="button" className="btn btn-outline btn-sm history-check" disabled={checking || !!checkingRow || !!removing || !!opening} aria-label={`检测《${row.series_title}》的更新`} title="只检测这一条观看记录" onClick={() => checkRow(row)}>
+        <button type="button" className="btn btn-outline btn-sm history-check" disabled={checking || !!checkingRow || !!removing || !!opening || batchRemoving} aria-label={`检测《${row.series_title}》的更新`} title="只检测这一条观看记录" onClick={() => checkRow(row)}>
           <RefreshCw size={14} className={checkingRow === row.series_id ? 'spin' : ''} />{checkingRow === row.series_id ? '检测中…' : '检测'}
         </button>
-        <button type="button" className="btn btn-outline btn-sm history-remove" disabled={!!removing || !!opening || !!checkingRow} aria-label={`移除观看记录《${row.series_title}》`} title="仅移除观看记录，不删除视频文件" onClick={() => remove(row)}>{removing === row.series_id ? '移除中…' : '移除'}</button>
+        <button type="button" className="btn btn-outline btn-sm history-remove" disabled={!!removing || !!opening || !!checkingRow || batchRemoving} aria-label={`移除观看记录《${row.series_title}》`} title="仅移除观看记录，不删除视频文件" onClick={() => remove(row)}>{removing === row.series_id ? '移除中…' : '移除'}</button>
       </div>
       </div>
       {!!row.sequels?.length && <div className="history-sequels"><span>疑似续作</span>{row.sequels.map(sequel => <button key={sequel.series_id} className="btn btn-outline btn-sm" disabled={!active || !!opening || !!removing} onClick={() => resume(row, sequel)}>{sequel.series_title}</button>)}</div>}
@@ -222,5 +296,17 @@ export default function WatchHistory({ active = true, onNavigate }) {
       {row.lastSequelCheckError && <p className="history-check-error">续作检查未完成：{row.lastSequelCheckError}</p>}
       {!row.lastEpisodeCheckError && !row.lastSequelCheckError && row.lastCheckError && <p className="history-check-error">更新检查未完成：{row.lastCheckError}</p>}
     </li>)}</ul>}
+    {confirmBatchRemove && selected.size > 0 && (
+      <div className="history-confirm-mask" onClick={() => !batchRemoving && setConfirmBatchRemove(false)}>
+        <div className="history-confirm" role="dialog" aria-modal="true" aria-labelledby="history-confirm-title" onClick={event => event.stopPropagation()}>
+          <div className="history-confirm-title" id="history-confirm-title"><Trash2 size={17} />移除观看记录</div>
+          <p>确定移除已选的 {selected.size} 条观看记录吗？视频文件、下载任务和本地剧库不会受影响。</p>
+          <div className="history-confirm-foot">
+            <button type="button" className="btn btn-outline" onClick={() => setConfirmBatchRemove(false)} disabled={batchRemoving}>取消</button>
+            <button type="button" className="btn btn-danger-solid" onClick={removeSelected} disabled={batchRemoving}>{batchRemoving ? '移除中…' : '确认移除'}</button>
+          </div>
+        </div>
+      </div>
+    )}
   </section>;
 }

@@ -1,6 +1,6 @@
 # 第三方组件许可说明
 
-适用源码版本：红果短剧 6.4（release: 6.4）；本轮升级了 axios 的传递依赖 follow-redirects 至 1.16.2、构建期 fast-uri 至 3.1.9，并把 joi 覆盖提升至 17.13.9 以消除已知安全公告；构建期 Vite 升至 6.4.5、esbuild 升至 0.25.12，并对 electron-builder 内部的 minimatch 做定向覆盖至 11.0.5（glob@7 与 filelist 保留其兼容版本）。其余组件版本、作者与许可保持原样。正式发行仅维护 Windows x64；实际状态见 `docs/release-6.4.md`。
+适用源码版本：红果短剧 6.5（release: 6.5）；6.5 未新增运行时依赖，沿用 6.4 已完成的 axios 传递依赖 follow-redirects 1.16.2、构建期 fast-uri 3.1.9、joi 17.13.9、Vite 6.4.5、esbuild 0.25.12 与 electron-builder 内部 minimatch 11.0.5 定向覆盖（glob@7 与 filelist 保留其兼容版本）。其余组件版本、作者与许可保持原样。正式发行仅维护 Windows x64；实际状态见 `docs/release-6.5.md`。
 
 本软件（红果短剧下载器）使用了以下第三方组件。各组件的版权归其各自作者所有，
 本软件对这些组件的使用均遵循其原始许可证。

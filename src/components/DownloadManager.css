@@ -539,3 +539,43 @@
 
 /* 更多操作菜单 */
 .dm-more-menu { border: 1px solid var(--border-muted); border-radius: var(--radius-lg); }
+
+/* 选中任务的批量操作条 */
+.dm-selection-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 14px 0 2px;
+  padding: 10px 12px;
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius-lg);
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 18px rgba(var(--accent-rgb, 120, 120, 255), .04);
+}
+
+.dm-selection-info,
+.dm-selection-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dm-selection-info {
+  color: var(--accent-text);
+  font-size: var(--fs-sm);
+  white-space: nowrap;
+}
+
+.dm-selection-info svg { color: var(--accent); }
+.dm-selection-info span { color: var(--text-tertiary); font-size: var(--fs-xs); }
+.dm-selection-actions { flex-wrap: wrap; }
+.dm-selection-actions .btn { min-height: 30px; }
+
+@media (max-width: 620px) {
+  .dm-selection-bar { align-items: stretch; }
+  .dm-selection-info,
+  .dm-selection-actions { width: 100%; }
+  .dm-selection-actions .btn { flex: 1 1 auto; }
+}

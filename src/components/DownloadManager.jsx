@@ -300,8 +300,11 @@ function DownloadManager({ onNavigate, active = true }) {
     askDelete(tasks.filter((t) => selected.has(t.id)), '删除选中任务');
   };
   const retrySelected = async () => {
-    if (selected.size === 0) return;
-    const res = await window.electronAPI.retryTasks(Array.from(selected));
+    const ids = tasks
+      .filter((task) => selected.has(task.id) && (task.status === 'failed' || task.status === 'stopped'))
+      .map((task) => task.id);
+    if (ids.length === 0) return;
+    const res = await window.electronAPI.retryTasks(ids);
     setSelected(new Set());
     await refresh();
     if (res && res.success) {
@@ -309,6 +312,23 @@ function DownloadManager({ onNavigate, active = true }) {
     } else {
       showToast((res && res.error) || '重试失败', 'error');
     }
+  };
+  const stopSelected = async () => {
+    const stoppable = tasks.filter((task) => selected.has(task.id) && (
+      task.status === 'downloading' || task.status === 'pending' || isWaitingRetry(task)
+    ));
+    if (stoppable.length === 0) return;
+    try {
+      const results = await Promise.allSettled(stoppable.map((task) => window.electronAPI.stopDownload(task.id)));
+      const failed = results.filter((result) => result.status === 'rejected' || !result.value?.success).length;
+      await Promise.all([refresh(), loadQueue()]);
+      showToast(
+        failed > 0
+          ? `已停止 ${stoppable.length - failed} 项，${failed} 项停止失败`
+          : `已停止 ${stoppable.length} 项`,
+        failed > 0 ? 'error' : 'success'
+      );
+    } catch (error) { showToast(error.message || '批量停止失败', 'error'); }
   };
 
   // 一键合并选中的短剧
@@ -457,12 +477,26 @@ function DownloadManager({ onNavigate, active = true }) {
     [tasks]
   );
 
+  const selectedTaskCount = useMemo(
+    () => tasks.filter((task) => selected.has(task.id)).length,
+    [tasks, selected]
+  );
+
   // 已选中项里真正可重试的数量
   const retryableSelectedCount = useMemo(
     () =>
       Array.from(selected).filter((id) => {
         const t = taskById.get(id);
         return t && (t.status === 'failed' || t.status === 'stopped');
+      }).length,
+    [selected, taskById]
+  );
+
+  const stoppableSelectedCount = useMemo(
+    () =>
+      Array.from(selected).filter((id) => {
+        const t = taskById.get(id);
+        return t && (t.status === 'downloading' || t.status === 'pending' || isWaitingRetry(t));
       }).length,
     [selected, taskById]
   );
@@ -526,16 +560,9 @@ function DownloadManager({ onNavigate, active = true }) {
           <CheckSquare size={15} />
           {failedCount > 0 ? `选中失败项 (${failedCount})` : '选中失败项'}
         </button>
-        <button className="btn btn-outline" onClick={retrySelected} disabled={retryableSelectedCount === 0}>
-          <RefreshCw size={15} />
-          重试选中 ({retryableSelectedCount})
-        </button>
         <button className="btn btn-outline" onClick={clearCompleted} disabled={completedCount === 0}>
           <X size={15} />
           清空已完成
-        </button>
-        <button className="btn btn-outline" onClick={clearSelection} disabled={selected.size === 0}>
-          取消选择
         </button>
         <button
           className="btn btn-outline"
@@ -581,6 +608,33 @@ function DownloadManager({ onNavigate, active = true }) {
           </button>
         )}
       </div>
+
+      {selectedTaskCount > 0 && (
+        <div className="dm-selection-bar" role="region" aria-label="已选下载任务操作">
+          <div className="dm-selection-info">
+            <CheckSquare size={16} />
+            <b>已选 {selectedTaskCount} 项</b>
+            <span>跨分页保留选择</span>
+          </div>
+          <div className="dm-selection-actions">
+            <button className="btn btn-outline btn-sm" onClick={stopSelected} disabled={stoppableSelectedCount === 0}
+              title="停止选中的下载中、等待中和自动重试任务">
+              <Square size={14} />停止选中{stoppableSelectedCount > 0 ? ` (${stoppableSelectedCount})` : ''}
+            </button>
+            <button className="btn btn-outline btn-sm" onClick={retrySelected} disabled={retryableSelectedCount === 0}
+              title="重新排队选中的失败或已停止任务">
+              <RefreshCw size={14} />重试选中{retryableSelectedCount > 0 ? ` (${retryableSelectedCount})` : ''}
+            </button>
+            <button className="btn btn-outline btn-sm" onClick={deleteSelected}
+              title="删除选中的任务，确认时可选择是否同时删除本地文件">
+              <Trash2 size={14} />删除选中
+            </button>
+            <button className="btn btn-outline btn-sm" onClick={clearSelection}>
+              <X size={14} />取消选择
+            </button>
+          </div>
+        </div>
+      )}
 
       {seriesList.length > 0 && <p className="settings-hint dm-merge-hint">选择剧名后点“合并整部剧”，导出该剧全部已下载分集，无需勾选任务。</p>}
 

@@ -446,7 +446,10 @@ select.input-field:focus { border-color: var(--accent); box-shadow: 0 0 0 3px va
 }
 
 /* ============ 竖屏布局 ============ */
-.toolbar-actions { display: flex; align-items: center; gap: 16px; }
+.toolbar-actions { display: flex; align-items: center; gap: 16px; min-width: 0; }
+.toolbar-more { display: contents; position: relative; -webkit-app-region: no-drag; }
+.toolbar-more-trigger { display: none; }
+.toolbar-more-menu { display: contents; }
 .layout-toggle { -webkit-app-region: no-drag; }
 .compact-navigation { display: none; }
 .layout-portrait .sidebar { display: none; }
@@ -511,6 +514,55 @@ select.input-field:focus { border-color: var(--accent); box-shadow: 0 0 0 3px va
 .layout-portrait .toolbar-actions .btn { flex-shrink: 0; }
 .layout-portrait .toolbar-actions .pin-toggle { width: 30px; padding-inline: 5px; }
 .toolbar-actions .portrait-episodes-toggle[aria-expanded="true"] { background: var(--accent-soft); color: var(--accent-text); }
+.toolbar-action-label { display: none; }
+
+@media (max-width: 900px) {
+  .window-toolbar { gap: 8px; }
+  .toolbar-location { overflow: hidden; text-overflow: ellipsis; }
+  .toolbar-search { flex: 0 1 190px; width: min(190px, 24vw); min-width: 44px; }
+  .toolbar-actions { gap: 6px; flex-shrink: 0; }
+  .toolbar-caption { display: none; }
+  .toolbar-more { display: block; position: relative; }
+  .toolbar-more-trigger {
+    display: inline-flex; align-items: center; justify-content: center; gap: 5px;
+    min-width: 34px; height: 30px; padding: 0 8px;
+    border: 1px solid var(--border); border-radius: 7px;
+    background: var(--bg-input); color: var(--text-secondary);
+    cursor: pointer; -webkit-app-region: no-drag;
+    transition: border-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out);
+  }
+  .toolbar-more-trigger:hover, .toolbar-more-trigger:focus-visible, .toolbar-more.is-open .toolbar-more-trigger {
+    border-color: var(--accent); color: var(--accent-text); background: var(--accent-soft); box-shadow: var(--glow-primary);
+  }
+  .toolbar-more-menu {
+    position: absolute; z-index: 60; top: calc(100% + 8px); right: 0;
+    display: flex; flex-direction: column; align-items: stretch; gap: 4px;
+    min-width: 152px; max-width: min(240px, calc(100vw - 24px)); padding: 7px;
+    border: 1px solid var(--border); border-radius: var(--radius-lg);
+    background: var(--bg-elevated); box-shadow: var(--shadow-lg);
+    -webkit-app-region: no-drag;
+  }
+  :root[data-theme="dark"] .toolbar-more-menu { background: var(--glass-bg); border-color: var(--glass-border); backdrop-filter: blur(22px); -webkit-backdrop-filter: blur(22px); }
+  .toolbar-more:not(.is-open) .toolbar-more-menu { display: none; }
+  .toolbar-more-menu > .btn {
+    display: flex; align-items: center; justify-content: flex-start; width: 100%; min-height: 32px;
+    padding: 7px 9px; border-color: transparent; text-align: left; white-space: nowrap;
+  }
+  .toolbar-more-menu > .btn:hover, .toolbar-more-menu > .btn:focus-visible { border-color: var(--border); background: var(--bg-inset); }
+  .toolbar-more-menu > .pin-toggle { width: 100%; padding-inline: 9px; }
+  .toolbar-more-menu > .pin-toggle svg { flex-shrink: 0; }
+  .toolbar-more-menu > .pin-toggle .toolbar-action-label { display: inline; margin-left: 8px; }
+  .layout-portrait .toolbar-more-trigger span { display: none; }
+}
+
+@media (max-width: 620px) {
+  .window-toolbar { padding-inline: 10px; gap: 5px; }
+  .toolbar-search { width: 36px; flex: 0 0 36px; padding: 0; justify-content: center; }
+  .toolbar-search span, .toolbar-search kbd { display: none; }
+  .toolbar-location { min-width: 0; }
+  .toolbar-more-trigger { padding-inline: 7px; }
+  .toolbar-more-trigger span { display: none; }
+}
 
 /* ===== 自定义标题栏外壳（Windows 无边框窗口）：补偿最大化溢出，macOS 不渲染 TitleBar ===== */
 .app-shell { position: relative; z-index: 1; display: flex; flex-direction: column; height: 100vh; }

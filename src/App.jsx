@@ -31,6 +31,50 @@ function PanelLeftIcon({ size = 16 }) {
   </svg>;
 }
 
+function MoreIcon({ size = 16 }) {
+  return <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+    <circle cx="5" cy="12" r="1.7" /><circle cx="12" cy="12" r="1.7" /><circle cx="19" cy="12" r="1.7" />
+  </svg>;
+}
+
+function ToolbarMore({ children }) {
+  const [open, setOpen] = useState(false);
+  const root = useRef(null);
+  const trigger = useRef(null);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const outside = event => { if (!root.current?.contains(event.target)) setOpen(false); };
+    const onKeyDown = event => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setOpen(false);
+        trigger.current?.focus();
+      }
+    };
+    document.addEventListener('pointerdown', outside);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', outside);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [open]);
+
+  return <div className={`toolbar-more ${open ? 'is-open' : ''}`} ref={root}
+    onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false); }}>
+    <button type="button" className="toolbar-more-trigger" ref={trigger}
+      aria-label="更多窗口与播放操作" aria-haspopup="true" aria-expanded={open}
+      aria-controls={open ? 'toolbar-more-menu' : undefined} title="更多操作"
+      onClick={() => setOpen(value => !value)}>
+      <MoreIcon size={17} /><span>更多</span>
+    </button>
+    <div id="toolbar-more-menu" className="toolbar-more-menu" role="group" aria-label="窗口与播放操作"
+      onClick={event => { if (event.target.closest('button')) setOpen(false); }}>
+      {children}
+    </div>
+  </div>;
+}
+
 const MENU = [
   { id: 'browse', label: '发现短剧', icon: Home },
   { id: 'feed', label: '热播推荐', icon: Film },
@@ -259,24 +303,26 @@ export default function App() {
           </button>
           <div className="toolbar-actions">
             <span className="toolbar-caption">{appInfo?.preview ? '功能预览' : '红果短剧'}</span>
-            {page === 'player' && <button className="btn btn-outline btn-sm" onClick={() => { setEpisodesOpen(false); toggleStealth(true); }} title="小窗置顶播放并在支持的系统上跨虚拟桌面可见；鼠标移开时暂停隐藏，移回继续；Esc 退出">小窗模式</button>}
-            {page === 'player' && layout === 'portrait' && <button className="btn btn-outline btn-sm portrait-episodes-toggle" aria-expanded={episodesOpen}
-              aria-controls="player-episode-panel" onClick={() => setEpisodesOpen(open => !open)}>{episodesOpen ? '收起选集' : '选集'}</button>}
-            {page === 'player' && <button className="btn btn-outline btn-sm player-actions-toggle" aria-pressed={actionsHidden || borderless && layout === 'portrait'}
-              onClick={() => {
-                if (borderless && layout === 'portrait') { setBorderless(false); setActionsHidden(false); }
-                else setActionsHidden(hidden => !hidden);
-              }}>{actionsHidden || borderless && layout === 'portrait' ? '显示按钮' : '隐藏按钮'}</button>}
-            {page === 'player' && layout === 'portrait' && <button className="btn btn-outline btn-sm borderless-toggle" aria-pressed={borderless}
-              onClick={() => setBorderless(value => !value)}>{borderless ? '恢复边框' : '去掉边框'}</button>}
-            <button className="btn btn-outline btn-sm pin-toggle" aria-pressed={alwaysOnTop} disabled={pinBusy}
-              aria-label={alwaysOnTop ? '取消置顶' : '置顶'} title={alwaysOnTop ? '取消置顶' : '置顶'}
-              onClick={async () => {
-                setPinBusy(true);
-                try { setAlwaysOnTop(await window.electronAPI.setAlwaysOnTop(!alwaysOnTop)); }
-                catch { setStorageError('置顶切换失败，请重试。'); }
-                finally { setPinBusy(false); }
-              }}><svg width="17" height="17" viewBox="0 0 24 24" fill={alwaysOnTop ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M8 3h8l-1 6 4 4v2H5v-2l4-4-1-6Z" /><path d="M12 15v6" /></svg></button>
+            {page === 'player' && <ToolbarMore>
+              <button className="btn btn-outline btn-sm" onClick={() => { setEpisodesOpen(false); toggleStealth(true); }} title="小窗置顶播放并在支持的系统上跨虚拟桌面可见；鼠标移开时暂停隐藏，移回继续；Esc 退出">小窗模式</button>
+              {layout === 'portrait' && <button className="btn btn-outline btn-sm portrait-episodes-toggle" aria-expanded={episodesOpen}
+                aria-controls="player-episode-panel" onClick={() => setEpisodesOpen(open => !open)}>{episodesOpen ? '收起选集' : '选集'}</button>}
+              <button className="btn btn-outline btn-sm player-actions-toggle" aria-pressed={actionsHidden || borderless && layout === 'portrait'}
+                onClick={() => {
+                  if (borderless && layout === 'portrait') { setBorderless(false); setActionsHidden(false); }
+                  else setActionsHidden(hidden => !hidden);
+                }}>{actionsHidden || borderless && layout === 'portrait' ? '显示按钮' : '隐藏按钮'}</button>
+              {layout === 'portrait' && <button className="btn btn-outline btn-sm borderless-toggle" aria-pressed={borderless}
+                onClick={() => setBorderless(value => !value)}>{borderless ? '恢复边框' : '去掉边框'}</button>}
+              <button className="btn btn-outline btn-sm pin-toggle" aria-pressed={alwaysOnTop} disabled={pinBusy}
+                aria-label={alwaysOnTop ? '取消置顶' : '置顶'} title={alwaysOnTop ? '取消置顶' : '置顶'}
+                onClick={async () => {
+                  setPinBusy(true);
+                  try { setAlwaysOnTop(await window.electronAPI.setAlwaysOnTop(!alwaysOnTop)); }
+                  catch { setStorageError('置顶切换失败，请重试。'); }
+                  finally { setPinBusy(false); }
+                }}><svg width="17" height="17" viewBox="0 0 24 24" fill={alwaysOnTop ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M8 3h8l-1 6 4 4v2H5v-2l4-4-1-6Z" /><path d="M12 15v6" /></svg><span className="toolbar-action-label">{alwaysOnTop ? '取消置顶' : '置顶'}</span></button>
+            </ToolbarMore>}
             <button className="btn btn-outline btn-sm layout-toggle" onClick={toggleLayout}
               disabled={layoutBusy} aria-pressed={layout === 'portrait'}
               aria-label={layout === 'portrait' ? '切换横屏版' : '切换竖屏版'}
