@@ -1,6 +1,6 @@
 # 红果短剧 6.5
 
-状态：候选源码发行目标（内部版本 `6.5.0`，标签 `v6.5`）。发布日期：2026-11-08。Release：https://github.com/yuchen0x1/HongGuo-PC/releases/tag/v6.5。仅维护 Windows x64；Windows EXE 未配置代码签名。
+状态：已正式发布（内部版本 `6.5.0`，标签 `v6.5`），冻结源码 `aece55a47fcbf0afa95e7b4c2bc5019c42f738b5`。发布日期：2026-11-08。Release：https://github.com/yuchen0x1/HongGuo-PC/releases/tag/v6.5。仅维护 Windows x64；Windows EXE 未配置代码签名。
 
 ## 主要变化
 
@@ -54,6 +54,13 @@
 - `hongguo-downloader-6.5-windows-source.zip`
 - FFmpeg 对应源码归档
 - `WINDOWS-SHA256SUMS.txt`
+
+## 发布回执
+
+- 源码 Test：https://github.com/yuchen0x1/HongGuo-PC/actions/runs/42427233137，成功，绑定冻结提交 `aece55a47fcbf0afa95e7b4c2bc5019c42f738b5`。
+- Windows x64 候选：https://github.com/yuchen0x1/HongGuo-PC/actions/runs/42427233117，成功，绑定冻结提交；包含媒体、Windows 构建、便携启动、全新安装、同版本重装和真实 1.80 升级资料保留检查。
+- 发布流水线：https://github.com/yuchen0x1/HongGuo-PC/actions/runs/42428277735，成功；已下载候选资产、核对 `WINDOWS-SHA256SUMS.txt`、上传全部附件并验证 Release 公开。
+- GitHub Release `v6.5` 已公开，共 8 项资产：安装包、便携 EXE、便携 ZIP、blockmap、`latest.yml`、源码 ZIP、FFmpeg 对应源码归档和 SHA-256 清单。
 
 ## 限制
 
