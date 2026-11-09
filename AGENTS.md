@@ -69,10 +69,11 @@
 - 5.4 已正式发布；冻结源码与三端验证回执见 `docs/release-5.4.md`。未替换本机正式安装。
 
 
-## 6.6 发行目标
+## 6.6 发行
 
 - 修复浅色模式下外观与海报大小下拉框仍残留深色样式的问题；深色 Cyber HUD 输入样式仅在深色主题启用。
-- 6.6 当前为源码发行目标，已完成本地源码、测试与 Windows x64 安装包构建，但尚未创建提交、标签或 GitHub Release；验证与限制见 `docs/release-6.6.md`。
+- 6.6 已正式发布，标签 `v6.6`，冻结源码 `1c05226a098fbfd65a44234135c64e6798daf5de`；仅发布和维护 Windows x64。
+- 源码 Test、Windows x64 release candidate 与统一发布流水线均成功，GitHub Release 共 8 项资产；验证与限制见 `docs/release-6.6.md`。
 
 ## 6.5 发行
 

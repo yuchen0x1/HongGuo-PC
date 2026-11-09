@@ -1,6 +1,6 @@
 # 红果短剧 6.6
 
-状态：源码发行目标（内部版本 `6.6.0`，预期标签 `v6.6`）。本版修复浅色主题下的深色控件残留问题，正式发行仅维护 Windows x64。当前工作区已完成修复与验证，尚未创建提交、标签或 GitHub Release。
+状态：已正式发布（内部版本 `6.6.0`，标签 `v6.6`，冻结源码 `1c05226a098fbfd65a44234135c64e6798daf5de`）。发布日期：2026-11-09。Release：https://github.com/yuchen0x1/HongGuo-PC/releases/tag/v6.6。仅维护 Windows x64。
 
 ## 修复内容
 
@@ -20,8 +20,25 @@
 - `npx electron-builder --win --x64 --publish never --config.directories.output=dist-6.6`：通过，生成 6.6.0 Windows x64 安装包；使用独立输出目录避开旧版 `dist/win-unpacked` 清理保护。
 - `npm audit`：本轮未执行。
 
-## 发布边界
+## Windows 发行资产
 
-- 本版尚未创建 `v6.6` 标签或 GitHub Release。
-- Windows x64 安装包与便携版需通过现有候选构建和发布流水线生成。
-- Windows EXE 当前仍不配置代码签名。
+正式 Release 共 8 项资产：
+
+- `hongguo-downloader-6.6-win-x64-setup.exe` 与 `.blockmap`
+- `hongguo-downloader-6.6-win-x64.exe` 与 `.zip`（便携版）
+- `latest.yml`
+- `hongguo-downloader-6.6-windows-source.zip`
+- `ffmpeg-9.0.2-x264-b35605a-win-x64-corresponding-source.tar.gz`
+- `WINDOWS-SHA256SUMS.txt`
+
+## 发布回执
+
+- 标签对应源码 Test：https://github.com/yuchen0x1/HongGuo-PC/actions/runs/42572194121，成功。
+- Windows x64 release candidate：https://github.com/yuchen0x1/HongGuo-PC/actions/runs/42572194210，成功；源码检查、FFmpeg 解析、便携构建、安装/重装、真实 1.80 升级资料保留检查及资产组装均通过。
+- 发布流水线：https://github.com/yuchen0x1/HongGuo-PC/actions/runs/42574696892，成功；已校验总 SHA-256 清单、上传 8 项资产并公开 Release。
+- GitHub Release `v6.6` 已公开：https://github.com/yuchen0x1/HongGuo-PC/releases/tag/v6.6。
+
+## 限制
+
+- Windows 安装器及便携 EXE 未签名，SmartScreen 可能提示未知发布者。
+- macOS 不属于 6.6 或未来发行范围。
