@@ -89,3 +89,22 @@ memory.set('hongguo-experience-preview:poster-size', 'invalid');
 initializePosterSize();
 assert.equal(dataset.posterSize, 'standard', 'invalid stored values fall back safely');
 console.log('PASS poster size: presets, startup restore, invalid values and failed saves');
+
+const themeCss = postcss.parse(fs.readFileSync(path.join(sourceRoot, 'index.css'), 'utf8'));
+const darkInputSelectors = [];
+const darkFocusSelectors = [];
+themeCss.walkRules(rule => {
+  if (rule.selector === ':root[data-theme="dark"] .input-field') darkInputSelectors.push(rule);
+  if (rule.selector === ':root[data-theme="dark"] .input-field:focus') darkFocusSelectors.push(rule);
+  const isInputRule = rule.selector.split(',').some(selector => selector.trim().endsWith('.input-field') || selector.trim().includes('.input-field:'));
+  if (!isInputRule) return;
+  const isDarkInputRule = rule.selector.split(',').every(selector => selector.trim().startsWith(':root[data-theme="dark"]'));
+  rule.walkDecls(declaration => {
+    if (declaration.value.includes('rgba(13, 17, 25') || declaration.value.includes('rgba(16, 21, 32') || declaration.value.includes('rgba(255, 255, 255, .12)')) {
+      assert(isDarkInputRule, `dark-only input styling must be scoped to the dark theme: ${rule.selector}`);
+    }
+  });
+});
+assert.equal(darkInputSelectors.length, 1, 'Cyber input surface is scoped to dark theme');
+assert.equal(darkFocusSelectors.length, 1, 'Cyber input focus styling is scoped to dark theme');
+console.log('PASS theme CSS: Cyber input surfaces and focus styles are dark-theme only');

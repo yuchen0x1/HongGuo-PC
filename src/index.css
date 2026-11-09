@@ -643,6 +643,7 @@ select.input-field:focus { border-color: var(--accent); box-shadow: 0 0 0 3px va
 }
 
 /* 3. 科技按钮与输入框：外发光呼吸与 HUD 聚焦点 */
+/* Cyber HUD 的深色输入面只在深色主题启用，避免浅色主题残留黑色控件。 */
 .btn-primary, .btn-chip-primary {
   position: relative;
   overflow: hidden;
@@ -666,13 +667,13 @@ select.input-field:focus { border-color: var(--accent); box-shadow: 0 0 0 3px va
   box-shadow: 0 4px 22px rgba(255, 48, 79, .6), 0 0 12px rgba(255, 48, 79, .4);
 }
 
-.input-field {
+:root[data-theme="dark"] .input-field {
   background: rgba(13, 17, 25, .75);
   backdrop-filter: blur(10px);
   border: 1px solid rgba(255, 255, 255, .12);
-  transition: all .2s var(--ease-out);
+  transition: background .2s var(--ease-out), border-color .2s var(--ease-out), box-shadow .2s var(--ease-out);
 }
-.input-field:focus {
+:root[data-theme="dark"] .input-field:focus {
   border-color: #ff304f;
   background: rgba(16, 21, 32, .9);
   box-shadow: 0 0 0 3px rgba(255, 48, 79, .22), 0 0 16px rgba(255, 48, 79, .18);
@@ -725,5 +726,49 @@ select.input-field:focus { border-color: var(--accent); box-shadow: 0 0 0 3px va
   border-color: #ff304f !important;
   background: linear-gradient(135deg, rgba(255, 48, 79, .22), rgba(255, 48, 79, .06)) !important;
   box-shadow: 0 0 16px rgba(255, 48, 79, .3), inset 0 0 8px rgba(255, 48, 79, .15) !important;
+}
+
+/* 浅色主题覆盖：Cyber HUD 视觉层不能把深色输入面带入浅色界面。 */
+:root:not([data-theme="dark"]) .toolbar-search {
+  background: var(--bg-input);
+  border-color: var(--border);
+  box-shadow: none;
+}
+:root:not([data-theme="dark"]) .toolbar-search:hover {
+  border-color: var(--border-strong);
+  box-shadow: none;
+}
+:root:not([data-theme="dark"]) .toolbar-search:focus-visible {
+  border-color: var(--accent);
+  box-shadow: var(--glow-primary);
+}
+:root:not([data-theme="dark"]) .toolbar-search kbd {
+  background: var(--bg-inset);
+  border-color: var(--border-muted);
+  color: var(--text-tertiary);
+  box-shadow: none;
+}
+:root:not([data-theme="dark"]) .input-field {
+  background: var(--bg-input);
+  border-color: var(--border-strong);
+  backdrop-filter: none;
+  transition: background .2s var(--ease-out), border-color .2s var(--ease-out), box-shadow .2s var(--ease-out);
+}
+:root:not([data-theme="dark"]) .input-field:focus {
+  border-color: var(--accent);
+  background: var(--bg-input);
+  box-shadow: 0 0 0 3px var(--focus-soft);
+}
+:root:not([data-theme="dark"]) .command-palette {
+  background: var(--bg-elevated) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  border-color: var(--border) !important;
+  box-shadow: var(--shadow-lg) !important;
+}
+:root:not([data-theme="dark"]) .ep-chip {
+  background: var(--bg-elevated);
+  border-color: var(--border);
+  backdrop-filter: none;
 }
 
