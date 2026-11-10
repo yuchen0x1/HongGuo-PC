@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const http = require('node:http');
+require('./fixtures/direct-http.cjs'); // 本地回环回归必须直连，见文件内说明
 const nativeDir = path.join(__dirname, '../src/native');
 const playbackDevice = Object.freeze({ device_id: '7000000000000000001', iid: '7000000000000000002', cdid: '00000000-0000-4000-8000-000000000003' });
 const media = name => `https://v3-reading.qznovelvod.com/${name}.mp4`;

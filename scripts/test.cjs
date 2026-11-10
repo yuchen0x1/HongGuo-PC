@@ -17,8 +17,14 @@ const skip = new Set([
   'check-danmaku-live.cjs',
 ]);
 
+// 本地回环回归必须直连：继承的终端/系统代理会把请求以 absolute-form 转发回
+// 测试服务器，使 req.url 变成完整 URL、路径匹配失效（表现为与代理环境相关的假失败）。
+const childEnv = { ...process.env };
+for (const name of ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy']) delete childEnv[name];
+childEnv.NO_PROXY = '*'; childEnv.no_proxy = '*';
+
 function run(args) {
-  const result = spawnSync(process.execPath, args, { cwd: root, stdio: 'inherit' });
+  const result = spawnSync(process.execPath, args, { cwd: root, stdio: 'inherit', env: childEnv });
   if (result.status !== 0) {
     console.error(`FAIL node ${args.join(' ')}`);
     process.exitCode = result.status || 1;

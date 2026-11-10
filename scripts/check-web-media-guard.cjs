@@ -8,6 +8,7 @@ const https = require('node:https');
 const os = require('node:os');
 const { EventEmitter } = require('node:events');
 const { createRequire } = require('node:module');
+require('./fixtures/direct-http.cjs'); // 本地回环回归必须直连，见文件内说明
 const nativePath = path.resolve(__dirname, '../src/native/hongguo.js');
 const req = createRequire(nativePath);
 const guardPath = path.join(path.dirname(nativePath), 'web-media-guard.js');

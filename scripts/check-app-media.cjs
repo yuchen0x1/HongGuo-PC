@@ -7,6 +7,7 @@ const vm = require('node:vm');
 const http = require('node:http');
 const { EventEmitter } = require('node:events');
 const { createRequire } = require('node:module');
+require('./fixtures/direct-http.cjs'); // 本地回环回归必须直连，见文件内说明
 const source = path.resolve(__dirname, '../main.js'), req = createRequire(source);
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hongguo-app-media-'));
 const contentKey = '01'.repeat(16); // Synthetic test key, never a captured credential.

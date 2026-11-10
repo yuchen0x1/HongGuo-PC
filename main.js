@@ -2303,10 +2303,14 @@ function collectSeriesEpisodeFiles(seriesId, seriesTitle) {
       const full = path.join(dir, name);
       if (ownsEpisodeFiles(full, tasks)) episodePaths.add(full);
     }
+    const scanTitle = sanitizeFolderName(seriesTitle);
     for (const n of names) {
       if (!/\.mp4$/i.test(n) || n.includes('合集')) continue;
       const m = !sharedDirectory && n.match(/(\d{1,4})\.mp4$/i);
-      const idx = episodeNames.get(n) || (m ? parseInt(m[1], 10) : 0);
+      // 目录兜底只认能证明属于本剧的文件：模板精确命中，或文件名含本剧标题。
+      // 否则「花絮2.mp4」会被当成第 2 集，参与合并或被「看完自动删除」误删。
+      const titled = !!scanTitle && sanitizeFolderName(n).includes(scanTitle);
+      const idx = episodeNames.get(n) || (m && titled ? parseInt(m[1], 10) : 0);
       if (!idx || byIndex.has(idx)) continue;
       const full = path.join(dir, n);
       if (registeredPaths.has(full) || !ownsEpisodeFiles(full, tasks)) continue;
@@ -4470,11 +4474,23 @@ async function saveSettings(settings) {
   }
 }
 
+// 退出前必须等这些维护操作落盘：删除文件后立即退出会留下「文件已删、任务记录还在」的错位。
+const maintenanceOps = new Set();
+function trackMaintenance(promise) {
+  let tracked;
+  tracked = Promise.resolve(promise).finally(() => maintenanceOps.delete(tracked));
+  maintenanceOps.add(tracked);
+  return tracked;
+}
+
 let settingsSaveQueue = Promise.resolve();
+// 只在真正有保存请求在途时计入退出等待；否则恒定存在的已决 promise 会让每次退出都走清理路径。
+let settingsSaving = 0;
 ipcMain.handle('save-settings', (_event, settings) => {
+  settingsSaving++;
   const result = settingsSaveQueue.then(() => saveSettings(settings));
   settingsSaveQueue = result.catch(() => {});
-  return result;
+  return result.finally(() => { settingsSaving--; });
 });
 
 // ===== IPC：网络代理 =====
@@ -4734,7 +4750,7 @@ async function deleteSeriesFiles(seriesId, options) {
   }
 }
 
-ipcMain.handle('delete-series-files', (_event, seriesId, options) => deleteSeriesFiles(seriesId, options));
+ipcMain.handle('delete-series-files', (_event, seriesId, options) => trackMaintenance(deleteSeriesFiles(seriesId, options)));
 
 /** 删除单集本地文件（看完即删用） */
 async function deleteEpisodeFile(seriesId, vidIndex) {
@@ -4761,7 +4777,7 @@ async function deleteEpisodeFile(seriesId, vidIndex) {
   }
 }
 
-ipcMain.handle('delete-episode-file', (_event, seriesId, vidIndex) => deleteEpisodeFile(seriesId, vidIndex));
+ipcMain.handle('delete-episode-file', (_event, seriesId, vidIndex) => trackMaintenance(deleteEpisodeFile(seriesId, vidIndex)));
 
 /** 前端先释放看完的媒体；只清本集，不影响预缓存的下一集。 */
 ipcMain.handle('cleanup-watched-episode', async (_event, seriesId, vidIndex) => {
@@ -5490,7 +5506,8 @@ app.on('before-quit', event => {
   if (quitCleanup) { event.preventDefault(); return; }
   const jobs = [...compatPreparing.values()];
   const onlineJobs = [...onlineWork, ...onlinePreparing.values()];
-  const pending = [...jobs.map(job => job.promise), ...onlineJobs.map(job => job.promise), ...mergeRuns.values(), ...downloadRuns.values()];
+  const pending = [...jobs.map(job => job.promise), ...onlineJobs.map(job => job.promise), ...mergeRuns.values(), ...downloadRuns.values(),
+    ...maintenanceOps, ...(settingsSaving ? [settingsSaveQueue] : [])];
   if (compatClearing) pending.push(compatClearing);
   if (mergeTempCleanup) pending.push(mergeTempCleanup);
   const downloading = downloadRuns.size || downloadQueue.length || sourceRetryTimers.size;

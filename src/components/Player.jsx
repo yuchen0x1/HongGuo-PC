@@ -99,6 +99,9 @@ function Player({ target, onNavigate, onSeriesSelected, onFloatingChange, active
   const [onlineVid, setOnlineVid] = useState(null);
   const [onlineUrl, setOnlineUrl] = useState('');
   const [mediaBuffering, setMediaBuffering] = useState(false);
+  // 缓冲超过一定时间后给出"片源可能无响应"的提示与重试入口：
+  // 只有 canplay/playing 会清除缓冲遮罩，个别 CDN 会接受连接后长期不吐数据。
+  const [bufferingHint, setBufferingHint] = useState(false);
   const [holdingFrame, setHoldingFrame] = useState(false);
   const [onlineProgress, setOnlineProgress] = useState(null); // {percent, phase}
   const [cacheInfo, setCacheInfo] = useState({ count: 0, bytes: 0 });
@@ -681,16 +684,27 @@ function Player({ target, onNavigate, onSeriesSelected, onFloatingChange, active
     // metadata/playing precedes presentation; keep the cover until Chromium submits the new frame.
     if (video.requestVideoFrameCallback) {
       const frame = video.requestVideoFrameCallback(reveal);
-      return () => video.cancelVideoFrameCallback(frame);
+      // 首帧迟迟不上屏时不能让上一集最后一帧永久冻结；超时交回加载态由用户决定重试或取消。
+      const timer = setTimeout(() => { if (version === mediaVersion.current) setHoldingFrame(false); }, 4000);
+      return () => { clearTimeout(timer); video.cancelVideoFrameCallback(frame); };
     }
     video.addEventListener('loadeddata', reveal);
     video.addEventListener('seeked', reveal);
     reveal();
+    const timer = setTimeout(() => { if (version === mediaVersion.current) setHoldingFrame(false); }, 4000);
     return () => {
+      clearTimeout(timer);
       video.removeEventListener('loadeddata', reveal);
       video.removeEventListener('seeked', reveal);
     };
   }, [holdingFrame, loading, canPlay, videoSrc, playbackVersion]);
+
+  // 缓冲遮罩只在 canplay/playing 时清除；长时间无响应时提示并给出重试入口，避免用户只能取消。
+  useEffect(() => {
+    if (!mediaBuffering) { setBufferingHint(false); return; }
+    const timer = setTimeout(() => setBufferingHint(true), 10000);
+    return () => clearTimeout(timer);
+  }, [mediaBuffering]);
 
   const playableCount = episodes.filter((e) => e.status === 'completed').length;
 
@@ -1953,7 +1967,10 @@ function Player({ target, onNavigate, onSeriesSelected, onFloatingChange, active
 
         {canPlay && mediaBuffering && !compatProgress && (
           <div className="compat-overlay" role="status">
-            <RefreshCw size={26} className="spin" /><p>正在加载视频…</p>
+            <RefreshCw size={26} className="spin" /><p>{bufferingHint ? '加载时间较长，片源可能无响应' : '正在加载视频…'}</p>
+            {bufferingHint && (
+              <button className="btn btn-outline" onClick={() => { setBufferingHint(false); setMediaBuffering(false); retryPlayback(); }}>重试本集</button>
+            )}
             <button className="btn btn-outline" onClick={() => stopPlayback()}>取消播放</button>
           </div>
         )}

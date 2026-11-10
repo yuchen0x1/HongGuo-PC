@@ -4,6 +4,7 @@ const zlib = require('node:zlib');
 const dns = require('node:dns');
 const axios = require('axios');
 const { resolveSeriesId } = require('../src/native/hongguo');
+require('./fixtures/direct-http.cjs'); // 本地回环回归必须直连，见文件内说明
 
 async function main() {
   const original = axios.get;

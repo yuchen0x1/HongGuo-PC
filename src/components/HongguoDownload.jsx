@@ -38,6 +38,9 @@ function HongguoDownload({ onNavigate, active = true, seedTerm = '' }) {
   const resolveRequest = useRef(0);
   const pendingResolve = useRef(null);
   const searchVersion = resolveRequest.current;
+  // 全局搜索（Ctrl+K）的种子词到达时必须回到「搜索剧集」页签：
+  // 否则搜索只在隐藏面板里执行，用户看到的仍是「粘贴链接」页，表现为 Ctrl+K 搜索无反应。
+  useEffect(() => { if (seedTerm) setTab('search'); }, [seedTerm]);
 
   useEffect(() => () => { resolveRequest.current++; }, []);
   useEffect(() => {

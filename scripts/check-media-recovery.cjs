@@ -7,6 +7,7 @@ const vm = require('node:vm');
 const http = require('node:http');
 const { EventEmitter } = require('node:events');
 const { createRequire } = require('node:module');
+require('./fixtures/direct-http.cjs'); // 本地回环回归必须直连，见文件内说明
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hongguo-stream-'));
 const source = path.resolve(__dirname, '../main.js');
 const req = createRequire(source);
