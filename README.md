@@ -249,6 +249,18 @@ npm run build:installer       # 构建 Windows x64 NSIS 安装程序
 
 ---
 
+## ⭐ Star 趋势
+
+<a href="https://star-history.com/#yuchen0x1/HongGuo-PC&Date">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=yuchen0x1/HongGuo-PC&type=Date&theme=dark" />
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=yuchen0x1/HongGuo-PC&type=Date" />
+    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=yuchen0x1/HongGuo-PC&type=Date" />
+  </picture>
+</a>
+
+---
+
 <div align="center">
 
 如果这个项目对你有帮助，点个 ⭐ 就是最好的支持
