@@ -1,10 +1,11 @@
-# release: 6.4 Windows x64 正式版源码忽略依赖、构建产物与本地运行资料。
+# release: 6.7 Windows x64 发行候选源码忽略依赖、构建产物与本地运行资料。
 /*-small.png
 
 # 依赖
 node_modules/
 dist/
 dist-6.6/
+dist-6.7/
 dist-react/
 
 # 内置的 ffmpeg 二进制（约 167MB，从网络获取，不纳入版本管理）

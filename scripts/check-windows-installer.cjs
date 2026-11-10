@@ -6,6 +6,8 @@ const pkg = require('../package.json');
 const root = path.resolve(__dirname, '..');
 const releaseVersion = pkg.version.replace(/^(\d+\.\d+)\.0$/, '$1');
 const setupName = `hongguo-downloader-${releaseVersion}-win-x64-setup.exe`;
+const correspondingSourceName = 'FFmpeg-Corresponding-Source.tar.gz';
+const correspondingSourceAsset = 'ffmpeg-9.0.2-x264-b35605a-win-x64-corresponding-source.tar.gz';
 const previousRelease = {
   version: '1.80.0',
   url: 'https://github.com/jackotom/hongguo-drama/releases/download/v1.80/hongguo-downloader-1.80.0-win-x64-setup.exe',
@@ -18,10 +20,9 @@ function checkConfig() {
   assert(require('semver').gt(pkg.version, previousRelease.version), 'Upgrade candidate must be newer than the real previous installer');
   assert.equal(lock.version, pkg.version);
   assert.equal(lock.packages[''].version, pkg.version);
-  assert.equal(pkg.dependencies['electron-updater'], '6.8.9');
-  assert.deepEqual(pkg.build.publish, { provider: 'github', owner: 'yuchen0x1', repo: 'HongGuo-PC' });
-  assert.equal(pkg.build.nsis.artifactName.replace('${version}', pkg.version).replace('${ext}', 'exe'), setupName);
-  assert.equal(pkg.build.portable.artifactName.replace('${version}', pkg.version), '${productName}-' + releaseVersion + '-便携版.${ext}');
+  assert.match(pkg.build.nsis.artifactName, /-win-x64-setup\.\$\{ext\}$/);
+  assert(pkg.build.win.extraFiles.some(file => file.from === 'build/ffmpeg/FFmpeg-Corresponding-Source.tar.gz' && file.to === correspondingSourceName), 'GPL FFmpeg/x264 corresponding source must be included as an installer license document');
+  assert.match(pkg.build.win.extraResources.find(resource => resource.from === 'build/ffmpeg').filter.join(','), /ffmpeg\.exe/);
   assert(pkg.build.mac.target.some(target => target.target === 'zip' && target.arch.includes('arm64') && target.arch.includes('x64')));
   assert(pkg.build.mac.extraResources.some(resource => resource.from === 'build/app-update.yml' && resource.to === 'app-update.yml'), 'Mac directory builds must carry updater configuration');
   assert.notEqual(pkg.build.win.verifyUpdateCodeSignature, false);
@@ -37,15 +38,15 @@ async function runInstallerCheck() {
   assert.equal(process.env.GITHUB_ACTIONS, 'true', 'Only run on disposable GitHub Actions runners');
   const { execFileSync, spawn } = require('node:child_process');
   const { createHash } = require('node:crypto');
-  const yaml = require('js-yaml');
   const out = path.join(root, 'dist/windows-verification');
   fs.mkdirSync(out, { recursive: true });
-  const result = { version: pkg.version, signed: false, checks: [], crossVersionUpgradeTested: false, passed: false };
+  const result = { version: pkg.version, checks: [], crossVersionUpgradeTested: false, passed: false };
   const temp = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'hongguo-installer-'));
   const installDir = path.join(temp, 'installed');
   let profile = path.join(temp, 'profile');
   const mediaDir = path.join(temp, 'downloads');
   const setup = path.join(root, 'dist', setupName);
+  const correspondingSource = path.join(installDir, correspondingSourceName);
   const exe = path.join(installDir, pkg.build.productName + '.exe');
   const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
   let child, socket, sequence = 0;
@@ -134,28 +135,38 @@ async function runInstallerCheck() {
   }
 
   try {
-    const metadata = yaml.load(fs.readFileSync(path.join(root, 'dist/latest.yml'), 'utf8'));
-    assert.equal(metadata.version, pkg.version);
-    assert.equal(metadata.path, setupName);
-    assert.equal(metadata.files.length, 1, 'Windows updater must offer only the NSIS installer');
-    const file = metadata.files[0];
-    assert.equal(file.url, setupName);
-    const digest = createHash('sha512').update(fs.readFileSync(setup)).digest('base64');
-    assert.equal(file.sha512, digest);
-    assert.equal(metadata.sha512, digest);
-    assert.equal(file.size, fs.statSync(setup).size);
-    result.checks.push('latest.yml points to the exact NSIS filename, version, size and SHA512');
+    const installerStats = fs.statSync(setup);
+    assert(installerStats.size > 0, 'NSIS installer must not be empty');
+    const installerHeader = Buffer.alloc(64);
+    const installerHandle = fs.openSync(setup, 'r');
+    fs.readSync(installerHandle, installerHeader, 0, installerHeader.length, 0);
+    fs.closeSync(installerHandle);
+    assert.equal(installerHeader.toString('ascii', 0, 2), 'MZ', 'NSIS installer must be a PE executable');
+    const peOffset = installerHeader.readUInt32LE(0x3c);
+    const peSignature = Buffer.alloc(6);
+    const peHandle = fs.openSync(setup, 'r');
+    fs.readSync(peHandle, peSignature, 0, peSignature.length, peOffset);
+    fs.closeSync(peHandle);
+    assert.equal(peSignature.readUInt32LE(0), 0x4550, 'NSIS installer must contain a PE signature');
+    assert.equal(peSignature.readUInt16LE(4), 0x8664, 'NSIS installer must be x64');
+    result.checks.push('NSIS installer is a PE x64 executable');
     result.authenticode = execFileSync('pwsh.exe', ['-NoProfile', '-Command', '(Get-AuthenticodeSignature -LiteralPath $env:HONGGUO_VERIFY_EXE).Status.ToString()'], { encoding: 'utf8', env: { ...process.env, HONGGUO_VERIFY_EXE: setup } }).trim();
     assert.equal(result.authenticode, 'NotSigned');
+    result.checks.push('NSIS installer Authenticode status is NotSigned');
     fs.mkdirSync(profile); fs.mkdirSync(mediaDir);
+    assert(fs.existsSync(path.join(root, 'build/ffmpeg', correspondingSourceAsset)), 'Windows build input must contain the FFmpeg/x264 corresponding source archive');
+    const sourceDigest = createHash('sha256').update(fs.readFileSync(path.join(root, 'build/ffmpeg', correspondingSourceAsset))).digest('hex');
+    const sourceInput = path.join(root, 'build/ffmpeg', correspondingSourceName);
+    assert(fs.existsSync(sourceInput), 'Installer build input must include the renamed corresponding source license document');
+    assert.equal(createHash('sha256').update(fs.readFileSync(sourceInput)).digest('hex'), sourceDigest, 'Packaged corresponding source input must exactly match the validated Windows media source archive');
     const retainedFile = path.join(mediaDir, 'retained-download.txt');
     fs.writeFileSync(retainedFile, 'Existing download must survive installation');
     const isolatedSettings = { root: mediaDir, watch_updates_enabled: false, watch_sequels_enabled: false, app_updates_enabled: false };
     fs.writeFileSync(path.join(profile, 'data.json'), JSON.stringify({ settings: isolatedSettings }));
     install();
-    const updateConfig = yaml.load(fs.readFileSync(path.join(installDir, 'resources/app-update.yml'), 'utf8'));
-    for (const [key, value] of Object.entries(pkg.build.publish)) assert.equal(updateConfig[key], value);
-    result.checks.push('NSIS installs into a fresh temporary directory with the official update feed');
+    assert(fs.existsSync(correspondingSource), 'Installed application directory must retain the GPL FFmpeg/x264 corresponding source document');
+    assert.equal(createHash('sha256').update(fs.readFileSync(correspondingSource)).digest('hex'), sourceDigest, 'Installed corresponding source document must exactly match the validated candidate archive');
+    result.checks.push('NSIS installs into a fresh temporary directory and includes the matching GPL FFmpeg/x264 corresponding source document');
     await launch();
     assert.equal((await evaluate('(async () => { const settings = await window.electronAPI.getSettings(); return window.electronAPI.saveSettings({ ...settings, download_quality: "720p" }); })()')).success, true);
     assert.equal(await evaluate('localStorage.setItem("hongguo-installer-smoke", "retained"); localStorage.getItem("hongguo-installer-smoke")'), 'retained');

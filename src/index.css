@@ -274,7 +274,7 @@ h2, .browse-title h2, .hero-text h2, .settings-header h2, .dm-title h2, .player-
 select.input-field, select.history-scope, select.release-month select, .merge-select, select.toolbar-page-trigger {
   appearance: none; -webkit-appearance: none;
   background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238995aa' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
-  background-repeat: no-repeat; background-position: right 10px center; padding-right: 30px;
+  background-repeat: no-repeat; background-position: right 10px center; background-size: 12px 12px; padding-right: 30px;
 }
 select.input-field:hover:not(:disabled), .merge-select:hover { border-color: var(--border-strong); }
 select.input-field:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--focus-soft); }
@@ -668,14 +668,17 @@ select.input-field:focus { border-color: var(--accent); box-shadow: 0 0 0 3px va
 }
 
 :root[data-theme="dark"] .input-field {
-  background: rgba(13, 17, 25, .75);
+  background-color: rgba(13, 17, 25, .75);
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-size: 12px 12px;
   backdrop-filter: blur(10px);
   border: 1px solid rgba(255, 255, 255, .12);
-  transition: background .2s var(--ease-out), border-color .2s var(--ease-out), box-shadow .2s var(--ease-out);
+  transition: background-color .2s var(--ease-out), border-color .2s var(--ease-out), box-shadow .2s var(--ease-out);
 }
 :root[data-theme="dark"] .input-field:focus {
   border-color: #ff304f;
-  background: rgba(16, 21, 32, .9);
+  background-color: rgba(16, 21, 32, .9);
   box-shadow: 0 0 0 3px rgba(255, 48, 79, .22), 0 0 16px rgba(255, 48, 79, .18);
 }
 
@@ -749,14 +752,14 @@ select.input-field:focus { border-color: var(--accent); box-shadow: 0 0 0 3px va
   box-shadow: none;
 }
 :root:not([data-theme="dark"]) .input-field {
-  background: var(--bg-input);
+  background-color: var(--bg-input);
   border-color: var(--border-strong);
   backdrop-filter: none;
-  transition: background .2s var(--ease-out), border-color .2s var(--ease-out), box-shadow .2s var(--ease-out);
+  transition: background-color .2s var(--ease-out), border-color .2s var(--ease-out), box-shadow .2s var(--ease-out);
 }
 :root:not([data-theme="dark"]) .input-field:focus {
   border-color: var(--accent);
-  background: var(--bg-input);
+  background-color: var(--bg-input);
   box-shadow: 0 0 0 3px var(--focus-soft);
 }
 :root:not([data-theme="dark"]) .command-palette {

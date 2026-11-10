@@ -107,4 +107,19 @@ themeCss.walkRules(rule => {
 });
 assert.equal(darkInputSelectors.length, 1, 'Cyber input surface is scoped to dark theme');
 assert.equal(darkFocusSelectors.length, 1, 'Cyber input focus styling is scoped to dark theme');
+const themedInputSelectors = [':root[data-theme="dark"] .input-field', ':root[data-theme="dark"] .input-field:focus', ':root:not([data-theme="dark"]) .input-field', ':root:not([data-theme="dark"]) .input-field:focus'];
+for (const selector of themedInputSelectors) {
+  const rule = themeCss.nodes.find(node => node.type === 'rule' && node.selector === selector);
+  assert(rule, `theme input rule is present: ${selector}`);
+  const declarationsByProperty = new Map();
+  rule.walkDecls(declaration => declarationsByProperty.set(declaration.prop, declaration.value));
+  assert(!declarationsByProperty.has('background'), `${selector}: use background-color so the select arrow background is preserved`);
+}
+const selectRule = themeCss.nodes.find(node => node.type === 'rule' && node.selector.includes('select.input-field'));
+assert(selectRule, 'custom select arrow rule is present');
+const selectDeclarations = new Map();
+selectRule.walkDecls(declaration => selectDeclarations.set(declaration.prop, declaration.value));
+assert.equal(selectDeclarations.get('background-repeat'), 'no-repeat', 'custom select arrow must not tile');
+assert.equal(selectDeclarations.get('background-size'), '12px 12px', 'custom select arrow size is explicit');
 console.log('PASS theme CSS: Cyber input surfaces and focus styles are dark-theme only');
+console.log('PASS select CSS: theme background rules preserve one non-repeating arrow');

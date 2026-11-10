@@ -87,29 +87,11 @@ test('lock owner starts once; repeated launches restore its existing window', as
 });
 
 
-test('update support treats portable marker and fallback modes as manual updates', () => {
-  const h = load(true);
-  h.app.isPackaged = true;
-  h.context.process.platform = 'win32';
-  for (const config of [{ mode: 'portable', portableDir: 'C:/portable' }, { mode: 'default', portableDir: 'C:/portable', reason: 'fallback' }]) {
-    h.context.fixtureConfig = config;
-    vm.runInContext('portableConfig = fixtureConfig', h.context);
-    const support = h.context.appUpdateSupport();
-    assert.equal(support.supported, false);
-    assert.match(support.reason, /便携/);
-  }
-  h.context.fixtureConfig = { mode: 'default', portableDir: '' };
-  vm.runInContext('portableConfig = fixtureConfig', h.context);
-  assert.equal(h.context.appUpdateSupport().supported, true);
-});
-
-test('portable marker keeps manual updates when an explicit profile skips migration', () => {
+test('portable marker keeps an explicit profile isolated from data migration', () => {
   const directory = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'hongguo-marker-profile-'));
   try {
     fs.writeFileSync(path.join(directory, 'portable.marker'), 'portable');
-    const h = load(true, false, { platform: 'win32', explicitProfile: true, execPath: path.join(directory, 'app.exe') });
-    h.app.isPackaged = true;
-    assert.equal(h.context.appUpdateSupport().supported, false, 'custom profile must not turn a portable ZIP into an installer');
+    load(true, false, { platform: 'win32', explicitProfile: true, execPath: path.join(directory, 'app.exe') });
     assert.equal(fs.existsSync(path.join(directory, 'data')), false, 'explicit profile must still skip migration');
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });

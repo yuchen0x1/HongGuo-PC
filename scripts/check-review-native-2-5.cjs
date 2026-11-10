@@ -15,7 +15,6 @@ function fixtureFrom(file, names) {
 }
 const { fixture, macFixture, tick } = fixtureFrom('check-app-update-installer.cjs', 'fixture, macFixture, tick');
 const { mount } = fixtureFrom('check-app-update-ui.cjs', 'mount');
-const idle = { supported: true, reason: '', status: 'idle', version: null, percent: 0, error: '' };
 
 function box(type, ...parts) {
   const body = Buffer.concat(parts), header = Buffer.alloc(8);
@@ -63,15 +62,15 @@ function restoredEntry(format, configs, entryType) {
     failedDownload.checked(); await tick(); failedDownload.downloaded(Error('checksum mismatch')); await pending;
     assert.equal(failedDownload.controller.install().success, false, 'failed checksum cannot install');
   });
-  await check('installation error UI retries installation using the retained download', async () => {
-    let installs = 0, downloads = 0;
-    const ui = mount({ getAppUpdateState: async () => ({ ...idle, status: 'error', version: '9.0', downloaded: true, error: '安装失败' }),
-      installAppUpdate: async () => { installs++; return { success: true }; },
-      downloadAppUpdate: async () => { downloads++; return { success: true }; } });
+  await check('update notice opens the fixed release page and has no install controls', async () => {
+    let opens = 0;
+    const ui = mount({ openAppUpdate: async () => { opens++; return { success: true }; } });
     await ui.flush();
-    assert.ok(ui.button('重启并安装'), 'install error should keep the install button');
-    await ui.button('重启并安装').props.onClick(); assert.equal(installs, 1); assert.equal(downloads, 0);
-    assert.ok(ui.text().includes('安装失败')); ui.unmount();
+    assert.ok(ui.button('打开下载页'), 'new release should offer a download page action');
+    assert.equal(ui.button('重启并安装'), undefined);
+    assert.equal(ui.button('下载更新'), undefined);
+    await ui.button('打开下载页').props.onClick(); assert.equal(opens, 1);
+    ui.unmount();
   });
   await check('sequel matching preserves year suffixes and accepts explicit and modest bracket seasons', () => {
     const original = { series_id: '1000001', series_title: '春日来信' };

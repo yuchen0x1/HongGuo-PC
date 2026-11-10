@@ -30,7 +30,7 @@ Electron 打包产物中已包含 Chromium 与 Node.js 的许可声明：
 
 Windows x64 内置从固定源码编译的 FFmpeg 9.0.2 与 x264 b35605ace3ddf7c1a5d67a2eb553f034aef41d55，位于 `resources/bin/`。
 x264 为唯一外部编解码静态库（GPLv2-or-later）；整体构建为 GPLv3-or-later。构建验证 x64 架构与系统 DLL 依赖。
-完整 FFmpeg/x264 对应源码、准确构建脚本、配置日志、工具链版本和二进制哈希随 Release 的 Windows 对应源码包提供。
+完整 FFmpeg/x264 对应源码与准确构建脚本、配置日志、工具链版本和二进制哈希，以 `FFmpeg-Corresponding-Source.tar.gz` 文件随 Windows 安装程序放在安装目录根部提供。该压缩包对应的是随该安装程序一同分发的 FFmpeg/FFprobe 二进制版本。
 许可全文与来源说明见 `COPYING.GPLv3`、`COPYING.GPLv2`、`LICENSE.md`、`WINDOWS-X264-LICENSE.txt` 和 `WINDOWS-NOTICE.txt`。
 该精简构建提供软件 H.264 编码，不包含旧版 Gyan essentials 包及其额外库。
 

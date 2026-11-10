@@ -75,26 +75,15 @@ const castFileRefs = new Map();
 const localFileReaders = new Map();
 let castBusy = false;
 let mainWindow = null;
-let appUpdateInstaller = null;
-let appUpdater = null;
-let updateDownloadGeneration = 0;
-let pendingUpdateOperations = 0;
 let quitCleanup = null;
 let quitReady = false;
 let mergeTempCleanup = null;
-const UPDATE_BLOCKED_CHANNELS = new Set(['hongguo-download-batch', 'download-single-episode', 'download-series-to-nas', 'retry-task', 'retry-tasks', 'resume-all', 'merge-series', 'transcode-for-playback', 'prepare-online-play', 'start-casting', 'save-settings', 'set-boss-key']);
 const ipcMain = {
   handle(channel, handler) {
     rawIpcMain.handle(channel, async (event, ...args) => {
       if (!rendererSecurity.isTrustedSender(event, mainWindow)) throw new Error('窗口请求无效');
       if (quitCleanup) return { success: false, error: '正在退出，请等待清理完成。' };
-      if (appUpdateInstaller?.getState().status === 'installing' && UPDATE_BLOCKED_CHANNELS.has(channel)) {
-        return { success: false, error: '正在安装更新，请等待应用重新启动。' };
-      }
-      const blocksUpdate = UPDATE_BLOCKED_CHANNELS.has(channel);
-      if (blocksUpdate) pendingUpdateOperations++;
-      try { return await handler(event, ...args); }
-      finally { if (blocksUpdate) pendingUpdateOperations--; }
+      return handler(event, ...args);
     });
   },
 };
@@ -401,7 +390,7 @@ function proxyRuleForSession(resolved) {
 }
 
 /** 窗口和更新器使用不同 Session，代理规则必须分别应用。 */
-async function applyProxyToSession(resolved, sessions = [session.defaultSession, appUpdater?.netSession], version = proxyApplyVersion) {
+async function applyProxyToSession(resolved, sessions = [session.defaultSession], version = proxyApplyVersion) {
   let auth = null;
   let config = { mode: resolved.mode === 'direct' ? 'direct' : 'system' };
   if (resolved.mode === 'custom' && resolved.url) {
@@ -4462,7 +4451,6 @@ async function saveSettings(settings) {
       try { await applyProxyWithTimeout(current, 5000); } catch (_) { /* 旧配置也可能已不可用 */ }
       throw error;
     }
-    if (merged.app_updates_enabled === false) { updateDownloadGeneration++; appUpdateInstaller?.cancel(); }
     if (wasCheckingUpdates !== (merged.app_updates_enabled !== false)) {
       sendToRenderer('app-update-preference', merged.app_updates_enabled !== false);
     }
@@ -5019,70 +5007,10 @@ ipcMain.handle('open-folder', async (event, taskId) => {
   return { success: false, error: '文件夹不存在' };
 });
 
-// ===== 应用内更新：固定官方源，下载和重启均由用户确认 =====
+// ===== 应用更新提醒：只检查版本并打开固定的官方发布页 =====
 let updateRequest = null;
 let latestAppRelease = null;
-function appUpdateSupport() {
-  let reason = '';
-  if (IS_PREVIEW || !app.isPackaged) reason = '开发或预览版本不支持应用内安装，请使用正式安装版。';
-  else if (process.platform === 'win32' && (portableConfig.mode === 'portable' || portableConfig.portableDir
-    || process.env.PORTABLE_EXECUTABLE_FILE || process.env.PORTABLE_EXECUTABLE_DIR)) reason = '便携版需手动更新。请先退出旧程序，再运行发布页中的 setup 安装包，并从安装后生成的快捷方式启动；安装版支持后续应用内更新。若仍用便携版，请完整解压新版并直接运行新版文件。';
-  else if (!['darwin', 'win32'].includes(process.platform)) reason = '当前系统请前往发布页手动更新。';
-  else if (process.platform === 'darwin' && (process.execPath.startsWith('/Volumes/') || process.execPath.includes('/AppTranslocation/'))) reason = '请先将应用放入“应用程序”文件夹后重新打开，再使用应用内更新。';
-  return { supported: !reason, reason };
-}
-function appUpdateState() {
-  return appUpdateInstaller?.getState() || { ...appUpdateSupport(), status: 'idle', version: null, percent: 0, error: '' };
-}
-function getAppUpdateInstaller() {
-  if (!appUpdateInstaller) {
-    appUpdater = require('electron-updater').autoUpdater;
-    appUpdater.on('login', (authInfo, callback) => {
-      if (matchesProxyAuth(authInfo)) callback(activeProxyAuth.username, activeProxyAuth.password);
-      else callback();
-    });
-    appUpdateInstaller = require('./src/native/app-update-installer').createUpdateInstaller({
-      updater: appUpdater,
-      currentVersion: APP_VERSION,
-      isEnabled: () => !IS_PREVIEW && getCurrentSettings().app_updates_enabled !== false,
-      installBlocker: () => {
-        if (pendingUpdateOperations) return '正在处理任务或保存设置，请稍后再安装更新。';
-        if (downloadRuns.size || downloadQueue.length || sourceRetryTimers.size) return '还有下载或等待重试的任务，请先在下载管理中暂停全部任务，再安装更新。';
-        if (mergeTasks.some(task => task.status === 'running') || compatPreparing.size || onlinePreparing.size) return '正在合并或准备视频，请等待完成或取消后再安装更新。';
-        if (storageError) return '本地数据保存异常，请先处理保存问题，再安装更新。';
-        return '';
-      },
-      emit: state => sendToRenderer('app-update-state', state),
-    });
-  }
-  return appUpdateInstaller;
-}
-ipcMain.handle('get-app-update-state', () => appUpdateState());
-ipcMain.handle('download-app-update', async () => {
-  const support = appUpdateSupport();
-  if (!support.supported) return { success: false, error: support.reason };
-  if (!latestAppRelease || getCurrentSettings().app_updates_enabled === false) return { success: false, error: '更新信息已失效，请重新检查更新。' };
-  try {
-    const request = updateDownloadGeneration;
-    const installer = getAppUpdateInstaller();
-    if (!['checking', 'downloading', 'downloaded', 'installing'].includes(installer.getState().status)) {
-      await applyProxyToSession(desiredProxyConfig || resolveProxyConfig(getCurrentSettings()), [appUpdater.netSession]);
-    }
-    if (request !== updateDownloadGeneration) return { success: false, error: '更新已取消。', state: installer.getState() };
-    return await installer.download(latestAppRelease.version);
-  }
-  catch (_) { return { success: false, error: '无法准备应用内更新，请重试或前往发布页下载安装。' }; }
-});
-ipcMain.handle('cancel-app-update', () => {
-  if (appUpdateInstaller?.getState().status === 'installing') return { success: false, error: '正在安装更新，无法取消。', state: appUpdateState() };
-  updateDownloadGeneration++;
-  if (!appUpdateInstaller) return { success: true, state: appUpdateState() };
-  return appUpdateInstaller.cancel();
-});
-ipcMain.handle('install-app-update', () => {
-  if (!appUpdateInstaller) return { success: false, error: '请先完成更新下载。' };
-  return appUpdateInstaller.install();
-});
+const LATEST_RELEASE_URL = 'https://github.com/yuchen0x1/HongGuo-PC/releases/latest';
 ipcMain.handle('check-app-update', async event => {
   if (proxyStartupFallback) return { enabled: false, release: null, error: '请先修复或明确关闭代理。' };
   if (IS_PREVIEW || !mainWindow || event.sender !== mainWindow.webContents) return { enabled: false, release: null };
@@ -5094,8 +5022,7 @@ ipcMain.handle('check-app-update', async event => {
     updateRequest = axios.get('https://api.github.com/repos/yuchen0x1/HongGuo-PC/releases/latest', {
       timeout: 10000, maxRedirects: 0, maxContentLength: 1024 * 1024,
       headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'Hongguo-Drama-Update-Check' },
-    }).catch(() => axios.get('https://github.com/yuchen0x1/HongGuo-PC/releases/latest', {
-      // GitHub's public release endpoint does not consume the anonymous API quota.
+    }).catch(() => axios.get(LATEST_RELEASE_URL, {
       timeout: 10000, maxRedirects: 0, maxContentLength: 1024 * 1024,
       headers: { Accept: 'application/json', 'User-Agent': 'Hongguo-Drama-Update-Check' },
       validateStatus: status => status === 200 || status === 302,
@@ -5115,10 +5042,10 @@ ipcMain.handle('check-app-update', async event => {
 });
 ipcMain.handle('open-app-update', async event => {
   if (IS_PREVIEW || !mainWindow || event.sender !== mainWindow.webContents || getCurrentSettings().app_updates_enabled === false) {
-    return { success: false, error: '更新信息已失效，请稍后重试' };
+    return { success: false, error: '更新提醒已关闭，请在设置中重新开启。' };
   }
-  try { await shell.openExternal(latestAppRelease?.url || 'https://github.com/yuchen0x1/HongGuo-PC/releases/latest'); return { success: true }; }
-  catch { return { success: false, error: '无法打开浏览器，请稍后重试' }; }
+  try { await shell.openExternal(LATEST_RELEASE_URL); return { success: true }; }
+  catch { return { success: false, error: '无法打开发布页，请稍后重试。' }; }
 });
 
 // 「更新日志」页：读取本仓库最近几个正式版的发行说明，供界面展示每个版本更新了什么。
