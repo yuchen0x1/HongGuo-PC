@@ -1,6 +1,6 @@
 # 红果短剧 6.7
 
-状态：发布候选（内部版本 `6.7.0`，标签 `v6.7`）。正式发行仅面向 Windows x64，唯一普通用户下载资产为 NSIS Windows x64 安装 EXE。
+状态：已正式发布（内部版本 `6.7.0`，标签 `v6.7`，冻结源码 `6b76b6313e7f2cb9ad5aeeb04a9955e9eb19b99d`）。发布日期：2026-11-10。Release：https://github.com/yuchen0x1/HongGuo-PC/releases/tag/v6.7。仅维护 Windows x64。
 
 ## 本轮改动
 
@@ -27,17 +27,21 @@
 - `npm run build:react`：通过；Vite 仅提示既有大 chunk 优化建议。
 - `node --check main.js`、`node --check preload.js`：通过。
 - 更新策略专项：`check-app-update`、`check-app-update-installer`、`check-app-update-proxy`、`check-app-update-ui` 与 `check-review-native-2-5` 均通过；断言客户端不再暴露下载/安装 IPC，安装器不再包含 electron-updater 运行路径。
-- Windows 安装器专项（CI）：校验 NSIS PE x64、未签名、独立目录安装、同版本重装、真实 1.80 升级资料保留，以及安装目录内 FFmpeg/x264 对应源码与媒体二进制哈希一致。
+- Windows 安装器专项（CI）：校验 NSIS 外壳为合法 PE 与标准 32 位 stub、应用本体为 x64、安装器未签名、独立目录安装、同版本重装、真实 1.80 升级资料保留，以及安装目录内 FFmpeg/x264 对应源码与媒体二进制哈希一致。
 
 ## Windows 发行资产
 
 正式 Release 共 1 项资产：
 
-- `hongguo-downloader-6.7-win-x64-setup.exe`（未签名）
+- `hongguo-downloader-6.7-win-x64-setup.exe`（146,466,520 字节，SHA-256 `71f0306fc7912cc16b47a6b3820d7b474a38e443b050cd425a7703ed0aaf7446`，未签名）
 
 ## 发布回执
 
-待发布完成后回写。
+- 源码 Test：https://github.com/yuchen0x1/HongGuo-PC/actions/runs/42761689602，成功，绑定冻结提交 `6b76b63`。
+- Windows x64 release candidate：https://github.com/yuchen0x1/HongGuo-PC/actions/runs/42761689265，成功，绑定冻结提交；媒体构建、源码检查、FFmpeg 解析、对应源码与媒体二进制哈希一致、NSIS 安装/重装、真实 1.80 升级资料保留及单资产组装均通过。
+- 发布流水线：https://github.com/yuchen0x1/HongGuo-PC/actions/runs/42765407653，成功；校验候选资产恰好 1 个文件并公开 Release。
+- GitHub Release `v6.7` 已公开，共 1 项资产；远端 digest 与本地候选包 SHA-256 一致。
+- 首次候选构建（run `42759236789`）在安装验收步骤失败：旧断言要求 NSIS 外壳为 x64，而 NSIS 外壳固定是 32 位 stub。已改为校验外壳为标准 32 位 stub、应用本体为 x64，并将标签重指到修正提交后重跑通过。
 
 ## 限制
 
