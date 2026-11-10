@@ -137,19 +137,21 @@ async function runInstallerCheck() {
   try {
     const installerStats = fs.statSync(setup);
     assert(installerStats.size > 0, 'NSIS installer must not be empty');
+    const peMachine = (file, offset) => {
+      const buffer = Buffer.alloc(6);
+      const handle = fs.openSync(file, 'r');
+      try { fs.readSync(handle, buffer, 0, buffer.length, offset); } finally { fs.closeSync(handle); }
+      assert.equal(buffer.readUInt32LE(0), 0x4550, 'Executable must contain a PE signature');
+      return buffer.readUInt16LE(4);
+    };
     const installerHeader = Buffer.alloc(64);
     const installerHandle = fs.openSync(setup, 'r');
     fs.readSync(installerHandle, installerHeader, 0, installerHeader.length, 0);
     fs.closeSync(installerHandle);
     assert.equal(installerHeader.toString('ascii', 0, 2), 'MZ', 'NSIS installer must be a PE executable');
-    const peOffset = installerHeader.readUInt32LE(0x3c);
-    const peSignature = Buffer.alloc(6);
-    const peHandle = fs.openSync(setup, 'r');
-    fs.readSync(peHandle, peSignature, 0, peSignature.length, peOffset);
-    fs.closeSync(peHandle);
-    assert.equal(peSignature.readUInt32LE(0), 0x4550, 'NSIS installer must contain a PE signature');
-    assert.equal(peSignature.readUInt16LE(4), 0x8664, 'NSIS installer must be x64');
-    result.checks.push('NSIS installer is a PE x64 executable');
+    // NSIS ships a 32-bit installer stub that unpacks the application; the payload must be x64.
+    assert.equal(peMachine(setup, installerHeader.readUInt32LE(0x3c)), 0x14c, 'NSIS installer stub must be the standard 32-bit stub');
+    result.checks.push('NSIS installer is a PE executable with the standard 32-bit stub');
     result.authenticode = execFileSync('pwsh.exe', ['-NoProfile', '-Command', '(Get-AuthenticodeSignature -LiteralPath $env:HONGGUO_VERIFY_EXE).Status.ToString()'], { encoding: 'utf8', env: { ...process.env, HONGGUO_VERIFY_EXE: setup } }).trim();
     assert.equal(result.authenticode, 'NotSigned');
     result.checks.push('NSIS installer Authenticode status is NotSigned');
@@ -164,6 +166,13 @@ async function runInstallerCheck() {
     const isolatedSettings = { root: mediaDir, watch_updates_enabled: false, watch_sequels_enabled: false, app_updates_enabled: false };
     fs.writeFileSync(path.join(profile, 'data.json'), JSON.stringify({ settings: isolatedSettings }));
     install();
+    const exeHeader = Buffer.alloc(64);
+    const exeHandle = fs.openSync(exe, 'r');
+    fs.readSync(exeHandle, exeHeader, 0, exeHeader.length, 0);
+    fs.closeSync(exeHandle);
+    assert.equal(exeHeader.toString('ascii', 0, 2), 'MZ', 'Installed application must be a PE executable');
+    assert.equal(peMachine(exe, exeHeader.readUInt32LE(0x3c)), 0x8664, 'Installed application payload must be x64');
+    result.checks.push('Installed x64 application payload');
     assert(fs.existsSync(correspondingSource), 'Installed application directory must retain the GPL FFmpeg/x264 corresponding source document');
     assert.equal(createHash('sha256').update(fs.readFileSync(correspondingSource)).digest('hex'), sourceDigest, 'Installed corresponding source document must exactly match the validated candidate archive');
     result.checks.push('NSIS installs into a fresh temporary directory and includes the matching GPL FFmpeg/x264 corresponding source document');
