@@ -12,7 +12,7 @@
 
 - 6.7（内部 `6.7.0`）已正式发布，标签 `v6.7`，冻结源码 `6b76b6313e7f2cb9ad5aeeb04a9955e9eb19b99d`；正式发行仅面向 Windows x64。
 - 本轮修复下载目录误识别防护、退出保存安全、播放卡顿恢复与切集首帧保护，以及 Ctrl+K 搜索。
-- 唯一普通用户下载资产为 NSIS Windows x64 安装 EXE；GitHub 自动 Source code 快照由平台生成并保留，不发布便携包、普通源码 ZIP、blockmap、`latest.yml` 或 hash 清单。GPL FFmpeg/x264 对应源码归档作为许可证文档放入安装目录，不另列为第二个下载资产。
+- 普通用户只需下载 NSIS Windows x64 安装 EXE；Release 另附一个 `latest.yml` 更新元数据（旧版安装版内置的 electron-updater 下载更新前必须先取该文件，删除会导致 6.6 等旧客户端应用内更新失败）。GitHub 自动 Source code 快照由平台生成并保留，不发布便携包、普通源码 ZIP、blockmap 或 hash 清单。GPL FFmpeg/x264 对应源码归档作为许可证文档放入安装目录，不另列为下载资产。
 - 应用内更新仅自动提醒并打开 GitHub 下载页。
 - 历史 v6.0–v6.6 Release、标签与每个版本现有安装 EXE 保留；v6.6 对应源码附件已恢复；v6.0–v6.5 历史附件精简仍须校验安装包内的媒体二进制与对应源码版本一致。
 - 发行、验证及限制见 `docs/release-6.7.md`。

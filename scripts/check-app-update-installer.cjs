@@ -53,6 +53,32 @@ assert.doesNotMatch(preload, /downloadAppUpdate|cancelAppUpdate|installAppUpdate
 assert.match(notice, /打开下载页/);
 assert.match(notice, /请先退出应用，再下载并运行唯一安装包/);
 
+// v6.2–v6.6 的安装版仍内置 electron-updater，下载更新前必须先取 Release 里的
+// latest.yml；缺少该元数据会让这些旧客户端点「下载更新」直接失败。
+{
+  const { buildMetadata } = require('./write-latest-yml.cjs');
+  const os = require('node:os');
+  const { createHash } = require('node:crypto');
+  const pkg = require('../package.json');
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'hongguo-latest-yml-'));
+  try {
+    const installer = path.join(temp, `hongguo-downloader-${pkg.version.replace(/^(\d+\.\d+)\.0$/, '$1')}-win-x64-setup.exe`);
+    const bytes = Buffer.from('synthetic installer payload');
+    fs.writeFileSync(installer, bytes);
+    const digest = createHash('sha512').update(bytes).digest('base64');
+    const yml = buildMetadata(installer, Date.UTC(2026, 10, 10));
+    assert.match(yml, new RegExp(`^version: ${pkg.version.replace(/\./g, '\\.')}$`, 'm'), 'latest.yml must carry the package version');
+    assert.match(yml, new RegExp(`^path: ${path.basename(installer)}$`, 'm'), 'latest.yml must point at the installer filename');
+    assert.match(yml, new RegExp(`^    size: ${bytes.length}$`, 'm'), 'latest.yml must carry the exact installer size');
+    assert.equal(yml.split(`sha512: ${digest}`).length - 1, 2, 'latest.yml must carry the installer SHA512 for both file and top-level entries');
+    assert.match(yml, /^releaseDate: '\d{4}-\d{2}-\d{2}T/m, 'latest.yml must carry a release date');
+  } finally { fs.rmSync(temp, { recursive: true, force: true }); }
+  const windowsWorkflow = fs.readFileSync(path.join(__dirname, '../.github/workflows/windows.yml'), 'utf8');
+  const publishWorkflow = fs.readFileSync(path.join(__dirname, '../.github/workflows/publish-windows-release.yml'), 'utf8');
+  assert.match(windowsWorkflow, /write-latest-yml\.cjs/, 'candidate workflow must generate latest.yml next to the installer');
+  assert.match(publishWorkflow, /latest\.yml/, 'publish workflow must validate latest.yml before publishing');
+}
+
 (async () => {
 const f = fixture();
 assert.equal(f.updater.autoDownload, false);

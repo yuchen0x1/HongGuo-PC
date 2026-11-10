@@ -77,11 +77,11 @@
 
 | 平台 | 构建入口 | 发布门槛 |
 |---|---|---|
-| Windows x64 | Windows x64 release candidate 工作流 | 唯一对外安装资产为 NSIS 安装 EXE；保留 GitHub 自动生成的 Source code 快照；明确签名状态 |
+| Windows x64 | Windows x64 release candidate 工作流 | 一个 NSIS 安装 EXE + 一个 `latest.yml` 更新元数据；保留 GitHub 自动生成的 Source code 快照；明确签名状态 |
 
-Windows 工作流只上传 Actions 候选资产，不创建 Release、不改 latest。普通用户发行资产只上传 NSIS Windows x64 安装 EXE；不发布便携包、ZIP、blockmap、`latest.yml` 或 hash 清单。GitHub 自动生成的 Source code 快照属于平台系统产物，保留但不列作普通用户发行资产。
+Windows 工作流只上传 Actions 候选资产，不创建 Release、不改 latest。普通用户发行资产为 NSIS Windows x64 安装 EXE，另附 `latest.yml` 更新元数据；不发布便携包、ZIP、blockmap 或 hash 清单。`latest.yml` 必须随每个 Release 发布：v6.2–v6.6 安装版内置 electron-updater，下载更新前会先取该通道文件来获得文件名、大小与 SHA512，缺失时旧客户端点「下载更新」会直接得到 `ERR_UPDATER_CHANNEL_FILE_NOT_FOUND`。该文件由 `scripts/write-latest-yml.cjs` 从最终安装包字节生成，发布流水线在公开前校验其版本、文件名、大小与 SHA512 与实际安装包一致。GitHub 自动生成的 Source code 快照属于平台系统产物，保留但不列作普通用户发行资产。
 
-许可证履行与普通用户下载资产分开处理：Windows 安装器捆绑以 GPLv3-or-later 构建的 FFmpeg 9.0.2 与 GPLv2-or-later 的 x264，完整对应源码及准确构建脚本必须可通过稳定、无需登录的公开链接获得。候选构建会将 `ffmpeg-9.0.2-x264-b35605a-win-x64-corresponding-source.tar.gz` 放入安装目录根部，作为一个许可证文档随安装器分发；Release 仍只有一个普通用户安装资产。候选 EXE 与其中对应源码须绑定并验明内容与安装媒体二进制相符。该源码文档不是普通用户下载页上的另一个安装选项。
+许可证履行与普通用户下载资产分开处理：Windows 安装器捆绑以 GPLv3-or-later 构建的 FFmpeg 9.0.2 与 GPLv2-or-later 的 x264，完整对应源码及准确构建脚本必须可通过稳定、无需登录的公开链接获得。候选构建会将 `ffmpeg-9.0.2-x264-b35605a-win-x64-corresponding-source.tar.gz` 放入安装目录根部，作为一个许可证文档随安装器分发；它不是下载页上的另一个安装选项。候选 EXE 与其中对应源码须绑定并验明内容与安装媒体二进制相符。
 
 Windows 当前未配置代码签名证书；EXE 必须明确标为未签名。Windows CI 虚拟机验证不等于用户实体电脑、GPU/HEVC 或长期稳定性验收。
 macOS 构建不属于当前或未来发行范围，不需要为同一版本补齐 Mac 资产。
@@ -101,7 +101,7 @@ Windows 当前未配置代码签名证书，安装 EXE 必须明确标为未签�
 
 - 固定公开源为 `yuchen0x1/HongGuo-PC` GitHub Releases；客户端包不得包含发布令牌。
 - macOS 构建和更新资产不属于当前或未来发行范围；历史 macOS 资产规则仅供旧版回溯，不作为后续发布门槛。
-- 当前及后续正式发行的普通用户下载资产仅提供 NSIS Windows x64 安装 EXE；GitHub 自动 Source code 快照保留为系统生成内容，不发布便携包、普通源码 ZIP、blockmap、`latest.yml` 或 hash 清单。若安装器捆绑 GPL FFmpeg/x264，对应源码归档作为许可证文档随安装程序放入安装目录，须与该二进制和构建脚本版本匹配；不得把它另列为普通用户下载页的第二个安装资产。
+- 当前及后续正式发行的普通用户下载资产为 NSIS Windows x64 安装 EXE，另附 `latest.yml` 更新元数据（旧版安装版的 electron-updater 依赖它才能应用内更新）；GitHub 自动 Source code 快照保留为系统生成内容，不发布便携包、普通源码 ZIP、blockmap 或 hash 清单。若安装器捆绑 GPL FFmpeg/x264，对应源码归档作为许可证文档随安装程序放入安装目录，须与该二进制和构建脚本版本匹配；不得把它另列为下载页上的另一个安装选项。
 - Windows 尚无代码签名证书；EXE 必须明确标为未签名。
 - 应用内更新只自动提醒有新版本并打开 GitHub 下载页；不在应用内下载或安装更新。
 - 历史 v6.0–v6.6 Release、标签和安装程序保留；每个历史 Release 的现有安装 EXE 保留。v6.6 的 FFmpeg/x264 对应源码归档已恢复。v6.0–v6.5 的安装器本身仍含有媒体工具及许可文件；只有在每个历史安装器确实带有匹配版本的完整对应源码时，才可以移除 Release 上重复的源码归档。已清理附件的逐版本回滚/归档复核需在本次正式发布前完成。

@@ -6,8 +6,9 @@
 
 ### 发行形态
 
-- Release 只提供一个普通用户下载资产：`hongguo-downloader-6.7-win-x64-setup.exe`。
-- 不再发布便携 EXE、便携 ZIP、应用源码 ZIP、blockmap、`latest.yml` 或 SHA-256 清单；GitHub 自动生成的 Source code 快照由平台保留。
+- 普通用户只有一个下载项：`hongguo-downloader-6.7-win-x64-setup.exe`。
+- 不再发布便携 EXE、便携 ZIP、应用源码 ZIP、blockmap 或 SHA-256 清单；GitHub 自动生成的 Source code 快照由平台保留。
+- Release 另含一个 `latest.yml` 更新元数据（不是安装程序）。v6.2–v6.6 安装版内置的 electron-updater 下载更新前必须先取该文件；缺少它会导致旧客户端应用内更新失败。
 - 应用内更新只检查正式版本、提醒并打开固定的 GitHub Releases 页面，不再在应用内下载、取消或安装更新；相关 IPC、preload 桥接与安装器状态 UI 一并移除。
 - GPL FFmpeg/x264 对应源码归档作为许可证文档随安装程序放入安装目录根部（`FFmpeg-Corresponding-Source.tar.gz`），不列为第二个下载资产。
 
@@ -31,17 +32,20 @@
 
 ## Windows 发行资产
 
-正式 Release 共 1 项资产：
+正式 Release 共 2 项资产：
 
-- `hongguo-downloader-6.7-win-x64-setup.exe`（146,466,520 字节，SHA-256 `71f0306fc7912cc16b47a6b3820d7b474a38e443b050cd425a7703ed0aaf7446`，未签名）
+- `hongguo-downloader-6.7-win-x64-setup.exe`（146,466,520 字节，SHA-256 `71f0306fc7912cc16b47a6b3820d7b474a38e443b050cd425a7703ed0aaf7446`，未签名）——普通用户只需下载这一项。
+- `latest.yml`（377 字节）——更新元数据，不是安装程序。v6.2–v6.6 安装版内置的 electron-updater 下载更新前必须先取它；缺少时旧客户端点「下载更新」会直接失败。
 
 ## 发布回执
 
 - 源码 Test：https://github.com/yuchen0x1/HongGuo-PC/actions/runs/42761689602，成功，绑定冻结提交 `6b76b63`。
-- Windows x64 release candidate：https://github.com/yuchen0x1/HongGuo-PC/actions/runs/42761689265，成功，绑定冻结提交；媒体构建、源码检查、FFmpeg 解析、对应源码与媒体二进制哈希一致、NSIS 安装/重装、真实 1.80 升级资料保留及单资产组装均通过。
-- 发布流水线：https://github.com/yuchen0x1/HongGuo-PC/actions/runs/42765407653，成功；校验候选资产恰好 1 个文件并公开 Release。
-- GitHub Release `v6.7` 已公开，共 1 项资产；远端 digest 与本地候选包 SHA-256 一致。
+- Windows x64 release candidate：https://github.com/yuchen0x1/HongGuo-PC/actions/runs/42761689265，成功，绑定冻结提交；媒体构建、源码检查、FFmpeg 解析、对应源码与媒体二进制哈希一致、NSIS 安装/重装、真实 1.80 升级资料保留及安装包组装均通过。
+- 发布流水线：https://github.com/yuchen0x1/HongGuo-PC/actions/runs/42765407653，成功；首次发布时只上传了安装包并公开 Release。
+- GitHub Release `v6.7` 已公开；安装包远端 digest 与本地候选包 SHA-256 一致。
 - 首次候选构建（run `42759236789`）在安装验收步骤失败：旧断言要求 NSIS 外壳为 x64，而 NSIS 外壳固定是 32 位 stub。已改为校验外壳为标准 32 位 stub、应用本体为 x64，并将标签重指到修正提交后重跑通过。
+- 发布后发现旧客户端应用内升级失败：6.6 内置的 electron-updater 需要 Release 中的 `latest.yml`，首次发布遗漏该文件，导致 6.6 点「下载更新」报 `ERR_UPDATER_CHANNEL_FILE_NOT_FOUND`。已按已发布安装包的精确字节补传 `latest.yml`（版本 `6.7.0`、文件名、146,466,520 字节与 SHA512 均与安装包一致）；重新下载安装包复核 SHA512 与 `latest.yml` 相符。
+- 回归防护：新增 `scripts/write-latest-yml.cjs` 从最终安装包字节生成该文件；候选工作流在组装资产时生成，发布流水线在公开前校验其版本、文件名、大小与 SHA512 与实际安装包一致；`check-app-update-installer.cjs` 断言两个工作流都保留该步骤。
 
 ## 限制
 

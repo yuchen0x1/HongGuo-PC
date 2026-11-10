@@ -54,17 +54,24 @@ jobs:
           run-id: ${{ inputs.candidate_run_id }}
           github-token: ${{ github.token }}
           path: release-assets
-      - name: Verify the single installer asset
+      - name: Verify installer and update metadata assets
         env:
           TAG: ${{ inputs.tag }}
         run: |
           version=${TAG#v}
-          expected="hongguo-downloader-${version}-win-x64-setup.exe"
+          installer="hongguo-downloader-${version}-win-x64-setup.exe"
           mapfile -t assets < <(find release-assets -maxdepth 1 -type f -printf '%f\n' | sort)
-          test "${#assets[@]}" -eq 1
-          test "${assets[0]}" = "$expected"
-          test -s "release-assets/$expected"
-      - name: Attach validated installer to draft and publish
+          test "${#assets[@]}" -eq 2
+          test "${assets[0]}" = "$installer"
+          test "${assets[1]}" = "latest.yml"
+          test -s "release-assets/$installer"
+          test -s release-assets/latest.yml
+          grep -qx "version: ${version}.0" release-assets/latest.yml
+          grep -qx "path: $installer" release-assets/latest.yml
+          grep -q "    size: $(stat -c%s "release-assets/$installer")" release-assets/latest.yml
+          sha512=$(openssl dgst -sha512 -binary "release-assets/$installer" | openssl base64 -A)
+          grep -q "sha512: $sha512" release-assets/latest.yml
+      - name: Attach validated assets to draft and publish
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.tag }}
@@ -73,6 +80,8 @@ jobs:
           test "$release" = "$TAG"
           gh release upload "$TAG" release-assets/* --clobber
           gh release edit "$TAG" --draft=false --prerelease=false
-          published=$(gh release view "$TAG" --json isDraft,tagName,assets --jq '[.isDraft, .tagName, (.assets | length)] | @tsv')
-          expected=$(printf 'false\t%s\t1' "$TAG")
-          test "$published" = "$expected"
+          installer=$(gh release view "$TAG" --json assets --jq '[.assets[].name | select(endswith("setup.exe"))] | length')
+          metadata=$(gh release view "$TAG" --json assets --jq '[.assets[].name | select(. == "latest.yml")] | length')
+          test "$installer" -eq 1
+          test "$metadata" -eq 1
+          test "$(gh release view "$TAG" --json isDraft --jq .isDraft)" = "false"

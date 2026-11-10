@@ -111,12 +111,16 @@ jobs:
         run: |
           node scripts/check-windows-installer.cjs
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-      - name: Assemble the single Windows installer asset
+      - name: Assemble the Windows installer and update metadata
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force dist/windows-release | Out-Null
           $version = (Get-Content package.json | ConvertFrom-Json).version -replace '^(\d+\.\d+)\.0$', '$1'
           Copy-Item "dist/hongguo-downloader-$version-win-x64-setup.exe" dist/windows-release/
+          # v6.2–v6.6 安装版内置 electron-updater，下载更新前必须先取 latest.yml。
+          node scripts/write-latest-yml.cjs "dist/windows-release/hongguo-downloader-$version-win-x64-setup.exe"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Get-ChildItem dist/windows-release | Select-Object Name, Length | Format-Table -AutoSize
       - uses: actions/upload-artifact@v4
         with:
           name: windows-release-candidate
