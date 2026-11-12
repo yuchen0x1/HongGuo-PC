@@ -1,4 +1,4 @@
-# 红果短剧 6.7：应用仅提示更新并打开 GitHub 下载页；实际版本读取发行清单。
+# 红果短剧：正式 Windows x64 安装版由 electron-updater 读取 GitHub Release 元数据；便携/开发版由主进程回退到发布页。
 provider: github
 owner: yuchen0x1
 repo: HongGuo-PC

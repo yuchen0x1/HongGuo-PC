@@ -62,6 +62,17 @@ test('same title with far different episode counts stays separate', () => {
   assert.deepEqual(merged.map(item => item.also_on.length), [0, 0]);
 });
 
+test('same-source same-title results with different IDs stay independently selectable', () => {
+  const ranked = rankSearchResults([
+    { source: 'hongguo', series_id: '1', series_title: '同名剧', episode_count: 80 },
+    { source: 'hongguo', series_id: '2', series_title: '同名剧', episode_count: 80 },
+    { source: 'hema', series_id: '9', series_title: '同名剧', episode_count: 80 },
+  ], '同名剧');
+  assert.deepEqual(ranked.map(item => item.series_id), ['1', '2']);
+  assert.deepEqual(ranked[0].also_on, [{ source: 'hema', series_id: '9' }]);
+  assert.deepEqual(ranked[1].also_on, []);
+});
+
 test('unknown episode counts still merge across sources', () => {
   const merged = mergeDuplicateDramas([
     { source: 'hongguo', series_id: '1', series_title: '无名剧' },

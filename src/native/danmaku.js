@@ -68,25 +68,64 @@ function setDeviceIdentityFile(file) {
   identityFile = file;
   identity = null;
 }
+const readIdentityFile = () => {
+  const parsed = JSON.parse(fs.readFileSync(identityFile, 'utf8'));
+  if (typeof parsed?.deviceId !== 'string' || typeof parsed?.installId !== 'string' ||
+      !/^\d{19}$/.test(parsed.deviceId) || !/^\d{19}$/.test(parsed.installId)) {
+    throw new Error('Invalid local client');
+  }
+  return { deviceId: parsed.deviceId, installId: parsed.installId };
+};
+
+/** 原子写入：首次写入被杀掉时不会留下半截 JSON（半截文件正是下面自愈逻辑要处理的场景）。 */
+const writeIdentityFile = value => {
+  const temporary = `${identityFile}.${process.pid}.tmp`;
+  let fd;
+  try {
+    fd = fs.openSync(temporary, 'w', 0o600);
+    fs.writeFileSync(fd, JSON.stringify(value), 'utf8');
+    fs.fsyncSync(fd);
+  } finally { if (fd !== undefined) fs.closeSync(fd); }
+  try { fs.renameSync(temporary, identityFile); }
+  catch (error) { try { fs.unlinkSync(temporary); } catch (_) {} throw error; }
+};
+
+const backupCorruptIdentity = () => {
+  const backup = `${identityFile}.corrupt-${Date.now()}-${process.pid}`;
+  try {
+    fs.renameSync(identityFile, backup);
+  } catch (error) {
+    // Windows may reject rename when another reader briefly holds the file;
+    // copy it before unlinking so the recovery path still preserves evidence.
+    fs.copyFileSync(identityFile, backup);
+    fs.unlinkSync(identityFile);
+  }
+  try { fs.chmodSync(backup, 0o600); } catch (_) {}
+  return backup;
+};
+
 const deviceIdentity = () => {
   if (identity) return identity;
   const create = () => ({ deviceId: sign.newDeviceId(), installId: sign.newDeviceId() });
   if (!identityFile) return (identity = create());
   try {
     let saved;
-    try { saved = JSON.parse(fs.readFileSync(identityFile, 'utf8')); }
-    catch (error) {
-      if (error.code !== 'ENOENT') throw error;
-      saved = create();
-      try { fs.writeFileSync(identityFile, JSON.stringify(saved), { flag: 'wx', mode: 0o600 }); }
-      catch (writeError) {
-        if (writeError.code !== 'EEXIST') throw writeError;
-        saved = JSON.parse(fs.readFileSync(identityFile, 'utf8'));
+    try {
+      saved = readIdentityFile();
+    } catch (error) {
+      if (error.code === 'ENOENT') {
+        // 首次写入必须是原子的：崩溃时留下半截 JSON 会让该安装此后永久无法加载弹幕。
+        saved = create();
+        writeIdentityFile(saved);
+      } else {
+        // A torn/invalid file must not brick official danmaku forever. Keep a
+        // recoverable forensic backup, then atomically install a fresh identity.
+        backupCorruptIdentity();
+        saved = create();
+        writeIdentityFile(saved);
       }
     }
-    if (typeof saved?.deviceId !== 'string' || typeof saved?.installId !== 'string' ||
-        !/^\d{19}$/.test(saved.deviceId) || !/^\d{19}$/.test(saved.installId)) throw new Error('Invalid local client');
-    identity = { deviceId: saved.deviceId, installId: saved.installId };
+    identity = saved;
   } catch {
     const error = new Error('Danmaku local configuration unavailable');
     error.code = 'DANMAKU_IDENTITY_IO';

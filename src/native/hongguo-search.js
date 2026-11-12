@@ -17,6 +17,7 @@ const DEFAULT_RETRIES = 1;
 const RETRY_DELAY_MS = 400;
 const CACHE_TTL_MS = 60 * 1000;
 const CACHE_LIMIT = 30;
+const SEARCH_MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 
 const cache = new Map();
 
@@ -163,6 +164,8 @@ async function defaultRequest(keyword, page, { timeout }) {
       },
       timeout,
       responseType: 'json',
+      maxContentLength: SEARCH_MAX_RESPONSE_BYTES,
+      maxBodyLength: SEARCH_MAX_RESPONSE_BYTES,
       maxRedirects: 5,
     });
   } catch (error) {

@@ -13,7 +13,14 @@ function mount(api = {}, component = 'AppUpdateNotice', props = {}) {
     useRef: initial => { const i = cursor++; return slots[i] ||= { current: initial }; },
     useEffect: (fn, deps) => { const i = cursor++; if (!slots[i] || deps.some((d, j) => !Object.is(d, slots[i][j]))) { slots[i] = deps; effects.push(() => { cleanups[i]?.(); effectFns[i] = fn; cleanups[i] = fn(); }); } },
   };
-  const defaults = { checkAppUpdate: async () => ({ enabled: true, release }), getSettings: async () => ({ app_updates_enabled: true }) };
+  const defaults = {
+    checkAppUpdate: async () => ({ enabled: true, release }),
+    getAppUpdateState: async () => ({ supported: true, status: 'idle', version: null, percent: 0, downloaded: false }),
+    downloadAppUpdate: async () => ({ success: true, state: { supported: true, status: 'downloaded', version: release.version, percent: 100, downloaded: true } }),
+    cancelAppUpdate: async () => ({ success: true, state: { supported: true, status: 'idle', version: null, percent: 0, downloaded: false } }),
+    installAppUpdate: async () => ({ success: true, state: { supported: true, status: 'installing', version: release.version, percent: 100, downloaded: true } }),
+    getSettings: async () => ({ app_updates_enabled: true }),
+  };
   const window = { electronAPI: new Proxy({ ...defaults, ...api }, { get: (o, k) => o[k] || (k.startsWith('on') ? cb => { events.set(k, cb); return () => events.delete(k); } : async () => ({ success: true })) }),
     addEventListener: (name, cb) => events.set(name, cb), removeEventListener: name => events.delete(name), dispatchEvent: event => events.get(event.type)?.(event) };
   const module = { exports: {} };
@@ -35,16 +42,15 @@ function mount(api = {}, component = 'AppUpdateNotice', props = {}) {
 (async () => {
   let passed = 0, failed = 0;
   const test = async (name, fn) => { try { await fn(); passed++; } catch (e) { failed++; console.error(`FAIL ${name}: ${e.message}`); } };
-  await test('new version opens the official release page without install actions', async () => {
-    let opens = 0;
-    const ui = mount({ openAppUpdate: async () => { opens++; return { success: true }; } });
+  await test('new version downloads and offers a verified restart install', async () => {
+    let downloads = 0, installs = 0;
+    const ui = mount({ downloadAppUpdate: async () => { downloads++; return { success: true, state: { supported: true, status: 'downloaded', version: release.version, percent: 100, downloaded: true } }; }, installAppUpdate: async () => { installs++; return { success: true, state: { supported: true, status: 'installing', version: release.version, percent: 100, downloaded: true } }; } });
     await ui.flush();
-    assert.ok(ui.button('打开下载页'));
-    assert.ok(ui.text().includes('请先退出应用，再下载并运行唯一安装包'));
-    assert.equal(ui.button('下载更新'), undefined);
-    assert.equal(ui.button('取消下载'), undefined);
-    await ui.button('打开下载页').props.onClick();
-    assert.equal(opens, 1);
+    assert.ok(ui.button('下载更新'));
+    await ui.button('下载更新').props.onClick(); await ui.flush();
+    assert.equal(downloads, 1); assert.ok(ui.button('重启并安装'));
+    await ui.button('重启并安装').props.onClick(); await ui.flush();
+    assert.equal(installs, 1);
     ui.unmount(); assert.equal(ui.events.size, 0);
   });
   await test('manual check clearly reports latest version and checks every six hours', async () => {
@@ -64,8 +70,8 @@ function mount(api = {}, component = 'AppUpdateNotice', props = {}) {
     assert.ok(ui.button('重新检查'));
     result = { enabled: true, release };
     await ui.button('重新检查').props.onClick(); await ui.flush();
-    assert.ok(ui.button('打开下载页'));
-    await ui.button('打开下载页').props.onClick(); assert.equal(opens, 1);
+    assert.ok(ui.button('下载更新'));
+    await ui.button('下载更新').props.onClick(); await ui.flush(); assert.equal(opens, 0);
     ui.unmount();
   });
   await test('disabled checks hide the notice and re-enabled checks recover', async () => {
@@ -73,14 +79,14 @@ function mount(api = {}, component = 'AppUpdateNotice', props = {}) {
     const ui = mount({ checkAppUpdate: async () => result }); await ui.flush(); assert.equal(ui.text(), '');
     ui.emit('hongguo-check-app-update'); await ui.flush(); assert.ok(ui.text().includes('更新检测已关闭'));
     result = { enabled: true, release };
-    ui.emit('onAppUpdatePreference', true); await ui.flush(); assert.ok(ui.button('打开下载页'));
+    ui.emit('onAppUpdatePreference', true); await ui.flush(); assert.ok(ui.button('下载更新'));
     ui.emit('onAppUpdatePreference', false); await ui.flush(); assert.equal(ui.text(), ''); ui.unmount();
   });
   await test('closing a notice suppresses the same release until manual recheck', async () => {
     const ui = mount(); await ui.flush();
-    assert.ok(ui.button('打开下载页'));
+    assert.ok(ui.button('下载更新'));
     ui.button('关闭更新提醒').props.onClick(); await ui.flush(); assert.equal(ui.text(), '');
-    ui.emit('hongguo-check-app-update'); await ui.flush(); assert.ok(ui.button('打开下载页'));
+    ui.emit('hongguo-check-app-update'); await ui.flush(); assert.ok(ui.button('下载更新'));
     ui.unmount();
   });
   await test('update settings page keeps the opt-out and manual check controls', async () => {
@@ -94,7 +100,7 @@ function mount(api = {}, component = 'AppUpdateNotice', props = {}) {
     assert.equal(ui.find(n => n.props['aria-label'] === '自动检测更新').props.checked, true);
     ui.find(n => n.props['aria-label'] === '自动检测更新').props.onChange({ target: { checked: false } }); await ui.flush();
     assert.equal(saved.length, 1); assert.equal(saved[0].app_updates_enabled, false);
-    assert.equal(saved[0].root, '/downloads');
+    assert.equal(Object.keys(saved[0]).join(','), 'app_updates_enabled');
     assert.equal(ui.button('检查更新').props.disabled, true); ui.unmount();
   });
   console.log(`App update UI: ${passed} passed, ${failed} failed`); process.exitCode = failed ? 1 : 0;

@@ -75,15 +75,26 @@ const castFileRefs = new Map();
 const localFileReaders = new Map();
 let castBusy = false;
 let mainWindow = null;
+let appUpdateInstaller = null;
+let appUpdater = null;
+let updateDownloadGeneration = 0;
+let pendingUpdateOperations = 0;
 let quitCleanup = null;
 let quitReady = false;
 let mergeTempCleanup = null;
+const UPDATE_BLOCKED_CHANNELS = new Set(['hongguo-download-batch', 'download-single-episode', 'download-series-to-nas', 'retry-task', 'retry-tasks', 'resume-all', 'merge-series', 'transcode-for-playback', 'prepare-online-play', 'start-casting', 'save-settings', 'set-boss-key']);
 const ipcMain = {
   handle(channel, handler) {
     rawIpcMain.handle(channel, async (event, ...args) => {
       if (!rendererSecurity.isTrustedSender(event, mainWindow)) throw new Error('窗口请求无效');
       if (quitCleanup) return { success: false, error: '正在退出，请等待清理完成。' };
-      return handler(event, ...args);
+      if (appUpdateInstaller?.getState().status === 'installing' && UPDATE_BLOCKED_CHANNELS.has(channel)) {
+        return { success: false, error: '正在安装更新，请等待应用重新启动。' };
+      }
+      const blocksUpdate = UPDATE_BLOCKED_CHANNELS.has(channel);
+      if (blocksUpdate) pendingUpdateOperations++;
+      try { return await handler(event, ...args); }
+      finally { if (blocksUpdate) pendingUpdateOperations--; }
     });
   },
 };
@@ -212,6 +223,16 @@ const runningDownloads = new Set();
 const runningDownloadPaths = new Set();
 const downloadRuns = new Map();
 let MAX_CONCURRENT_DOWNLOADS = 3;
+
+// File paths are user supplied and may differ only by case or a trailing
+// separator. Use one key for queue de-duplication while keeping the original
+// path for actual I/O (important for NAS and non-Windows platforms).
+function normalizePathKey(value) {
+  if (typeof value !== 'string' || !value.trim()) return '';
+  let key = path.resolve(value);
+  key = key.replace(/[\\/]+$/, '');
+  return process.platform === 'win32' ? key.toLowerCase() : key;
+}
 
 // ===== 设置 =====
 function getDefaultSettings() {
@@ -608,6 +629,23 @@ function saveDownloadTasks() {
   sendToRenderer('download-queue-changed', {});
 }
 
+/**
+ * 下载流程收尾时的记录落盘：媒体结果已经确定，记录写失败不能反过来改写任务状态。
+ * （磁盘满、目录只读、data.json 被占用时，旧实现会把「已下载完成」翻转成「失败」。）
+ */
+function persistDownloadTasksQuietly(stage) {
+  try { saveDownloadTasks(); return true; }
+  catch (error) {
+    console.error(`[Download] ${stage}记录保存失败:`, error.message);
+    try {
+      sendToRenderer('storage-error', {
+        error: '下载记录保存失败，请检查磁盘空间或目录权限；视频文件已保留，重启后可从磁盘重新扫描。',
+      });
+    } catch (_) {}
+    return false;
+  }
+}
+
 /** 重试/继续类操作在持久化失败时恢复任务字段与队列，避免未保存的任务随后被启动。 */
 function snapshotQueueTasks(tasks) {
   return {
@@ -686,11 +724,11 @@ function pumpQueue() {
   downloadQueue = downloadQueue.filter(task => task.status === 'pending');
   for (const task of downloadQueue) repairTaskDestination(task);
   while (activeDownloads < MAX_CONCURRENT_DOWNLOADS) {
-    const index = downloadQueue.findIndex(task => !runningDownloads.has(task.id) && !runningDownloadPaths.has(task.savePath));
+    const index = downloadQueue.findIndex(task => !runningDownloads.has(task.id) && !runningDownloadPaths.has(normalizePathKey(task.savePath)));
     if (index < 0) break;
     const [task] = downloadQueue.splice(index, 1);
     runningDownloads.add(task.id);
-    runningDownloadPaths.add(task.savePath);
+    runningDownloadPaths.add(normalizePathKey(task.savePath));
     activeDownloads++;
     downloadRuns.set(task.id, runTask(task));
   }
@@ -702,10 +740,20 @@ async function runTask(task) {
     await executeDownload(task);
   } catch (error) {
     console.error('[Download Queue] 下载失败:', error);
+    // executeDownload normally owns its error state, but dispatch failures (for
+    // example a corrupt/unknown task type) can happen before a task-specific
+    // handler is entered. Never leave such a task visibly pending forever.
+    if (task.status === 'pending' || task.status === 'downloading') {
+      task.status = 'failed';
+      task.error = error?.message || '下载任务执行失败';
+      task.endTime = Date.now();
+      persistDownloadTasksQuietly('队列异常');
+      sendToRenderer('download-failed', { id: task.id, error: task.error, retryAt: null, sourceRetries: 0, qualityNotice: '' });
+    }
   } finally {
     activeDownloads--;
     runningDownloads.delete(task.id);
-    runningDownloadPaths.delete(destination);
+    runningDownloadPaths.delete(normalizePathKey(destination));
     downloadRuns.delete(task.id);
     pumpQueue();
   }
@@ -812,8 +860,10 @@ function pauseAllTasks() {
   for (const task of tasks) {
     clearSourceRetry(task);
     try { task.cancelSource?.cancel('用户一键暂停'); } catch (_) {}
+    try { task.nasAbort?.abort(); } catch (_) {}
     try { task.writer?.destroy(); } catch (_) {}
-    delete task.cancelSource; delete task.writer;
+    // 保留句柄：cancel() 只是发信号，run 仍可能在不可中断阶段（如网络盘写入）继续存活。
+    // 提前 delete 会让随后的「删除任务 / 退出」再也无法中断它；由 run 的 finally 清理即可。
   }
   sendToRenderer('download-queue-changed', {});
   return tasks.length;
@@ -924,20 +974,35 @@ async function verifyDownloadQuality(file, quality, existing = false, verifyDeco
 function publishDownloadFile(temporary, destination) {
   // Reuse merge publication: hard-link when supported, exclusive copy on FAT/exFAT.
   require('./src/native/merge-runner').publishMergedOutput(temporary, destination);
-  fs.unlinkSync(temporary);
+  // 发布成功后删除临时名失败（杀软/索引器占用）不应把已完成的下载判为失败。
+  try { fs.unlinkSync(temporary); } catch (error) { console.warn('[Download] 临时文件未删除:', temporary, error.code); }
 }
+
+// 网络盘挂起（SMB 无响应）没有内核级超时；不设上限会让任务永久停在 downloading 并占满并发槽。
+const NAS_EXPORT_TIMEOUT_MS = 10 * 60 * 1000;
 
 async function completeNasExports(task) {
   if (!task.nasDestination && !task.nasTargets?.length) return [];
   const warnings = [];
   for (const destination of task.nasDestination ? [task.nasDestination] : task.nasTargets || []) {
+    const controller = new AbortController();
+    task.nasAbort = controller;
+    const timer = setTimeout(() => controller.abort(), NAS_EXPORT_TIMEOUT_MS);
+    timer.unref?.();
     try {
-      await copyNasEpisode(task, destination);
+      await copyNasEpisode(task, destination, { signal: controller.signal });
       sendToRenderer('nas-export-done', { seriesId: task.hongguoInfo.series_id, vidIndex: task.hongguoInfo.vid_index, success: true });
-    } catch (_) {
-      const error = 'NAS 整理失败，请确认共享目录在线后再次点击「下载到 NAS」重试；本地视频已保留';
+    } catch (cause) {
+      const cancelled = controller.signal.aborted || task.cancelled;
+      const error = cancelled
+        ? 'NAS 整理已取消（超时或任务已停止），本地视频已保留；确认共享目录在线后可重新点击「下载到 NAS」'
+        : 'NAS 整理失败，请确认共享目录在线后再次点击「下载到 NAS」重试；本地视频已保留';
+      if (cancelled) console.warn('[NAS] 整理已取消:', cause?.message || '');
       warnings.push(error);
       sendToRenderer('nas-export-done', { seriesId: task.hongguoInfo.series_id, vidIndex: task.hongguoInfo.vid_index, success: false, error });
+    } finally {
+      clearTimeout(timer);
+      if (task.nasAbort === controller) delete task.nasAbort;
     }
   }
   task.nasWarning = warnings.join('；');
@@ -949,7 +1014,7 @@ async function executeHongguoDownload(task) {
   const { vid, series_title } = hongguoInfo || {};
   const source = axios.CancelToken.source();
   task.cancelSource = source;
-  let tmpPath, writer;
+  let tmpPath, writer, stopMediaIdle = null, response = null;
   try {
     task.status = 'downloading'; task.cancelled = false; task.progress = 0; delete task.retryAt;
     delete task.qualityNotice; delete task.actualQuality;
@@ -984,7 +1049,7 @@ async function executeHongguoDownload(task) {
       fs.mkdirSync(downloadDir, { recursive: true });
       if (!task.directoryIdentity) {
         task.directoryIdentity = readDirectoryIdentity(downloadDir);
-        if (downloadTasks.includes(task)) saveDownloadTasks();
+        if (downloadTasks.includes(task)) persistDownloadTasksQuietly('目录标识');
       }
     }
     // Recheck source access before reusing an existing third-party file or URL.
@@ -1000,7 +1065,8 @@ async function executeHongguoDownload(task) {
       await completeNasExports(task);
       source.token.throwIfRequested();
       task.status = 'completed'; task.progress = 100; task.endTime = Date.now(); delete task.sourceRetries;
-      saveDownloadTasks(); sendToRenderer('download-completed', { id, path: finalPath });
+      persistDownloadTasksQuietly('完成');
+      sendToRenderer('download-completed', { id, path: finalPath });
       return;
     }
     tmpPath = finalPath + '.enc.tmp';
@@ -1038,7 +1104,8 @@ async function executeHongguoDownload(task) {
         publishDownloadFile(tmpPath,finalPath);
         return;
       }
-      const response = await requestMedia(playInfo, { cancelToken: source.token });
+      response = await requestMedia(playInfo, { cancelToken: source.token });
+      stopMediaIdle = guardMediaIdle(response.data);
       source.token.throwIfRequested();
       const totalLength = Number(response.headers['content-length']) || 0;
       task.totalBytes = totalLength;
@@ -1088,9 +1155,12 @@ async function executeHongguoDownload(task) {
     source.token.throwIfRequested();
     task.status = 'completed'; task.progress = 100; task.endTime = Date.now(); delete task.sourceRetries;
     if (task.qualityNotice) task.qualityNotice = task.qualityNotice.replace('正在下载', '已下载');
-    saveDownloadTasks(); sendToRenderer('download-completed', { id, path: finalPath, actualQuality: task.actualQuality, qualityNotice: task.qualityNotice || '' });
+    persistDownloadTasksQuietly('完成');
+    sendToRenderer('download-completed', { id, path: finalPath, actualQuality: task.actualQuality, qualityNotice: task.qualityNotice || '' });
   } catch (error) {
     if (writer && !writer.destroyed) writer.destroy();
+    // 取消可能发生在「拿到响应头」与「开始消费 body」之间：不销毁响应流会把 socket 留在连接池里。
+    try { response?.data?.destroy?.(); } catch (_) {}
     if (tmpPath) { try { fs.unlinkSync(tmpPath); } catch (_) {} }
     task.qualityNotice = '';
     // A retry may already be queued; the cancelled old run must not overwrite it.
@@ -1113,8 +1183,9 @@ async function executeHongguoDownload(task) {
       }
       sendToRenderer('download-failed', { id, error: task.error, retryAt: task.retryAt || null, sourceRetries: task.sourceRetries || 0, qualityNotice: '' });
     }
-    saveDownloadTasks();
+    persistDownloadTasksQuietly('状态');
   } finally {
+    try { stopMediaIdle?.(); } catch (_) {}
     if (task.cancelSource === source) delete task.cancelSource;
     if (task.writer === writer) delete task.writer;
   }
@@ -2136,6 +2207,25 @@ function isRecordedMediaFile(target, episode) {
   } catch (_) { return false; }
 }
 
+function isLocalMediaAuthorized(target) {
+  const resolved = path.resolve(String(target || ''));
+  try {
+    const stat = fs.lstatSync(resolved);
+    if (!stat.isFile() || stat.isSymbolicLink()) return false;
+    const real = fs.realpathSync(resolved);
+    // A capability may outlive a file replacement. Refuse symlink/path
+    // substitution rather than serving the replacement target.
+    const samePath = process.platform === 'win32'
+      ? real.toLowerCase() === resolved.toLowerCase()
+      : real === resolved;
+    if (!samePath) return false;
+  } catch (_) { return false; }
+  if (isInsideMediaRoot(resolved) || isRecordedMediaFile(resolved)) return true;
+  try {
+    return !!compatDir && pathInside(compatDir, resolved);
+  } catch (_) { return false; }
+}
+
 // 只定位下载目录或已登记媒体，不用 openPath，避免把缺失路径的父级当成可执行文件启动。
 ipcMain.handle('show-in-folder', async (event, filePath) => {
   try {
@@ -2298,7 +2388,11 @@ function collectSeriesEpisodeFiles(seriesId, seriesTitle) {
       const m = !sharedDirectory && n.match(/(\d{1,4})\.mp4$/i);
       // 目录兜底只认能证明属于本剧的文件：模板精确命中，或文件名含本剧标题。
       // 否则「花絮2.mp4」会被当成第 2 集，参与合并或被「看完自动删除」误删。
-      const titled = !!scanTitle && sanitizeFolderName(n).includes(scanTitle);
+      const stem = sanitizeFolderName(n.replace(/\.mp4$/i, ''));
+      // Require a filename boundary after the title. A short title such as
+      // “春” must not claim “春日花絮2.mp4” as episode 2.
+      const titled = !!scanTitle && (stem === scanTitle || stem.startsWith(`${scanTitle} `)
+        || stem.startsWith(`${scanTitle}_`) || stem.startsWith(`${scanTitle}-`));
       const idx = episodeNames.get(n) || (m && titled ? parseInt(m[1], 10) : 0);
       if (!idx || byIndex.has(idx)) continue;
       const full = path.join(dir, n);
@@ -2696,6 +2790,52 @@ function mediaTransferError(message) {
   return Object.assign(new Error(message), { code: 'MEDIA_TRANSFER_ERROR', mediaRetryable: true });
 }
 
+const MEDIA_IDLE_TIMEOUT_MS = 30 * 1000;
+
+/**
+ * 响应体空闲看门狗。
+ *
+ * axios 的 timeout 在 responseType:'stream' 下只保护到首字节：拿到响应头即 settle 并把
+ * isDone 置真，此后 socket 的 timeout 事件进入 handleTimeout 会直接 return。
+ * 因此 CDN 发完响应头就不再出数据时，pipeline / for-await 会永久挂起——播放器停在
+ * 「准备中」、下载任务停在 downloading。这里按 1s 采样已读字节数，连续 idleMs 无增长
+ * 就销毁流并抛出可重试错误，让上层进入正常的失败/重试分支。
+ */
+function guardMediaIdle(stream, idleMs = MEDIA_IDLE_TIMEOUT_MS) {
+  if (!stream || typeof stream.on !== 'function' || typeof setTimeout !== 'function') return () => {};
+  const sample = () => {
+    try { return Number(stream.socket?.bytesRead ?? stream.bytesRead ?? 0) || 0; }
+    catch (_) { return 0; }
+  };
+  let last = sample(), lastAt = Date.now(), timer = null, stopped = false;
+  const stop = () => {
+    stopped = true;
+    if (timer) { clearTimeout(timer); timer = null; }
+  };
+  const done = () => stop();
+  const tick = () => {
+    timer = null;
+    if (stopped || stream.destroyed || stream.readableEnded) { stop(); return; }
+    const current = sample();
+    if (current !== last) { last = current; lastAt = Date.now(); timer = setTimeout(tick, 1000); timer.unref?.(); return; }
+    if (Date.now() - lastAt < idleMs) { timer = setTimeout(tick, 1000); timer.unref?.(); return; }
+    stop();
+    const error = mediaTransferError('视频数据传输中断，请重试');
+    try { stream.destroy(error); } catch (_) { try { stream.destroy(); } catch (_) {} }
+  };
+  timer = setTimeout(tick, 1000);
+  timer.unref?.();
+  stream.once('end', done);
+  stream.once('close', done);
+  stream.once('error', done);
+  return () => {
+    stop();
+    stream.removeListener('end', done);
+    stream.removeListener('close', done);
+    stream.removeListener('error', done);
+  };
+}
+
 function awaitMediaOperation(promise, signal, timeout = 0) {
   return new Promise((resolve, reject) => {
     let timer;
@@ -2940,6 +3080,9 @@ function registerLocalProtocol() {
       if (!/\.(mp4|m4v|mov|webm)$/i.test(filePath)) {
         return new Response('forbidden', { status: 403, headers: { 'Content-Type': 'text/plain' } });
       }
+      if (!isLocalMediaAuthorized(filePath)) {
+        return new Response('forbidden', { status: 403, headers: { 'Content-Type': 'text/plain' } });
+      }
 
       let size = 0;
       try {
@@ -3040,8 +3183,9 @@ async function fetchDecryptedEpisodeOnce(vid, onProgress, seriesId, playInfo, si
   if (signal?.aborted) throw new Error('已取消播放');
   if (playInfo.contentKey && !/^[a-f\d]{32}$/i.test(playInfo.contentKey)) throw new Error('片源解密密钥格式无效');
   const response = await requestMedia(playInfo, { signal });
+  const stopIdle = guardMediaIdle(response.data);
   const total = Number(response.headers['content-length']) || 0;
-  if (total > maxBytes) { response.data.destroy(); throw tooLarge(); }
+  if (total > maxBytes) { stopIdle(); response.data.destroy(); throw tooLarge(); }
   const chunks = [];
   let received = 0, lastProgress = 0;
   if (playInfo.contentKey) {
@@ -3063,17 +3207,22 @@ async function fetchDecryptedEpisodeOnce(vid, onProgress, seriesId, playInfo, si
       if ((await fsp.stat(output)).size > maxBytes) throw tooLarge();
       return await fsp.readFile(output);
     } finally {
+      stopIdle();
       response.data.destroy();
       if (temporary) await fsp.rm(temporary, { recursive: true, force: true });
     }
   }
-  for await (const chunk of response.data) {
-    received += chunk.length;
-    if (received > maxBytes) { response.data.destroy(); throw tooLarge(); }
-    chunks.push(chunk);
-    if (onProgress && (Date.now() - lastProgress >= 150 || received === total)) {
-      onProgress(received, total); lastProgress = Date.now();
+  try {
+    for await (const chunk of response.data) {
+      received += chunk.length;
+      if (received > maxBytes) { response.data.destroy(); throw tooLarge(); }
+      chunks.push(chunk);
+      if (onProgress && (Date.now() - lastProgress >= 150 || received === total)) {
+        onProgress(received, total); lastProgress = Date.now();
+      }
     }
+  } finally {
+    stopIdle();
   }
   if (signal?.aborted) throw new Error('已取消播放');
   if (!received || (total && received !== total)) throw mediaTransferError('视频下载不完整，请重试');
@@ -3181,11 +3330,18 @@ async function clearSeriesPlaybackCache(sid) {
 
   const cacheDir = path.resolve(getCompatDir());
   const base = sanitizeFolderName(sid);
-  if (!base || seriesRegistry.some(item => String(item.series_id) !== sid && sanitizeFolderName(String(item.series_id)) === base)) {
-    throw new Error('兼容缓存文件名与其他剧冲突，已停止清理');
+  let sidHash = 1469598103934665603n;
+  for (let i = 0; i < sid.length; i++) {
+    sidHash ^= BigInt(sid.charCodeAt(i));
+    sidHash = (sidHash * 1099511628211n) & 0xffffffffffffffffn;
   }
-  const escaped = base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const namePattern = new RegExp(`^${escaped}_(\\d{3,})(?:_(?:720p|1080p))?\\.mp4(?:\\.part)?$`);
+  const hashedBase = base ? `${base}-${sidHash.toString(16).padStart(16, '0').slice(0, 10)}` : '';
+  const legacyAmbiguous = !base || seriesRegistry.some(item => String(item.series_id) !== sid && sanitizeFolderName(String(item.series_id)) === base);
+  const prefixes = [];
+  if (/^\d+$/.test(sid) || !legacyAmbiguous) prefixes.push(base);
+  if (!/^\d+$/.test(sid) && hashedBase) prefixes.push(hashedBase);
+  const escapedPrefixes = prefixes.map(prefix => prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  const namePattern = new RegExp(`^(?:${escapedPrefixes.join('|')})_(\\d{3,})(?:_(?:720p|1080p))?\\.mp4(?:\\.part)?$`);
   const ownsName = name => {
     const match = namePattern.exec(name);
     const index = match ? Number(match[1]) : 0;
@@ -3298,11 +3454,38 @@ function getCompatDir() {
 function compatFileName(seriesId, vidIndex, quality = 'auto') {
   if (!['string', 'number'].includes(typeof vidIndex) || !/^[1-9]\d*$/.test(String(vidIndex))
     || !Number.isSafeInteger(Number(vidIndex))) throw new Error('集数必须是有效正整数');
-  return `${sanitizeFolderName(String(seriesId))}_${String(Number(vidIndex)).padStart(3, '0')}${quality === 'auto' ? '' : `_${playbackQuality(quality)}`}.mp4`;
+  const rawId = String(seriesId);
+  const safeId = sanitizeFolderName(rawId) || 'series';
+  // Numeric 红果 IDs already have a collision-free representation. Other
+  // source IDs contain punctuation that sanitizeFolderName removes, so add a
+  // stable digest to prevent e.g. "xifan:a/b" and "xifan:ab" sharing a file.
+  let hash = 1469598103934665603n;
+  for (let i = 0; i < rawId.length; i++) {
+    hash ^= BigInt(rawId.charCodeAt(i));
+    hash = (hash * 1099511628211n) & 0xffffffffffffffffn;
+  }
+  const prefix = /^\d+$/.test(rawId)
+    ? safeId
+    : `${safeId}-${hash.toString(16).padStart(16, '0').slice(0, 10)}`;
+  return `${prefix}_${String(Number(vidIndex)).padStart(3, '0')}${quality === 'auto' ? '' : `_${playbackQuality(quality)}`}.mp4`;
+}
+
+function legacyCompatFileName(seriesId, vidIndex, quality = 'auto') {
+  const safeId = sanitizeFolderName(String(seriesId)) || 'series';
+  return `${safeId}_${String(Number(vidIndex)).padStart(3, '0')}${quality === 'auto' ? '' : `_${playbackQuality(quality)}`}.mp4`;
 }
 
 function compatPathFor(seriesId, vidIndex, quality = 'auto') {
-  return path.join(getCompatDir(), compatFileName(seriesId, vidIndex, quality));
+  const dir = getCompatDir();
+  const current = path.join(dir, compatFileName(seriesId, vidIndex, quality));
+  const legacy = path.join(dir, legacyCompatFileName(seriesId, vidIndex, quality));
+  const rawId = String(seriesId);
+  // Reuse an old cache only while its sanitized prefix is unambiguous. New
+  // files always use the hashed name above, so future collisions cannot occur.
+  if (legacy !== current && fs.existsSync(legacy)
+    && !seriesRegistry.some(item => String(item.series_id) !== rawId
+      && sanitizeFolderName(String(item.series_id)) === sanitizeFolderName(rawId))) return legacy;
+  return current;
 }
 
 function compatCacheStatus() {
@@ -3341,6 +3524,8 @@ function trimCompatCache(currentOutput) {
   for (const e of entries) {
     if (total <= COMPAT_MAX_BYTES) break;
     if (protectedFiles.has(e.p)) continue;
+    // 淘汰同样必须避开正在播放/投屏的文件，否则用户会看到「播到一半黑屏」。
+    if (isFileInUse(e.p)) continue;
     try { fs.unlinkSync(e.p); total -= e.size; } catch (_) {}
   }
 }
@@ -3649,6 +3834,8 @@ ipcMain.handle('clear-compat-cache', async () => {
       for (const f of fs.readdirSync(dir)) {
         if (!f.endsWith('.mp4') && !f.endsWith('.part')) continue;
         const p = path.join(dir, f);
+        // 正在播放/投屏的文件不能被删除：投屏按 Range 逐段请求，删掉后下一段直接 404。
+        if (!f.endsWith('.part') && isFileInUse(p)) continue;
         try { const size = fs.statSync(p).size; fs.unlinkSync(p); freed += size; count++; } catch (_) { failed++; }
       }
     } catch (_) { failed++; }
@@ -4451,6 +4638,10 @@ async function saveSettings(settings) {
       try { await applyProxyWithTimeout(current, 5000); } catch (_) { /* 旧配置也可能已不可用 */ }
       throw error;
     }
+    if (merged.app_updates_enabled === false) {
+      updateDownloadGeneration++;
+      appUpdateInstaller?.cancel();
+    }
     if (wasCheckingUpdates !== (merged.app_updates_enabled !== false)) {
       sendToRenderer('app-update-preference', merged.app_updates_enabled !== false);
     }
@@ -4624,10 +4815,21 @@ async function stopTaskAndWait(task) {
   clearSourceRetry(task);
   task.cancelled = true;
   task.cancelSource?.cancel('用户删除任务');
+  try { task.nasAbort?.abort(); } catch (_) {}
   task.writer?.destroy();
   task.status = 'stopped';
   downloadQueue = downloadQueue.filter(item => item.id !== task.id);
-  await downloadRuns.get(task.id);
+  const run = downloadRuns.get(task.id);
+  if (!run) return true;
+  // 网络盘写入、外部探测等阶段无法立即中断；有界等待，超时交给调用方判定「仍在收尾」，
+  // 而不是让 delete-task 的 IPC 永久挂起、退出流程被无限拖住。
+  let timer;
+  const settled = await Promise.race([
+    run.then(() => true, () => true),
+    new Promise(resolve => { timer = setTimeout(() => resolve(false), 5000); timer.unref?.(); }),
+  ]);
+  clearTimeout(timer);
+  return settled;
 }
 
 function isTaskInFlight(task) {
@@ -4635,7 +4837,9 @@ function isTaskInFlight(task) {
 }
 
 function isFileInUse(file) {
-  return castFileRefs.has(file) || localFileReaders.has(file) || runningDownloadPaths.has(file) || downloadTasks.some(task => task.savePath === file && isTaskInFlight(task));
+  const key = normalizePathKey(file);
+  return castFileRefs.has(file) || localFileReaders.has(file) || runningDownloadPaths.has(key)
+    || downloadTasks.some(task => normalizePathKey(task.savePath) === key && isTaskInFlight(task));
 }
 
 function removeFinishedRecords(seriesId, saveChanges = false) {
@@ -4894,9 +5098,11 @@ ipcMain.handle('stop-download', async (event, taskId) => {
   catch (error) { restoreQueueTasks(snapshot); throw error; }
   clearSourceRetry(task);
   if (task.cancelSource) { try { task.cancelSource.cancel('用户停止下载'); } catch (_) {} }
+  try { task.nasAbort?.abort(); } catch (_) {}
   if (task.writer) { try { task.writer.destroy(); } catch (_) {} }
-  delete task.cancelSource;
-  delete task.writer;
+  // cancel/destroy only signal the running promise. Keep both handles until
+  // executeDownload's finally block so a late NAS/write phase remains
+  // cancellable and cannot outlive the task invisibly.
   sendToRenderer('download-stopped', { id: taskId, path: task.savePath });
   return { success: true };
 });
@@ -4930,7 +5136,8 @@ ipcMain.handle('retry-tasks', async (event, taskIds) => {
   if (!Array.isArray(taskIds) || taskIds.length === 0) return { success: false, error: '没有要重试的任务' };
   let count = 0;
   const changed = [];
-  for (const taskId of taskIds) {
+  // 去重：重复 id 会让 count 虚高，并在失败回滚时对同一任务重复 restore。
+  for (const taskId of new Set(taskIds)) {
     const task = downloadTasks.find((t) => t.id === taskId);
     if (task && (task.status === 'failed' || task.status === 'stopped' || (task.status === 'completed' && !hasCompleteTaskFile(task)))) changed.push(task);
   }
@@ -5007,10 +5214,71 @@ ipcMain.handle('open-folder', async (event, taskId) => {
   return { success: false, error: '文件夹不存在' };
 });
 
-// ===== 应用更新提醒：只检查版本并打开固定的官方发布页 =====
+// ===== 应用更新：固定官方源，下载和重启均由用户确认 =====
 let updateRequest = null;
 let latestAppRelease = null;
 const LATEST_RELEASE_URL = 'https://github.com/yuchen0x1/HongGuo-PC/releases/latest';
+function appUpdateSupport() {
+  let reason = '';
+  if (IS_PREVIEW || !app.isPackaged) reason = '开发或预览版本不支持应用内安装，请使用正式安装版。';
+  else if (process.platform === 'win32' && (portableConfig.mode === 'portable' || portableConfig.portableDir
+    || process.env.PORTABLE_EXECUTABLE_FILE || process.env.PORTABLE_EXECUTABLE_DIR)) reason = '便携版需手动更新。请先退出旧程序，再运行发布页中的 setup 安装包；安装版支持后续应用内更新。';
+  else if (process.platform !== 'win32') reason = '当前发行版仅支持 Windows x64 应用内更新，请前往发布页手动更新。';
+  return { supported: !reason, reason };
+}
+function appUpdateState() {
+  return appUpdateInstaller?.getState() || { ...appUpdateSupport(), status: 'idle', version: null, percent: 0, error: '', downloaded: false };
+}
+function getAppUpdateInstaller() {
+  if (!appUpdateInstaller) {
+    appUpdater = require('electron-updater').autoUpdater;
+    appUpdater.on('login', (authInfo, callback) => {
+      if (matchesProxyAuth(authInfo)) callback(activeProxyAuth.username, activeProxyAuth.password);
+      else callback();
+    });
+    appUpdateInstaller = require('./src/native/app-update-installer').createUpdateInstaller({
+      updater: appUpdater,
+      currentVersion: APP_VERSION,
+      isEnabled: () => !IS_PREVIEW && getCurrentSettings().app_updates_enabled !== false,
+      installBlocker: () => {
+        if (pendingUpdateOperations) return '正在处理任务或保存设置，请稍后再安装更新。';
+        if (downloadRuns.size || downloadQueue.length || sourceRetryTimers.size) return '还有下载或等待重试的任务，请先在下载管理中暂停全部任务，再安装更新。';
+        if (mergeTasks.some(task => task.status === 'running') || compatPreparing.size || onlinePreparing.size) return '正在合并或准备视频，请等待完成或取消后再安装更新。';
+        if (storageError) return '本地数据保存异常，请先处理保存问题，再安装更新。';
+        return '';
+      },
+      emit: state => sendToRenderer('app-update-state', state),
+    });
+  }
+  return appUpdateInstaller;
+}
+ipcMain.handle('get-app-update-state', () => appUpdateState());
+ipcMain.handle('download-app-update', async () => {
+  const support = appUpdateSupport();
+  if (!support.supported) return { success: false, error: support.reason, state: appUpdateState() };
+  if (!latestAppRelease || getCurrentSettings().app_updates_enabled === false) return { success: false, error: '更新信息已失效，请重新检查更新。', state: appUpdateState() };
+  try {
+    const request = updateDownloadGeneration;
+    const installer = getAppUpdateInstaller();
+    if (!['checking', 'downloading', 'downloaded', 'installing'].includes(installer.getState().status)) {
+      await applyProxyToSession(desiredProxyConfig || resolveProxyConfig(getCurrentSettings()), [appUpdater.netSession]);
+    }
+    if (request !== updateDownloadGeneration) return { success: false, error: '更新已取消。', state: installer.getState() };
+    return await installer.download(latestAppRelease.version);
+  } catch (_) {
+    return { success: false, error: '无法准备应用内更新，请重试或前往发布页下载安装。', state: appUpdateState() };
+  }
+});
+ipcMain.handle('cancel-app-update', () => {
+  if (appUpdateInstaller?.getState().status === 'installing') return { success: false, error: '正在安装更新，无法取消。', state: appUpdateState() };
+  updateDownloadGeneration++;
+  if (!appUpdateInstaller) return { success: true, state: appUpdateState() };
+  return appUpdateInstaller.cancel();
+});
+ipcMain.handle('install-app-update', () => {
+  if (!appUpdateInstaller) return { success: false, error: '请先完成更新下载。', state: appUpdateState() };
+  return appUpdateInstaller.install();
+});
 ipcMain.handle('check-app-update', async event => {
   if (proxyStartupFallback) return { enabled: false, release: null, error: '请先修复或明确关闭代理。' };
   if (IS_PREVIEW || !mainWindow || event.sender !== mainWindow.webContents) return { enabled: false, release: null };
@@ -5292,14 +5560,28 @@ function createWindow() {
       app.quit();
     }
   });
+  // 渲染进程崩溃 / 被强制重载时不会发出 release-online-play：
+  // 在线会话持有整集 buffer（上限 300MB）和 %TEMP%/hongguo-online-* 目录，
+  // 必须由主进程兜底回收，否则每次崩溃都会线性泄漏内存与临时文件。
+  contents.on('render-process-gone', () => {
+    console.warn('[Renderer] 渲染进程已退出，回收播放资源');
+    releaseRendererPlaybackResources();
+  });
+  contents.on('destroyed', () => releaseRendererPlaybackResources());
+
   mainWindow.on('closed', () => {
     stealth.dispose();
     if (process.platform === 'darwin' && !contents.isDestroyed()) contents.destroy();
-    mediaAccess.clear();
-    clearOnlineCache();
-    for (const job of compatPreparing.values()) { job.cancelled = true; job.controller.abort(); }
+    releaseRendererPlaybackResources();
     mainWindow = null;
   });
+}
+
+/** 释放与渲染进程生命周期绑定的播放资源（在线会话、临时目录、本地协议登记、兼容转码）。 */
+function releaseRendererPlaybackResources() {
+  mediaAccess.clear();
+  clearOnlineCache();
+  for (const job of compatPreparing.values()) { job.cancelled = true; job.controller.abort(); }
 }
 
 // ===== 应用生命周期 =====

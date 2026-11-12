@@ -62,14 +62,14 @@ function restoredEntry(format, configs, entryType) {
     failedDownload.checked(); await tick(); failedDownload.downloaded(Error('checksum mismatch')); await pending;
     assert.equal(failedDownload.controller.install().success, false, 'failed checksum cannot install');
   });
-  await check('update notice opens the fixed release page and has no install controls', async () => {
-    let opens = 0;
-    const ui = mount({ openAppUpdate: async () => { opens++; return { success: true }; } });
+  await check('update notice offers real download and install controls', async () => {
+    let downloads = 0, installs = 0;
+    const ui = mount({ downloadAppUpdate: async () => { downloads++; return { success: true, state: { supported: true, status: 'downloaded', version: '9.0', percent: 100, downloaded: true } }; }, installAppUpdate: async () => { installs++; return { success: true, state: { supported: true, status: 'installing', version: '9.0', percent: 100, downloaded: true } }; } });
     await ui.flush();
-    assert.ok(ui.button('打开下载页'), 'new release should offer a download page action');
-    assert.equal(ui.button('重启并安装'), undefined);
-    assert.equal(ui.button('下载更新'), undefined);
-    await ui.button('打开下载页').props.onClick(); assert.equal(opens, 1);
+    assert.ok(ui.button('下载更新'), 'new release should offer an in-app download action');
+    await ui.button('下载更新').props.onClick(); await ui.flush();
+    assert.equal(downloads, 1); assert.ok(ui.button('重启并安装'));
+    await ui.button('重启并安装').props.onClick(); await ui.flush(); assert.equal(installs, 1);
     ui.unmount();
   });
   await check('sequel matching preserves year suffixes and accepts explicit and modest bracket seasons', () => {

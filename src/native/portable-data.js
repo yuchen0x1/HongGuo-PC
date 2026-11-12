@@ -36,24 +36,35 @@ function isWritableDirectory(dir) {
 function recoverIncompleteMigration(toDir) {
   const sentinel = path.join(toDir, MIGRATION_SENTINEL);
   if (!fs.existsSync(sentinel)) return { ok: true };
-  let names = null;
+  let names = null, sentinelMoved = false;
   try {
     const parsed = JSON.parse(fs.readFileSync(sentinel, 'utf8'));
     if (Array.isArray(parsed?.files)) names = parsed.files;
   } catch (_) { names = null; }
-  if (!names) return { ok: false };
+  if (!names) {
+    // 标记本身损坏（写入中被杀/磁盘满）：无法知道哪些文件已提交。但回退期间应用只写系统目录，
+    // 便携 data/ 里最多是半套副本，因此按全部待迁移文件清理是安全的；
+    // 否则 corrupt 标记会让便携版此后永久回退系统目录（提示让用户检查 data，却无任何自动恢复）。
+    try { fs.renameSync(sentinel, `${sentinel}.corrupt-${Date.now()}`); sentinelMoved = true; }
+    catch (_) { return { ok: false }; }
+    names = DATA_FILES.slice();
+  }
   const stuck = [];
   for (const name of names) {
     if (!DATA_FILES.includes(name)) continue;
     const file = path.join(toDir, name);
     try {
       if (fs.existsSync(file)) fs.unlinkSync(file);
+      const leftover = `${file}.importing`;
+      if (fs.existsSync(leftover)) fs.unlinkSync(leftover);
     } catch (_) {
       stuck.push(name);
     }
   }
   if (stuck.length) return { ok: false, stuck };
-  try { fs.unlinkSync(sentinel); } catch (_) { return { ok: false, stuck: ['sentinel'] }; }
+  if (!sentinelMoved) {
+    try { fs.unlinkSync(sentinel); } catch (_) { return { ok: false, stuck: ['sentinel'] }; }
+  }
   return { ok: true };
 }
 

@@ -42,7 +42,6 @@ jobs:
           [[ "$EXPECTED_COMMIT" =~ ^[0-9a-f]{40}$ ]]
           VERSION=${TAG#v}
           [[ "$(jq -r .version package.json)" == "$VERSION.0" ]]
-          [[ "$VERSION" == "6.7" ]]
           test "$(git rev-parse "$TAG^{commit}")" = "$EXPECTED_COMMIT"
           candidate=$(gh run view "$CANDIDATE_RUN_ID" --json conclusion,headSha,workflowName --jq '[.conclusion, .headSha, .workflowName] | join(" ")')
           test "$candidate" = "success $EXPECTED_COMMIT Windows x64 release candidate"

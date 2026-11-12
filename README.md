@@ -23,19 +23,23 @@
 
 ## 📦 下载
 
-当前正式版 **6.7**（内部 `6.7.0`，标签 `v6.7`），只发布 Windows x64。
+当前发行目标 **6.8**（内部 `6.8.0`，标签 `v6.8`），只发布 Windows x64；正式 Release 将在 CI 候选和发布流水线完成后公开。
 
 | | |
 |---|---|
 | **下载地址** | [GitHub Releases 最新版](https://github.com/yuchen0x1/HongGuo-PC/releases/latest) |
-| **文件** | `hongguo-downloader-6.7-win-x64-setup.exe` |
+| **文件** | `hongguo-downloader-6.8-win-x64-setup.exe` |
 | **安装** | 双击运行，向导式安装，可自选安装目录 |
 
 安装包**未做代码签名**。首次运行若弹出 SmartScreen 提示，点「更多信息 → 仍要运行」。
 
 旧版本（6.0 – 6.6）的安装包保留在[历史发行页](https://github.com/yuchen0x1/HongGuo-PC/releases)。
 
-> 发布页里还能看到一个 `latest.yml`，那是给旧版自动更新用的元数据，不是安装程序，不用管它。
+> 发布页里还能看到一个 `latest.yml`，它是旧版和后续安装版自动更新所需的元数据，不是安装程序，不要单独运行。
+
+### 应用内更新
+
+当前 `main` 源码已接入 `electron-updater`：Windows x64 NSIS 安装版会检查正式版、显示真实下载进度，在 SHA-512 校验通过后由用户点击“重启并安装”。开发版、预览版和便携版会回退到 GitHub 发布页。已发布的 v6.7 安装包仍是旧的“提醒 + 下载页”行为；新能力随 v6.8 正式 Release 提供。实现边界、发布步骤和待外部验证项见 [docs/AUTO_UPDATE.md](docs/AUTO_UPDATE.md)。
 
 ---
 
@@ -161,7 +165,8 @@
 <summary><b>更新</b></summary>
 
 - 启动时及运行期间每 6 小时检查一次正式版
-- 发现新版本只提醒并打开 GitHub 下载页，不在应用内下载或安装
+- Windows x64 安装版发现新版本后可在应用内下载、显示真实进度，并在校验通过后由用户确认重启安装
+- 开发版、预览版、便携版和已发布的 v6.7 安装包回退到 GitHub 下载页
 
 </details>
 
@@ -235,7 +240,7 @@ npm run build:installer       # 构建 Windows x64 NSIS 安装程序
 <details>
 <summary><b>发版记录</b></summary>
 
-每个版本的变更、验证范围与已知限制见 `docs/release-*.md`，当前版本见 [release-6.7.md](docs/release-6.7.md)。
+每个版本的变更、验证范围与已知限制见 `docs/release-*.md`，本轮发行目标见 [release-6.8.md](docs/release-6.8.md)。
 
 </details>
 

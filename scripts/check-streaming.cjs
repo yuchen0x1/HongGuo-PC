@@ -367,6 +367,15 @@ function load(fetchPlayUrlSingle, overrides = {}) {
       assert.equal(response.status, 416, range); assert.equal(response.headers.get('content-range'), 'bytes */10');
     }
   });
+  await check('recovery: local media capabilities reject symlink replacement paths', async () => {
+    const h = hload(async () => ({}));
+    const outside = path.join(root, 'local-outside.mp4');
+    const link = path.join(root, 'local-link.mp4');
+    fs.writeFileSync(outside, 'outside');
+    try { fs.symlinkSync(outside, link, 'file'); } catch (_) { return; }
+    const response = await h.protocols['hongguo-local'](new Request(h.context.localPlayUrl(link)));
+    assert.equal(response.status, 403);
+  });
   await check('recovery: local readers protect files until completion or cancellation', async () => {
     const h = hload(async () => ({})), file = path.join(root, 'local-reader.mp4');
     fs.writeFileSync(file, Buffer.alloc(1024 * 1024));

@@ -55,11 +55,20 @@ async function directoryAt(destination, name) {
   return directory;
 }
 
-async function publishFile(target, data, source) {
+async function publishFile(target, data, source, { signal } = {}) {
   const temporary = path.join(path.dirname(target), `.nas-${randomUUID()}.tmp`);
   try {
-    if (source) await fsp.copyFile(source, temporary, fs.constants.COPYFILE_EXCL);
+    if (source && signal) {
+      // 网络盘上的整集复制必须可中断：fsp.copyFile 无法取消，SMB 挂起时会永久占住下载槽。
+      const { pipeline } = require('node:stream/promises');
+      await pipeline(
+        fs.createReadStream(source),
+        fs.createWriteStream(temporary, { flags: 'wx', mode: 0o600 }),
+        { signal },
+      );
+    } else if (source) await fsp.copyFile(source, temporary, fs.constants.COPYFILE_EXCL);
     else await fsp.writeFile(temporary, data, { flag: 'wx', mode: 0o600 });
+    if (signal?.aborted) throw Object.assign(new Error('已取消 NAS 整理'), { code: 'ABORT_ERR' });
     publishMergedOutput(temporary, target);
   } finally { await fsp.unlink(temporary).catch(() => {}); }
 }
@@ -208,9 +217,17 @@ function imageExtension(buffer) {
 async function fetchPoster(value) {
   const url = new URL(value);
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error('封面地址无效');
-  const response = await axios.get(url.href, { responseType: 'arraybuffer', timeout: 10000,
-    signal: AbortSignal.timeout(10000), maxContentLength: 12 * 1024 * 1024, maxRedirects: 3,
-    headers: { 'User-Agent': 'Mozilla/5.0' } });
+  // 封面地址来自自定义源/官网接口，属于不可信输入：必须走公网守卫（受控 DNS + 逐跳重定向校验），
+  // 否则主进程会被诱导请求回环或内网地址（盲 SSRF）。
+  const guard = require('./web-media-guard').webMediaRequestOptions(url.href);
+  const response = await axios.get(url.href, {
+    ...guard, adapter: 'http', maxRedirects: 3,
+    responseType: 'arraybuffer', timeout: 10000,
+    signal: AbortSignal.timeout(10000), maxContentLength: 12 * 1024 * 1024,
+    headers: { 'User-Agent': 'Mozilla/5.0' },
+  });
+  const type = String(response.headers?.['content-type'] || '');
+  if (type && !/^image\//i.test(type)) throw new Error('来源未提供可用的封面图片');
   return Buffer.from(response.data);
 }
 
@@ -300,13 +317,14 @@ async function inspectNasEpisode(destination, episode) {
   }
 }
 
-async function digest(file) {
+async function digest(file, signal) {
   const hash = createHash('sha256');
-  for await (const chunk of fs.createReadStream(file)) hash.update(chunk);
+  for await (const chunk of fs.createReadStream(file, { signal })) hash.update(chunk);
   return hash.digest('hex');
 }
 
-async function copyNasEpisode(task, destination) {
+async function copyNasEpisode(task, destination, { signal } = {}) {
+  if (signal?.aborted) throw Object.assign(new Error('已取消 NAS 整理'), { code: 'ABORT_ERR' });
   if (String(task.hongguoInfo?.series_id) !== destination.seriesId) throw new Error('NAS 剧集身份不匹配');
   const episode = episodeIdentity(task.hongguoInfo, destination.seriesId);
   const files = await episodePaths(destination, task.hongguoInfo);
@@ -327,11 +345,12 @@ async function copyNasEpisode(task, destination) {
     const stat = await fsp.lstat(task.savePath);
     if (!stat.isFile() || stat.isSymbolicLink() || stat.size <= 102400) throw new Error('NAS 源视频是链接或无效文件');
   }
-  try { if (copied) await publishFile(files.video, null, task.savePath); }
+  try { if (copied) await publishFile(files.video, null, task.savePath, { signal }); }
   catch (error) {
     if (error.code !== 'EEXIST') throw error;
     const stat = await fsp.lstat(files.video), original = await fsp.stat(task.savePath);
-    if (!stat.isFile() || stat.isSymbolicLink() || stat.size !== original.size || await digest(files.video) !== await digest(task.savePath))
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size !== original.size
+      || await digest(files.video, signal) !== await digest(task.savePath, signal))
       throw new Error('NAS 中已有内容不同的同名视频，已保留原文件，未覆盖');
     copied = false;
   }

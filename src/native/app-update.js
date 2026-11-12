@@ -13,10 +13,21 @@ function availableRelease(data, currentVersion) {
   if (!next || !current) return null;
   const difference = next.findIndex((part, i) => part !== current[i]);
   if (difference < 0 || next[difference] < current[difference]) return null;
+  const releaseNotes = String(data.body || '').replace(/\u0000/g, '').trim().slice(0, 12000);
+  const assets = Array.isArray(data.assets) ? data.assets.slice(0, 20).map(asset => ({
+    name: String(asset?.name || '').slice(0, 180),
+    size: Number.isSafeInteger(asset?.size) && asset.size >= 0 ? asset.size : null,
+  })).filter(asset => asset.name) : [];
+  const publishedAt = String(data.published_at || data.created_at || '').trim();
   return {
     version: data.tag_name.replace(/^v/, '').replace(/^(\d+\.\d+)\.0$/, '$1'),
     // Never open a remote-provided URL; only this project's release page.
     url: `${RELEASES_URL}/tag/${encodeURIComponent(data.tag_name)}`,
+    channel: 'stable',
+    mandatory: false,
+    releaseDate: /^\d{4}-\d{2}-\d{2}T/.test(publishedAt) ? publishedAt : '',
+    releaseNotes,
+    assets,
   };
 }
 

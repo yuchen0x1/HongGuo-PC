@@ -21,10 +21,10 @@ context.applyProxySettings = async () => {};
 const ipc = (name, ...args) => handlers[name]({}, ...args);
 (async()=>{
   assert.equal(typeof handlers['check-app-update'], 'function', 'update detection IPC must exist');
-  assert.equal(handlers['download-app-update'], undefined, 'client must not download updates');
-  assert.equal(handlers['cancel-app-update'], undefined, 'client must not cancel update downloads');
-  assert.equal(handlers['install-app-update'], undefined, 'client must not install updates');
-  assert.equal(handlers['get-app-update-state'], undefined, 'client must not expose installer state');
+  assert.equal(typeof handlers['download-app-update'], 'function', 'client must expose download updates');
+  assert.equal(typeof handlers['cancel-app-update'], 'function', 'client must expose cancellation');
+  assert.equal(typeof handlers['install-app-update'], 'function', 'client must expose install confirmation');
+  assert.equal(typeof handlers['get-app-update-state'], 'function', 'client must expose installer state');
   assert.equal((await ipc('get-settings')).app_updates_enabled, true);
   settings.app_updates_enabled=false;
   assert.equal((await ipc('check-app-update')).enabled,false);assert.equal(requests,0);
@@ -33,8 +33,10 @@ const ipc = (name, ...args) => handlers[name]({}, ...args);
     response={tag_name:tag,draft:false,prerelease:false};assert.equal((await ipc('check-app-update')).release,null,tag);
   }
   for(const flags of [{draft:true},{prerelease:true}]){response={tag_name:'v2.0',...flags};assert.equal((await ipc('check-app-update')).release,null);}
-  response={tag_name:'v1.2.1',html_url:'https://evil.invalid/download'};
+  response={tag_name:'v1.2.1',html_url:'https://evil.invalid/download', body:'Fixes', published_at:'2026-11-12T00:00:00Z', assets:[{name:'setup.exe',size:1234}]};
   let result=await ipc('check-app-update');assert.equal(result.release.version,'1.2.1');
+  assert.equal(result.release.channel, 'stable'); assert.equal(result.release.releaseNotes, 'Fixes');
+  assert.equal(result.release.assets[0].size, 1234); assert.match(result.release.releaseDate, /^2026-11-12T/);
   assert.equal(result.release.url,'https://github.com/yuchen0x1/HongGuo-PC/releases/tag/v1.2.1');
   await ipc('open-app-update');assert.equal(opened[0],'https://github.com/yuchen0x1/HongGuo-PC/releases/latest');
   assert.equal(requestOptions.url,'https://api.github.com/repos/yuchen0x1/HongGuo-PC/releases/latest');

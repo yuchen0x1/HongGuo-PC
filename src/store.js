@@ -137,6 +137,7 @@ function loadCache() {
       }
     }
   } catch (e) {
+    // 数据不可读时保持只读、绝不覆盖：原文件可能是用户唯一的记录来源（恢复方式见 READ_ERROR_MESSAGE）。
     cache = {};
     if (e.code !== 'ENOENT') {
       readError = new Error(READ_ERROR_MESSAGE, { cause: e });
@@ -152,37 +153,62 @@ function loadCache() {
   return cache;
 }
 
+function sleepSync(ms) {
+  try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch { /* 无定时能力时直接重试 */ }
+}
+
+/** 落盘失败时把内存恢复到最后一次成功写入的内容；就地替换各键，保持 cache 对象标识稳定。 */
+function rollbackToDurable() {
+  let snapshot;
+  try { snapshot = JSON.parse(durable); } catch { return; }
+  for (const key of Object.keys(cache)) delete cache[key];
+  Object.assign(cache, snapshot);
+  // getTasks() 不自愈，必须保证数组形态，否则调用方会读到 undefined。
+  if (!Array.isArray(cache.tasks)) cache.tasks = [];
+}
+
 function flush() {
   if (!dataFile) return;
   if (readError) {
-    cache = JSON.parse(durable);
+    // 只读期间的内存改动同样不能留下：它们永远无法落盘，会让界面显示不存在的状态。
+    rollbackToDurable();
     reportReadError();
     throw readError;
   }
   const temporary = dataFile + '.tmp';
-  try {
-    fs.mkdirSync(path.dirname(dataFile), { recursive: true });
-    const serialized = JSON.stringify(serializableCache(), null, 2);
-    const fd = fs.openSync(temporary, 'w', 0o600);
+  const serialized = JSON.stringify(serializableCache(), null, 2);
+  let lastError = null;
+  // Windows 上 rename 常因杀毒/索引器瞬时占用返回 EPERM/EBUSY，短暂退避重试即可自愈。
+  for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      fs.writeFileSync(fd, serialized, 'utf8');
-      fs.fsyncSync(fd);
-    } finally {
-      fs.closeSync(fd);
+      fs.mkdirSync(path.dirname(dataFile), { recursive: true });
+      const fd = fs.openSync(temporary, 'w', 0o600);
+      try {
+        fs.writeFileSync(fd, serialized, 'utf8');
+        fs.fsyncSync(fd);
+      } finally {
+        fs.closeSync(fd);
+      }
+      fs.renameSync(temporary, dataFile);
+      durable = serialized;
+      if (writeError) {
+        writeError = false;
+        try { errorHandler?.(null); } catch {}
+      }
+      return;
+    } catch (e) {
+      lastError = e;
+      try { fs.unlinkSync(temporary); } catch {}
+      if (!['EPERM', 'EBUSY', 'EACCES', 'EEXIST'].includes(e.code) || attempt === 2) break;
+      sleepSync(40 * (attempt + 1));
     }
-    fs.renameSync(temporary, dataFile);
-    durable = serialized;
-    if (writeError) {
-      writeError = false;
-      try { errorHandler?.(null); } catch {}
-    }
-  } catch (e) {
-    try { fs.unlinkSync(temporary); } catch {}
-    cache = JSON.parse(durable);
-    writeError = true;
-    try { errorHandler?.({ error: '保存失败，请检查磁盘空间或目录权限；本次变更未能保存。' }); } catch {}
-    throw e;
   }
+  // 恢复到上次成功写入的内容：内存与磁盘保持一致，调用方不会看到「显示已保存、重启却丢失」。
+  // 就地替换键值而不是替换 cache 对象，避免其他模块持有的引用变成孤儿。
+  rollbackToDurable();
+  writeError = true;
+  try { errorHandler?.({ error: '保存失败，请检查磁盘空间或目录权限；本次变更未能保存。' }); } catch {}
+  throw lastError;
 }
 
 function init(filePath, { safeStorage: injectedSafeStorage } = {}) {
@@ -250,7 +276,8 @@ function saveSettings(settings, { clearProxyPassword = false } = {}) {
   try {
     flush();
   } catch (error) {
-    cache = previousCache;
+    // 只回滚设置本体，保留 cache 对象与其他键（任务/进度）的引用稳定。
+    current.settings = previousCache.settings;
     runtimeProxyPassword = previousPassword;
     proxyPasswordWarning = previousWarning;
     throw error;

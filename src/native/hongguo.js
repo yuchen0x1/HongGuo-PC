@@ -16,6 +16,8 @@ const VIDEO_REFERER = "https://novelquickapp.com/";
 const SITE_ORIGIN = "https://hongguoduanju.com";
 const WEB_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 const WEB_REFERER = SITE_ORIGIN + "/";
+const API_MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
+const WEB_HTML_MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 
 const COMMON_QUERY = {
   ...Object.fromEntries([
@@ -97,6 +99,8 @@ async function apiCall(apiPath, body, retries = 3, timeout = 25000, deadline = 0
         params: q,
         headers: HEADERS,
         timeout: Math.min(timeout, remaining),
+        maxContentLength: API_MAX_RESPONSE_BYTES,
+        maxBodyLength: API_MAX_RESPONSE_BYTES,
         // 200 + 空 body 时 axios 会解析成 ''，这里统一按原始字节处理便于判断
         responseType: 'arraybuffer',
         transformResponse: [(d) => d],
@@ -210,6 +214,8 @@ async function fetchSiteHtml(url, timeout = 30000, signal, { trustedOfficialDns 
     },
     timeout,
     responseType: 'text',
+    maxContentLength: WEB_HTML_MAX_RESPONSE_BYTES,
+    maxBodyLength: WEB_HTML_MAX_RESPONSE_BYTES,
     maxRedirects: 5,
     signal,
   });
@@ -839,7 +845,9 @@ function decryptSample(key, nonce, cipher) {
 /**
  * MP4 Box 结构解析
  */
-function parseBoxes(data, start, end) {
+function parseBoxes(data, start, end, depth = 0) {
+  // 伪造文件可以用 8 字节一层的极深嵌套耗尽调用栈；超过 32 层已不属于真实 MP4 结构。
+  if (depth > 32) throw new Error('MP4 结构异常：box 嵌套层数过多');
   const boxes = [];
   let off = start;
   while (off + 8 <= end) {
@@ -855,7 +863,7 @@ function parseBoxes(data, start, end) {
     if (size < hdr || off + size > end) break;
     let children = null;
     if (['moov', 'trak', 'mdia', 'minf', 'stbl', 'edts', 'dinf', 'udta', 'meta'].includes(typ)) {
-      children = parseBoxes(data, off + hdr, off + size);
+      children = parseBoxes(data, off + hdr, off + size, depth + 1);
     }
     boxes.push({ typ, off, size, hdr, children });
     off += size;
@@ -972,7 +980,9 @@ function rebuildMoov(data, moovOff, moovSize, top) {
 
   for (const b of walkChildren(tree)) {
     if (b.typ === 'stco') {
-      const nc = data.readUInt32BE(b.off + 12);
+      // 计数来自文件，按 box 长度裁剪后再遍历，避免伪造条目数导致超长循环。
+      const maxEntries = Math.max(0, Math.floor((b.size - 16) / 4));
+      const nc = Math.min(data.readUInt32BE(b.off + 12), maxEntries);
       for (let i = 0; i < nc; i++) {
         const v = data.readUInt32BE(b.off + 16 + i * 4);
         if (v >= delta) {
@@ -1011,6 +1021,19 @@ function decryptMp4Buffer(data, key) {
 
   const stbls = Array.from(walkBoxes(top)).filter(b => b.typ === 'stbl');
   const trackInfo = [];
+  /**
+   * 表项计数来自不可信文件，必须按 box 剩余长度裁剪：
+   * 否则伪造 `sample_count = 0xFFFFFFFF` 会让 new Array(n).fill() 直接耗尽内存。
+   */
+  const clampCount = (box, countFieldOffset, entryStartOffset, itemSize) => {
+    const end = box.off + box.size;
+    if (countFieldOffset + 4 > end || entryStartOffset > end) return 0;
+    const declared = data.readUInt32BE(countFieldOffset);
+    const limit = Math.floor((end - entryStartOffset) / itemSize);
+    return Math.max(0, Math.min(declared, limit));
+  };
+  // 定长采样（sample_size != 0）没有表项可裁剪，按业务上限封顶：单集 300MB 远达不到 100 万样本。
+  const MAX_SAMPLES = 1000000;
   for (const stbl of stbls) {
     const stsz = getBox(stbl.children, 'stsz');
     const stco = getBox(stbl.children, 'stco');
@@ -1019,7 +1042,9 @@ function decryptMp4Buffer(data, key) {
     if (!stsz || !stco || !stsc) continue;
 
     const ss = data.readUInt32BE(stsz.off + 12);
-    const n = data.readUInt32BE(stsz.off + 16);
+    const n = ss === 0
+      ? clampCount(stsz, stsz.off + 16, stsz.off + 20, 4)
+      : Math.min(data.readUInt32BE(stsz.off + 16), MAX_SAMPLES);
     let sizes = [];
     if (ss === 0) {
       for (let i = 0; i < n; i++) {
@@ -1029,13 +1054,13 @@ function decryptMp4Buffer(data, key) {
       sizes = new Array(n).fill(ss);
     }
 
-    const nc = data.readUInt32BE(stco.off + 12);
+    const nc = clampCount(stco, stco.off + 12, stco.off + 16, 4);
     const chunkOffs = [];
     for (let i = 0; i < nc; i++) {
       chunkOffs.push(data.readUInt32BE(stco.off + 16 + i * 4));
     }
 
-    const ns = data.readUInt32BE(stsc.off + 12);
+    const ns = clampCount(stsc, stsc.off + 12, stsc.off + 16, 12);
     const stscTab = [];
     for (let i = 0; i < ns; i++) {
       stscTab.push([
@@ -1047,7 +1072,7 @@ function decryptMp4Buffer(data, key) {
 
     const ivs = [];
     if (senc) {
-      const sc = data.readUInt32BE(senc.off + 12);
+      const sc = clampCount(senc, senc.off + 12, senc.off + 16, 8);
       for (let i = 0; i < sc; i++) {
         ivs.push(data.subarray(senc.off + 16 + i * 8, senc.off + 24 + i * 8));
       }
@@ -1058,17 +1083,19 @@ function decryptMp4Buffer(data, key) {
       const fc = stscTab[i][0];
       const spc = stscTab[i][1];
       const nxt = (i + 1 < stscTab.length) ? stscTab[i + 1][0] : (nc + 1);
-      for (let ci = fc - 1; ci < nxt - 1; ci++) {
-        chunkSpc[ci] = spc;
+      // fc/nxt/spc 全部来自文件：不裁剪会构造出数十亿次循环或超大 chunkSpc 表。
+      const from = Math.max(0, fc - 1), to = Math.min(nxt - 1, nc);
+      for (let ci = from; ci < to; ci++) {
+        chunkSpc[ci] = Math.min(spc, MAX_SAMPLES);
       }
     }
 
     const sampleOffs = [];
     let si = 0;
-    for (let ci = 0; ci < nc; ci++) {
+    for (let ci = 0; ci < nc && sampleOffs.length < MAX_SAMPLES; ci++) {
       let off = chunkOffs[ci];
       const spc = chunkSpc[ci] || 1;
-      for (let s = 0; s < spc; s++) {
+      for (let s = 0; s < spc && sampleOffs.length < MAX_SAMPLES; s++) {
         if (si >= n) break;
         sampleOffs.push(off);
         off += sizes[si];

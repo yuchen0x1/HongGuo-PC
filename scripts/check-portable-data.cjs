@@ -129,6 +129,19 @@ check('an incomplete migration marker is cleaned and the migration retries', () 
   assert.equal(fs.readFileSync(path.join(dataDir, 'data.json'), 'utf8'), '{"settings":{"theme":"dark"}}', 'the old system data replaces the partial copy');
 });
 
+check('a corrupted migration marker self-heals instead of falling back forever', () => {
+  const portDir = path.join(root, 'portable-corrupt-marker');
+  const dataDir = path.join(portDir, 'data');
+  fs.mkdirSync(dataDir, { recursive: true });
+  fs.writeFileSync(path.join(dataDir, 'data.json'), '{"partial":true}');
+  fs.writeFileSync(path.join(dataDir, 'data.json.importing'), '{"partial":true}');
+  fs.writeFileSync(path.join(dataDir, MIGRATION_SENTINEL), '{"files":[');
+  const result = resolvePortableDataDir({ platform: 'win32', env: { PORTABLE_EXECUTABLE_DIR: portDir }, defaultUserData: appData });
+  assert.equal(result.mode, 'portable', 'a half-written marker must not disable portable data permanently');
+  assert.equal(fs.existsSync(path.join(dataDir, 'data.json.importing')), false, 'staged leftovers are removed');
+  assert.equal(fs.readFileSync(path.join(dataDir, 'data.json'), 'utf8'), '{"settings":{"theme":"dark"}}', 'the system copy replaces the partial one');
+});
+
 check('an unrecoverable incomplete migration falls back to the system directory', () => {
   const portDir = path.join(root, 'portable-stuck');
   const dataDir = path.join(portDir, 'data');

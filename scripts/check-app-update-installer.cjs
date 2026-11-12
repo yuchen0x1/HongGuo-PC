@@ -48,10 +48,13 @@ function macFixture() {
 assert.equal(availableRelease({ tag_name: 'v6.7', draft: false, prerelease: false }, '6.6.0')?.version, '6.7', '6.6 clients must recognize 6.7 as newer');
 assert.equal(availableRelease({ tag_name: 'v6.6', draft: false, prerelease: false }, '6.6.0'), null, 'same version is not an update');
 assert.equal(availableRelease({ tag_name: 'v6.7-beta.1', draft: false, prerelease: false }, '6.6.0'), null, 'prerelease tags are rejected');
-assert.doesNotMatch(main, /electron-updater|appUpdateInstaller|download-app-update|cancel-app-update|install-app-update/);
-assert.doesNotMatch(preload, /downloadAppUpdate|cancelAppUpdate|installAppUpdate|onAppUpdateState/);
-assert.match(notice, /打开下载页/);
-assert.match(notice, /请先退出应用，再下载并运行唯一安装包/);
+assert.match(main, /electron-updater/);
+assert.match(main, /download-app-update/);
+assert.match(main, /cancel-app-update/);
+assert.match(main, /install-app-update/);
+assert.match(preload, /downloadAppUpdate|cancelAppUpdate|installAppUpdate|onAppUpdateState/);
+assert.match(notice, /下载更新/);
+assert.match(notice, /重启并安装/);
 
 // v6.2–v6.6 的安装版仍内置 electron-updater，下载更新前必须先取 Release 里的
 // latest.yml；缺少该元数据会让这些旧客户端点「下载更新」直接失败。

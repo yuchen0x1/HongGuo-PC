@@ -80,19 +80,24 @@ test('重启后复用本机匿名标识，避免上游重新分配少量弹幕�
   } finally { danmaku.setDeviceIdentityFile(null); fs.rmSync(folder, { recursive: true, force: true }); }
 });
 
-test('本机标识损坏时保留文件并报告配置问题，不静默重新生成', async () => {
+test('本机标识损坏时备份并原子重建，不会永久阻断弹幕', async () => {
   assert.equal(typeof danmaku.setDeviceIdentityFile, 'function');
   const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'danmaku-client-'));
   const file = path.join(folder, 'client.json');
   fs.writeFileSync(file, '{broken', { mode: 0o600 });
-  let calls = 0;
+    let calls = 0;
   try {
     danmaku.setDeviceIdentityFile(file);
-    const result = await danmaku.fetchDanmaku({ seriesId: SERIES, vid: VID, ...fixedOptions(async () => { calls++; }) });
-    assert.equal(result.success, false);
-    assert.match(result.error, /本机配置/);
-    assert.equal(calls, 0);
-    assert.equal(fs.readFileSync(file, 'utf8'), '{broken');
+    const result = await danmaku.fetchDanmaku({ seriesId: SERIES, vid: VID, ...fixedOptions(async () => {
+      calls++;
+      return { data: JSON.stringify(page({ rows: [comment()] })) };
+    }) });
+    assert.equal(result.success, true);
+    assert.equal(calls, 1);
+    assert.notEqual(fs.readFileSync(file, 'utf8'), '{broken');
+    const backups = fs.readdirSync(folder).filter(name => name.startsWith('client.json.corrupt-'));
+    assert.equal(backups.length, 1);
+    assert.equal(fs.readFileSync(path.join(folder, backups[0]), 'utf8'), '{broken');
   } finally { danmaku.setDeviceIdentityFile(null); fs.rmSync(folder, { recursive: true, force: true }); }
 });
 

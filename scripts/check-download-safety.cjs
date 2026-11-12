@@ -797,5 +797,32 @@ async function check(name, run) { try { await run(); console.log('PASS ' + name)
     const result = await h.handlers['hongguo-download-batch']({}, { seriesId: 'S', seriesTitle: 'Short', episodes: series()[0].episodes });
     assert.equal(result.success, false); assert.equal(h.run('downloadTasks.length'), 0); assert.equal(h.run('downloadQueue.length'), 0);
   });
+  await check('a finished transfer survives a failed record save without being flipped to failed', async () => {
+    // 成功收尾时记录写失败（磁盘满 / data.json 被占用）不能让已落地的视频变成「下载失败」。
+    const h = load({}, { './src/store': { getSettings: () => ({ root }), saveTasks() { throw new Error('simulated disk full'); } } });
+    const one = task('one', h.dir, 'downloading');
+    h.set('downloadTasks', [one]);
+    let saved = true;
+    assert.equal(h.context.persistDownloadTasksQuietly('完成'), false, 'a failed save must be reported, not thrown');
+    assert.doesNotThrow(() => { saved = h.context.persistDownloadTasksQuietly('状态'); });
+    assert.equal(saved, false);
+    assert.equal(one.status, 'downloading', 'the task state is owned by the transfer, not by the record write');
+    assert.equal(h.run('downloadTasks.length'), 1, 'the in-memory task is never dropped by a record failure');
+  });
+  await check('a stalled media body is aborted instead of hanging forever', async () => {
+    // axios 的 timeout 只覆盖到响应头；响应体停滞必须由空闲看门狗负责（否则播放/下载无限挂起）。
+    const h = load();
+    const { PassThrough } = req('node:stream');
+    const stalled = new PassThrough();
+    stalled.on('error', () => {});
+    const stop = h.context.guardMediaIdle(stalled, 1200);
+    const error = await new Promise(resolve => {
+      stalled.once('error', resolve);
+      setTimeout(() => resolve(null), 5000);
+    });
+    stop();
+    assert.equal(error?.code, 'MEDIA_TRANSFER_ERROR');
+    assert.ok(stalled.destroyed, 'the stalled response stream must be destroyed');
+  });
   assert.equal(failures, 0, `${failures} download safety regressions`);
 })().catch(error => { console.error(error.message); process.exitCode = 1; }).finally(() => fs.rmSync(root, { recursive: true, force: true }));

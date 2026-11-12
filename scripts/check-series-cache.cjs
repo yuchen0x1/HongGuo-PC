@@ -45,10 +45,13 @@ const forgetBody=slice("ipcMain.handle('forget-series'", "ipcMain.handle('purge-
  assert.equal(fs.statSync(directory).isDirectory(),true);
  if(symlinkCreated){assert.equal(fs.lstatSync(symlink).isSymbolicLink(),true);assert.equal(fs.existsSync(outside),true);}
  assert.ok(sessions.has('other')&&cache.has('other'));
- const colliding=ctx.compatPathFor('a:b',1,'auto');fs.writeFileSync(colliding,'ambiguous');
+ const colliding=ctx.compatPathFor('a:b',1,'auto');fs.writeFileSync(colliding,'hashed');
  ctx.seriesRegistry.push({series_id:'a:b',episodes:[]},{series_id:'ab',episodes:[]});
- await assert.rejects(ctx.clearSeriesPlaybackCache('a:b'),/文件名与其他剧冲突/);
- assert.equal(fs.existsSync(colliding),true,'ambiguous cache names must not be deleted');
+ await ctx.clearSeriesPlaybackCache('a:b');
+ assert.equal(fs.existsSync(colliding),false,'hashed cache names remain unambiguous after a similar series is added');
+ const legacy=path.join(cacheDir,'ab_002.mp4');fs.writeFileSync(legacy,'legacy');
+ await ctx.clearSeriesPlaybackCache('a:b');
+ assert.equal(fs.existsSync(legacy),true,'ambiguous legacy cache names must not be deleted');
 
  let releaseClear;const entered=new Promise(r=>{ctx.clearSeriesPlaybackCache=async()=>{r();await new Promise(done=>{releaseClear=done;});};});
  const first=handler({},'1',{clearCache:true});await entered;

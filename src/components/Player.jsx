@@ -16,6 +16,7 @@ import './Player.css';
 import { Play, Film, Download, Check, RefreshCw, Layers, X, Trash2, ChevronDown, Zap } from './icons';
 
 const localMediaKey = (seriesId, episode) => JSON.stringify([seriesId, episode?.vid, episode?.fileUrl, episode?.fileSize, episode?.taskId]);
+const useCommitEffect = React.useLayoutEffect || useEffect;
 // 预取失败后短暂退避，避免 timeupdate 4Hz 反复撞同一个坏节点。
 const PREFETCH_RETRY_MS = 15 * 1000;
 // 播放期间最多预取后续两集；跳到更远时再按新位置补齐。
@@ -169,10 +170,13 @@ function Player({ target, onNavigate, onSeriesSelected, onFloatingChange, active
   const decodeTimer = useRef(null);
   const pendingTargetRef = useRef(null);
   const loadedMediaRef = useRef(null);
+  // 换源时待交接的旧媒体句柄；提交后再清空，避免被丢弃的渲染丢掉当前句柄。
+  const handoverMediaRef = useRef(null);
   const autoCompatAttemptRef = useRef(null);
   const reconnectAttemptRef = useRef(null);
   const onlineSourceRef = useRef(null);
   const lastVideoSrcRef = useRef('');
+  const [committedVideoSrc, setCommittedVideoSrc] = useState('');
   const lastLoadRef = useRef(null);
   const fallbackRef = useRef(null);
   const fallbackAttemptRef = useRef(null);
@@ -209,7 +213,10 @@ function Player({ target, onNavigate, onSeriesSelected, onFloatingChange, active
   useEffect(() => window.electronAPI.onWatchHistoryUpdated?.(payload => {
     const media = loadedMediaRef.current;
     // A retained hidden player must not recreate a record removed on the history page.
-    if (media && String(media.seriesId) === payload?.removedSeriesId) media.played = false;
+    const removedIds = new Set(Array.isArray(payload?.removedSeriesIds) ? payload.removedSeriesIds.map(String) : []);
+    if (media && (String(media.seriesId) === payload?.removedSeriesId || removedIds.has(String(media.seriesId)))) {
+      media.played = false;
+    }
   }), []);
 
   const currentPosition = useCallback(() => {
@@ -640,17 +647,34 @@ function Player({ target, onNavigate, onSeriesSelected, onFloatingChange, active
   const canPlay = !!(playbackRequested && !playbackError && !onlineProgress && !needsCompat && current && !current.locked && (compatUrl || usableLocal(current, String(activeSeriesId)) || isOnlinePlaying));
   const playableSource = compatUrl || (isOnlinePlaying ? onlineUrl : current?.fileUrl) || '';
   // 原生全屏依附于 video 节点。准备下一集时保留结束帧，换源不换节点。
-  if (canPlay) {
+  // 所有 ref/state 变更都在提交后的 layout effect 中完成；并发渲染被丢弃时，
+  // 不会污染当前媒体句柄或把断点状态弄丢。
+  useCommitEffect(() => {
+    if (!playbackRequested) {
+      if (lastVideoSrcRef.current || committedVideoSrc) {
+        lastVideoSrcRef.current = '';
+        setCommittedVideoSrc('');
+      }
+      return;
+    }
+    if (!canPlay || lastVideoSrcRef.current === playableSource) return;
     const media = loadedMediaRef.current;
-    if (lastVideoSrcRef.current !== playableSource && media?.version === mediaVersion.current
+    if (media?.version === mediaVersion.current
       && media.seriesId === activeSeriesId && media.vidIndex === currentIndex) {
       pendingSeekRef.current = Number.isFinite(media.element.currentTime) ? media.element.currentTime : 0;
       pendingAutoplayRef.current = !media.element.paused;
-      loadedMediaRef.current = null;
+      handoverMediaRef.current = media;
     }
     lastVideoSrcRef.current = playableSource;
-  }
-  const videoSrc = !playbackRequested || compatProgress ? '' : lastVideoSrcRef.current;
+    setCommittedVideoSrc(playableSource);
+  }, [playbackRequested, canPlay, playableSource, activeSeriesId, currentIndex, committedVideoSrc]);
+  useCommitEffect(() => {
+    const handover = handoverMediaRef.current;
+    if (!handover) return;
+    handoverMediaRef.current = null;
+    if (loadedMediaRef.current === handover) loadedMediaRef.current = null;
+  });
+  const videoSrc = !playbackRequested || compatProgress ? '' : committedVideoSrc;
   const danmakuSource = useDanmakuSource();
   const visualActive = canPlay && (active || floatingPlayer.floating);
   const danmakuActive = visualActive && showDanmakuControls;
@@ -1092,6 +1116,7 @@ function Player({ target, onNavigate, onSeriesSelected, onFloatingChange, active
       videoRef.current?.removeAttribute('src');
       videoRef.current?.load();
       lastVideoSrcRef.current = '';
+      setCommittedVideoSrc('');
       setCompatMap(previous => { const result = { ...previous }; delete result[ci]; return result; });
     }
     if (next) {
@@ -1210,6 +1235,12 @@ function Player({ target, onNavigate, onSeriesSelected, onFloatingChange, active
 
   useEffect(() => () => clearTimeout(videoClickTimer.current), [videoSrc]);
 
+  // 快捷键监听必须与「会随下载进度重建的回调」解耦：episodes 每次进度事件都会生成新数组，
+  // 进而让 findNext / goToEpisode 换身份。若把它们写进 useEffect 依赖，监听会被高频重建，
+  // 而 cleanup 里的 finishForward() 会打断用户正按住的长按倍速/快进。
+  const keyboardHandlers = useRef({});
+  keyboardHandlers.current = { findNext, findPrev, goToEpisode, changePlaybackRate, toggleFullscreen };
+
   // Capture handled keys before media controls; cancel keyup too so focused buttons cannot toggle twice.
   useEffect(() => {
     if ((!active && !floatingPlayer.floating) || confirmAsk || mergeAsk || pickerOpen) return;
@@ -1264,12 +1295,13 @@ function Player({ target, onNavigate, onSeriesSelected, onFloatingChange, active
         try { video.currentTime = Math.max(0, Math.min(limit, video.currentTime + (action.id === 'forward' ? 5 : -5))); }
         catch { showToast('暂时无法跳转，请稍后重试'); }
       } else if (action.id === 'previous' || action.id === 'next') {
-        const episode = action.id === 'previous' ? findPrev(index) : findNext(index);
-        if (episode) { goToEpisode(episode.vid_index); setAutoAdvancing(true); }
+        const handlers = keyboardHandlers.current;
+        const episode = action.id === 'previous' ? handlers.findPrev?.(index) : handlers.findNext?.(index);
+        if (episode) { handlers.goToEpisode?.(episode.vid_index); setAutoAdvancing(true); }
         else showToast(action.id === 'previous' ? '已经是第一集' : '已经是最后一集');
       } else if (action.id === 'autoNext') setAutoNext(!nextEnabled);
-      else if (action.id === 'fullscreen') toggleFullscreen();
-      else changePlaybackRate(playbackRateRef.current + (action.id === 'slower' ? -0.25 : 0.25));
+      else if (action.id === 'fullscreen') keyboardHandlers.current.toggleFullscreen?.();
+      else keyboardHandlers.current.changePlaybackRate?.(playbackRateRef.current + (action.id === 'slower' ? -0.25 : 0.25));
     };
     const onKeyUp = event => {
       if (!held.delete(event.code || event.key)) return;
@@ -1286,7 +1318,8 @@ function Player({ target, onNavigate, onSeriesSelected, onFloatingChange, active
       keyboardWindow.removeEventListener('blur', onBlur);
       finishForward();
     };
-  }, [active, floatingPlayer.floating, confirmAsk, mergeAsk, pickerOpen, findNext, findPrev, goToEpisode, changePlaybackRate, showToast, shortcuts, toggleFullscreen]);
+    // 只依赖真正影响“是否启用/如何解释”的稳定值；易变回调通过 keyboardHandlers 读取最新实现。
+  }, [active, floatingPlayer.floating, confirmAsk, mergeAsk, pickerOpen, showToast, shortcuts]);
 
   const switchSeries = useCallback(async (sid, requestedIndex = 0, resume = false, autoplay = true) => {
     persistPosition(true);

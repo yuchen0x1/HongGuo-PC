@@ -24,13 +24,19 @@ export function mergeDuplicateDramas(results) {
   for (const item of Array.isArray(results) ? results : []) {
     if (!item?.series_id || !item?.series_title) continue;
     const title = normalizeSearchText(item.series_title);
-    const existing = title ? byTitle.get(title) : null;
-    if (existing && episodeCountsCompatible(existing.episode_count, item.episode_count)) {
+    const entries = title ? byTitle.get(title) || [] : [];
+    const existing = entries.find(entry => episodeCountsCompatible(entry.episode_count, item.episode_count)
+      && entry.source !== item.source
+      && !entry.also_on.some(source => source.source === item.source));
+    if (existing) {
       existing.also_on.push({ source: item.source, series_id: item.series_id });
       continue;
     }
     const entry = { ...item, also_on: [] };
-    if (title) byTitle.set(title, entry);
+    if (title) {
+      entries.push(entry);
+      byTitle.set(title, entries);
+    }
     merged.push(entry);
   }
   return merged;

@@ -143,7 +143,7 @@ if (require.main === module) (async () => {
     for (const resume of [false, true]) {
       const ui = mount({ local: true }); await ui.flush(); ui.metadata();
       ui.media.currentTime = 42; ui.props.active = false; ui.render();
-      ui.historyUpdated({ removedSeriesId: 'A' }); await ui.flush();
+      ui.historyUpdated({ removedSeriesIds: ['A'] }); await ui.flush();
       const afterRemoval = ui.saves.length;
       ui.events.get('beforeunload')();
       ui.find(n => n.type === 'video').props.onPause();

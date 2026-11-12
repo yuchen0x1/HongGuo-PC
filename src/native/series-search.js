@@ -117,9 +117,9 @@ async function findSeriesSeasons(series, localCandidates, search, { deadline = 0
     partial = true;
     error = `联网查找未完成：${failure.message}${local.length ? '；已保留本机候选。' : ''}`;
   }
-  // 同一季先显式季号、后无季号；数量上限避免同名系列异常膨胀。
+  // 同一季先显式季号、后无季号；季号最多校验到 99，保留完整切换列表。
   seasons.sort((a, b) => a.season - b.season || (a.explicit === b.explicit ? 0 : a.explicit ? -1 : 1));
-  return { success: true, seasons: seasons.slice(0, 12), ...(partial ? { partial: true, error } : {}) };
+  return { success: true, seasons, ...(partial ? { partial: true, error } : {}) };
 }
 
 module.exports = { searchSeries, findSeriesSequels, findSeriesSeasons, seasonLabel, nextSeasonQueries, sourceFamilyOf };

@@ -222,11 +222,16 @@ async function browseList(options = {}, proxyLogin) {
   const pg = Math.max(1, Number.parseInt(page, 10) || 1);
   const url = `${SITE}/${ranking ? 'rank' : 'category'}/${category}${genre ? `/${genre}` : ''}${pg > 1 ? `?page=${pg}` : ''}`;
   if (!forceRefresh && cache.get(url)?.expires > Date.now()) return cache.get(url).data;
-  if (pending.has(url)) return pending.get(url);
+  const previous = pending.get(url);
+  if (previous) {
+    if (!forceRefresh || previous.forceRefresh) return previous.promise;
+    previous.controller.abort();
+  }
 
   // Each URL owns its request: a slow comic page cannot queue behind real drama (or vice versa).
+  const request = { controller: new AbortController(), forceRefresh, promise: null };
   const task = (async () => {
-    const controller = new AbortController();
+    const controller = request.controller;
     let timer;
     try {
       const timeout = new Promise((_, reject) => {
@@ -234,9 +239,11 @@ async function browseList(options = {}, proxyLogin) {
       });
       const data = await Promise.race([fetchCatalogPage(url, controller.signal, proxyLogin, options.allowTrustedDns === true,
         html => (ranking ? parseRanking : parseCatalog)(html, category, pg, url)), timeout]);
-      cache.set(url, { expires: Date.now() + CACHE_MS, data });
-      // Bound memory while retaining the latest category/filter pages.
-      if (cache.size > 32) cache.delete(cache.keys().next().value);
+      if (pending.get(url) === request) {
+        cache.set(url, { expires: Date.now() + CACHE_MS, data });
+        // Bound memory while retaining the latest category/filter pages.
+        if (cache.size > 32) cache.delete(cache.keys().next().value);
+      }
       return data;
     } catch (error) {
       const message = controller.signal.aborted || error.code === 'ECONNABORTED' ? '目录加载超时，请重试'
@@ -245,10 +252,11 @@ async function browseList(options = {}, proxyLogin) {
       return { success: false, error: message, sourceUrl: url };
     } finally {
       clearTimeout(timer);
-      pending.delete(url);
+      if (pending.get(url) === request) pending.delete(url);
     }
   })();
-  pending.set(url, task);
+  request.promise = task;
+  pending.set(url, request);
   return task;
 }
 

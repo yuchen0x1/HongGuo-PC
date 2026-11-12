@@ -50,23 +50,35 @@ async function runMerge({ task, ordered, outDir, ffmpegPath, ffprobePath, probe,
     stageStarted = Date.now();
   };
   const stage = (name, text) => { recordStage(); task.stage = name; task.stageText = text; task.speed = 0; task.etaSeconds = null; emit(true); };
+  // 网络盘断开或 ffmpeg 卡在某个 filter 时，子进程可能永远不 close：
+  // 以「-progress 输出的 out_time_us 是否还在前进」作为活性判据，超时即强杀。
+  const CHILD_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
   const run = (args, onTime) => new Promise((resolve, reject) => {
     if (task.cancelled) return reject(new Error('已取消'));
     const child = spawn(ffmpegPath, ['-y', '-hide_banner', '-loglevel', 'error', ...args, '-progress', 'pipe:1', '-nostats'], { windowsHide: true });
     task.children.add(child);
-    let pending = '', errors = '', spawnError;
+    let pending = '', errors = '', spawnError, stalled = false;
+    const idle = setTimeout(() => {
+      stalled = true;
+      try { child.kill('SIGKILL'); } catch (_) {}
+    }, CHILD_IDLE_TIMEOUT_MS);
+    idle.unref?.();
+    const touch = () => { if (typeof idle?.refresh === 'function') idle.refresh(); };
     child.stdout.on('data', data => {
+      touch();
       pending += data.toString();
       const lines = pending.split('\n'); pending = lines.pop() || '';
       for (const line of lines) {
         if (line.startsWith('out_time_us=')) onTime?.(Math.max(0, Number(line.slice(12)) / 1e6 || 0));
       }
     });
-    child.stderr.on('data', data => { errors = (errors + data.toString()).slice(-2400); });
+    child.stderr.on('data', data => { touch(); errors = (errors + data.toString()).slice(-2400); });
     child.once('error', error => { spawnError = error; });
     child.once('close', code => {
+      clearTimeout(idle);
       task.children.delete(child);
       if (task.cancelled) reject(new Error('已取消'));
+      else if (stalled) reject(new Error('FFmpeg 长时间无进展，已停止；请确认输入文件与目标磁盘仍可访问'));
       else if (spawnError) reject(new Error('无法启动 FFmpeg: ' + spawnError.message));
       else if (code !== 0) reject(new Error(`FFmpeg 退出码 ${code}：${errors.trim() || '没有返回错误详情'}`));
       else resolve();
@@ -161,7 +173,11 @@ async function runMerge({ task, ordered, outDir, ffmpegPath, ffprobePath, probe,
         try { files = await normalizeAll(); break; }
         catch (error) {
           check();
-          if (!encoder || encoder === 'libx264') throw error;
+          // 只有「硬件编解码不可用」才值得整轮降级重来；分集损坏、磁盘写满、
+          // 输出目录消失等确定性错误必须立即上报，否则 60 集会白跑两遍（数小时）。
+          const hardwareFailure = /videotoolbox|nvenc|qsv|amf|d3d11va|dxva|vulkan|hardware|Error while (?:opening|initializing) (?:encoder|decoder)|Unknown encoder|Cannot load|could not (?:find|open) (?:encoder|decoder)|not (?:supported|available) by this build/i
+            .test(String(error?.message || ''));
+          if (!encoder || encoder === 'libx264' || !hardwareFailure) throw error;
           // Every child has closed. Restart the whole pass; never mix settings or encoders.
           for (let i = 0; i < ordered.length; i++) await fs.promises.rm(path.join(temporary, `${i}.${plan.videoContainer === 'mpegts' ? 'ts' : 'mp4'}`), { force: true });
           if (hardwareFrames) {
