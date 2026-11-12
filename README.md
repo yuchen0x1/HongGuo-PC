@@ -23,7 +23,7 @@
 
 ## 📦 下载
 
-当前发行目标 **6.8**（内部 `6.8.0`，标签 `v6.8`），只发布 Windows x64；正式 Release 将在 CI 候选和发布流水线完成后公开。
+当前正式版 **6.8**（内部 `6.8.0`，标签 `v6.8`），只发布 Windows x64；详见 [GitHub Release v6.8](https://github.com/yuchen0x1/HongGuo-PC/releases/tag/v6.8)。
 
 | | |
 |---|---|
@@ -39,7 +39,7 @@
 
 ### 应用内更新
 
-当前 `main` 源码已接入 `electron-updater`：Windows x64 NSIS 安装版会检查正式版、显示真实下载进度，在 SHA-512 校验通过后由用户点击“重启并安装”。开发版、预览版和便携版会回退到 GitHub 发布页。已发布的 v6.7 安装包仍是旧的“提醒 + 下载页”行为；新能力随 v6.8 正式 Release 提供。实现边界、发布步骤和待外部验证项见 [docs/AUTO_UPDATE.md](docs/AUTO_UPDATE.md)。
+当前 `main` 源码已接入 `electron-updater`：Windows x64 NSIS 安装版会检查正式版、显示真实下载进度，在 SHA-512 校验通过后由用户点击“重启并安装”。开发版、预览版和便携版会回退到 GitHub 发布页。已发布的 v6.7 安装包仍是旧的“提醒 + 下载页”行为；新能力随 v6.8 正式 Release 提供。实现边界、发布步骤和剩余验收边界见 [docs/AUTO_UPDATE.md](docs/AUTO_UPDATE.md)。
 
 ---
 
@@ -240,7 +240,7 @@ npm run build:installer       # 构建 Windows x64 NSIS 安装程序
 <details>
 <summary><b>发版记录</b></summary>
 
-每个版本的变更、验证范围与已知限制见 `docs/release-*.md`，本轮发行目标见 [release-6.8.md](docs/release-6.8.md)。
+每个版本的变更、验证范围与已知限制见 `docs/release-*.md`，本轮正式发行见 [release-6.8.md](docs/release-6.8.md)。
 
 </details>
 
