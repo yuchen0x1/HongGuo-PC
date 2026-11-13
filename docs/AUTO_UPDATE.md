@@ -32,12 +32,14 @@
 
 ## 发布流程
 
-1. 在 `main` 完成代码、测试和版本检查。
+1. 在 `main` 完成代码、测试和版本检查，并在 `docs/releases/release-notes.md` 添加对应版本的简明更新清单，只写新增、优化、修复和影响使用的变更。
 2. 创建 `vX.Y` 标签（包内版本为 `X.Y.0`）。
 3. Windows x64 release candidate 工作流构建 NSIS EXE，运行单元/平台/安装验收，并从最终 EXE 生成 `latest.yml`。
 4. 人工确认候选工件、提交 SHA、包大小、SHA-512、签名状态和许可证对应源码。
 5. 手动运行 `Publish validated Windows release`，传入标签、候选工作流 run ID、源码 Test run ID 和期望提交 SHA。
-6. 发布流水线只上传安装 EXE 与 `latest.yml`，并在公开 Release 前再次核对版本、文件名、大小和 SHA-512。
+6. 发布流水线从 `docs/releases/release-notes.md` 提取对应版本清单作为 Release 正文，缺少条目时停止发布；只上传安装 EXE 与 `latest.yml`，并在公开 Release 前再次核对版本、文件名、大小和 SHA-512。
+
+应用内更新日志直接读取 Release 正文。测试命令、流水线记录、哈希、资产明细和验证限制保留在 `docs/release-X.Y.md`，不复制到更新清单；安装方式与平台说明见 README。
 
 旧版 v6.2–v6.6 安装版仍依赖 `latest.yml`，所以不得从后续 Release 删除该文件。
 

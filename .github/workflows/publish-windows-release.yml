@@ -29,6 +29,9 @@ jobs:
         with:
           ref: ${{ inputs.tag }}
           fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
       - name: Validate tag and successful CI runs
         env:
           GH_TOKEN: ${{ github.token }}
@@ -47,6 +50,10 @@ jobs:
           test "$candidate" = "success $EXPECTED_COMMIT Windows x64 release candidate"
           source_test=$(gh run view "$TEST_RUN_ID" --json conclusion,headSha,workflowName --jq '[.conclusion, .headSha, .workflowName] | join(" ")')
           test "$source_test" = "success $EXPECTED_COMMIT Test"
+      - name: Prepare user-facing release notes
+        env:
+          TAG: ${{ inputs.tag }}
+        run: node scripts/release-notes.cjs "$TAG" release-notes.txt
       - uses: actions/download-artifact@v4
         with:
           name: windows-release-candidate
@@ -78,7 +85,7 @@ jobs:
           release=$(gh release view "$TAG" --json tagName --jq .tagName)
           test "$release" = "$TAG"
           gh release upload "$TAG" release-assets/* --clobber
-          gh release edit "$TAG" --draft=false --prerelease=false
+          gh release edit "$TAG" --notes-file release-notes.txt --draft=false --prerelease=false
           installer=$(gh release view "$TAG" --json assets --jq '[.assets[].name | select(endswith("setup.exe"))] | length')
           metadata=$(gh release view "$TAG" --json assets --jq '[.assets[].name | select(. == "latest.yml")] | length')
           test "$installer" -eq 1
