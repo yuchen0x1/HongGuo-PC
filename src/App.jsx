@@ -19,7 +19,7 @@ import Backdrop from './components/Backdrop';
 import TitleBar from './components/TitleBar';
 import UpdateCheckSettings from './components/UpdateCheckSettings';
 import ReleaseNotesList from './components/ReleaseNotesList';
-import brandIcon from './assets/hongguo.ico';
+import brandIcon from '../build/icon.ico';
 
 const SIDEBAR_COLLAPSED_KEY = 'hongguo:sidebar-collapsed';
 function readSidebarCollapsed() {

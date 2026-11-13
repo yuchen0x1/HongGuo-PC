@@ -52,8 +52,6 @@ x264 是唯一非系统静态依赖（GPLv2-or-later），整体构建为 GPLv3-
 | Vite | MIT |
 | electron-builder | MIT |
 | @vitejs/plugin-react | MIT |
-| concurrently | MIT |
-| wait-on | MIT |
 
 ---
 

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import brandIcon from '../assets/hongguo.ico';
+import brandIcon from '../../build/icon.ico';
 import './TitleBar.css';
 
 // Windows 无边框窗口的自定义标题栏。macOS 由 App 不渲染本组件（保留 hiddenInset 原生交通灯）。

@@ -21,7 +21,7 @@
 ## 3. 证据与处理
 
 - 仓库初始状态为 `main`，HEAD `3358ec273957e2eec391ebb7c3540c7d8258cadc`，工作区干净。当前树未追踪依赖目录、构建输出、账号数据、代理密码文件或真实测试视频。
-- 保留 `.impeccable/`：内容为配色、间距及页面设计约定，没有本轮识别的凭据；保留 `.zcode/config.json` 的本机插件偏好并维持忽略，仅清理其临时计划。保留 `node_modules/` 和开发用 FFmpeg：它们是本地验证依赖，均不作为源码上传。
+- 保留 `.impeccable/`：内容为配色、间距及页面设计约定，没有本轮识别的凭据。首次清理保留 `.zcode/config.json`；按用户后续清理要求，确认它仅启用与 Windows 项目无关的 iOS/Android 模拟器插件后，一并移入回收站。保留必要的 `node_modules/` 和开发用 FFmpeg：它们是本地验证依赖，均不作为源码上传。
 - 清理目录为 `dist/`、`dist-6.6/`、`dist-react/`、`verification/6.9/`、空的 `NVIDIA Corporation/`、`.workbuddy/`、`.zcode/plans/` 及旧测试日志。每个目标均核对在当前项目内，无符号链接；永久删除命令被安全审核拒绝后，改用可恢复的回收站操作。
 - `.gitignore` 增加通用版本构建目录、本机工作日志及 GPU 工作目录规则；新增只读的 `scripts/check-repository-hygiene.cjs`，自动检查追踪树中的运行数据、构建物和已识别凭据模式。输出只含文件名与类别，不输出凭据值。
 - 源码目录的启动脚本在本地构建不存在时回退当前用户的正式安装版，避免清理旧构建后只能尝试重建或运行旧安装程序。
@@ -29,6 +29,16 @@
 - 实际安装的 6.8 完成更新下载，状态为 `downloaded`、100%、无错误。缓存 EXE 为 146,473,439 字节，SHA-256 `ca1e28e28b21f38550fedc4f7c28325089aaa1610e07c917d211dca760659e36`，与正式 6.9 一致。应用恢复为正常启动后，经可见“下载更新”按钮重新验证缓存，界面显示“新版 v6.9 已下载”“重启并安装”；临时本地调试端口已关闭。未执行安装。
 - 本机数据仍为 1 项任务、8 部剧和 2 项观看记录；没有清理正式账号、视频或记录。
 - 当前 HEAD 删除不等于清除历史；保留 Git 历史及已发标签后，旧报告中的本机路径仍可追溯。未发现上述需要轮换的真实凭据。
+
+### 2026-11-13 追加清理
+
+- 删除当前树的 13 个旧文件，合计 3,860,277 字节；另移除本地工具配置 159 字节。均移入 Windows 回收站，没有清空回收站。
+- 移除 `docs/screenshots/` 中四张无引用的旧图：`hongguo-1.2-promo.jpg`、`macos-browse.png`、`macos-v1.6-hot.jpg`、`macos-xifan.png`。README 使用的五张截图保留。
+- 移除旧图标生成器 `scripts/create-icon.swift`（会覆盖为旧版图案）、只收集 EXE 而遗漏 `latest.yml` 的 `scripts/prepare-release-assets.js`、不属于当前 Windows 发行链路的 `scripts/prepare-mac-update.cjs`，以及沿用旧接口和最高档位判断的 `scripts/verify-best-def.js`。这些脚本均无现行调用；保留当前候选/发布工作流、随机素材辅助器、质量回归和 `scripts/diagnose-playback.cjs`。
+- 移除 `docs/superpowers/plans/` 两份旧实施计划，以及无引用的一次性 `docs/GITHUB_COMPETITOR_ANALYSIS.md`、`docs/PROJECT_GAP_ANALYSIS.md`。实施结果、许可署名和验收边界仍见对应版本发行说明、当前更新文档及测试；包含缺陷细节的历史审计、产品设计和第三方许可证保留。工具计划目录加入忽略规则及上传门禁。
+- 重复图标 `src/assets/hongguo.ico` 与 `build/icon.ico` 的 SHA-256 均为 `72406cba985339f98290b28dae36799f2c30090dde0d03d061bbd32f7b17948f`；标题栏和侧栏改为直接导入保留的 `build/icon.ico`，同步修正文档。
+- 开发启动已由 `scripts/dev.js` 自行启动进程、探测端口和等待就绪。移除没有调用的直接开发依赖 `concurrently`、`wait-on`，及其独占的 13 个间接依赖；同步锁文件、许可工具清单和已无对象的 `joi`/`shell-quote` 覆盖。离线卸载未新增包，所有保留锁条目的版本、来源与完整性均未改变。必要开发依赖仍保留并忽略。
+- 清理适用于当前源码树，不重写 Git 历史、已发布标签或 Release 资产；旧文件仍可通过 Git 历史恢复。
 
 ## 4. 客户端无法解决的问题
 
@@ -48,4 +58,11 @@
 - 本轮解码回归随机下载《都说了，别惹那个乞丐》第 1 集公开片段：series ID `7703410222160694296`，episode ID `7703412149342719001`，883,450 字节，SHA-256 `1c8b36c49d3fb79fe5038d193a1a9642ea92107b192debff18acaf41d7ecd1f8`；来源页 https://hongguoduanju.com/player/7703410222160694296 。全程不播放声音，未将预览解码当作完整分集 GUI 验收。
 - PARTIAL：实际更新检查、下载、校验及显示可安装已验证；6.8 → 6.9 的真实应用内安装与新版本启动由用户点击“重启并安装”后发生，此轮未代替用户执行。
 
-本轮属于仓库维护与本机连接修正，不增加发行版本或改写 6.9 发行历史。
+### 追加清理验证
+
+- PASS：`npm test` 的单元测试和 103 项平台检查、`npm run build:react`、`git diff --check`。
+- PASS：409 个保留追踪文件的上传检查；删除文件引用复扫无悬空引用（清理清单中的文件名记录除外）。锁文件减少 15 个包，所有保留包条目无变更、无新增包。
+- PASS：`node scripts/check-download-quality-integration.cjs`，26/26。为单独留存素材回执，随机下载《野草与荆棘鸟》第 1 集官网公开片段：series ID `7700120452810673177`，episode ID `7700122464562465817`，484,288 字节，SHA-256 `28248f8062453d4c9c2b6a6bdb1bc80eeaf757f01773582e43e89bb53fcd4245`；来源页 https://hongguoduanju.com/player/7700120452810673177 。独立临时目录由测试自行清理，全程不播放声音，不代表完整分集 GUI 验收。
+- 验证完成后移除生成的 `dist-react/` 和空的 `src/assets/`，开发依赖及媒体工具继续忽略。工作区同期出现的更新说明和发布流程改动不纳入本次清理提交。
+
+本轮属于仓库维护与本机连接修正，不增加发行版本或改写 6.9 发行历史；追加清理没有用户可见功能变化，无需更新产品发布说明。

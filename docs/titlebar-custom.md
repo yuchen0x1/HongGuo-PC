@@ -6,8 +6,7 @@
 
 应用统一使用 `hongguo_drama_icon.ico`（16–256px 多尺寸 32bpp）：
 
-- `build/icon.ico`：electron-builder `win.icon`（安装包/EXE 图标）+ BrowserWindow `icon`（窗口/任务栏，dev 与打包均从 asar 内读取，已加入 builder `files`）。
-- `src/assets/hongguo.ico`：Vite 静态导入，用于标题栏品牌区（`.titlebar-logo`，24px 圆角 + 红色光晕）与侧栏 logo（`.logo`）。
+- `build/icon.ico`：统一图标来源，供 electron-builder `win.icon`（安装包/EXE 图标）、BrowserWindow `icon`（窗口/任务栏，dev 与打包均从 asar 内读取，已加入 builder `files`）及 Vite 静态导入使用。标题栏品牌区（`.titlebar-logo`，24px 圆角 + 红色光晕）与侧栏 logo（`.logo`）直接复用该文件。
 - 启动页 SplashScreen 的动效 logo 维持原设计，未替换。
 - 测试桩 `check-ui-state.cjs` 的模块加载器已支持 `.ico/.png/...` 静态资源导入（返回相对路径充当 URL）。
 

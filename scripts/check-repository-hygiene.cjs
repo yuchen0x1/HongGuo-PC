@@ -6,7 +6,7 @@ const root = path.resolve(__dirname, '..');
 let files;
 try { files = execFileSync('git', ['ls-files', '-z'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).split('\0').filter(Boolean); }
 catch (_) { console.log('NOT APPLICABLE repository upload guard: no Git index'); process.exit(0); }
-const generatedRoot = /^(?:node_modules|dist(?:-[^/]+)?|verification|outputs|\.cache|\.zcode|\.workbuddy|\.local|\.tokensave|\.planning|data|sessions|logs|downloads|backups|rollback|media|NVIDIA Corporation)\//i;
+const generatedRoot = /^(?:node_modules|dist(?:-[^/]+)?|verification|outputs|\.cache|\.zcode|\.workbuddy|docs\/superpowers|\.local|\.tokensave|\.planning|data|sessions|logs|downloads|backups|rollback|media|NVIDIA Corporation)\//i;
 const privateFile = /(?:^|\/)(?:\.env(?:\.[^/]*)?|data\.json|danmaku-client\.json|\.updaterId|update-info\.json|[^/]+\.(?:pem|pfx|p12|key|db|sqlite|log|tmp|bak|backup))$/i;
 const localNote = /^(?:PROJECT_AUDIT_REPORT\.md|\d{4}-\d{2}-\d{2}\.md|\.audit-[^/]*)$/i;
 const credentials = [
