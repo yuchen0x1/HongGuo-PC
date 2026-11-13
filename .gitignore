@@ -4,9 +4,7 @@
 # 依赖
 node_modules/
 dist/
-dist-6.6/
-dist-6.7/
-dist-6.8/
+/dist-*/
 dist-react/
 
 # 内置的 ffmpeg 二进制（约 167MB，从网络获取，不纳入版本管理）
@@ -94,6 +92,10 @@ HANDOFF.md
 .local/
 .workbuddy/
 .tokensave/
+/NVIDIA Corporation/
+/PROJECT_AUDIT_REPORT.md
+/20??-??-??.md
+/.audit-*
 .venv/
 venv/
 __pycache__/
