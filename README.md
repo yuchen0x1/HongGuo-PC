@@ -23,7 +23,7 @@
 
 ## 📦 下载
 
-当前发行目标 **6.9**（内部 `6.9.0`，标签 `v6.9`），只发布 Windows x64；发行状态见 [release-6.9.md](docs/release-6.9.md)。
+当前正式版 **6.9**（内部 `6.9.0`，标签 `v6.9`），只发布 Windows x64；详见 [GitHub Release v6.9](https://github.com/yuchen0x1/HongGuo-PC/releases/tag/v6.9) 与 [发行记录](docs/release-6.9.md)。
 
 | | |
 |---|---|
