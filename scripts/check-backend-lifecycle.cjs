@@ -25,6 +25,8 @@ function fixture(platform = 'darwin', options = {}) {
     dialog: { showErrorBox: (title, message) => state.errors.push({ title, message }) } }
     : name === 'fs' ? Object.create(fs) : name === './src/store' ? store : name === 'axios' ? axios
     : name === 'child_process' && options.childProcess ? options.childProcess
+    : name === 'electron-updater' && options.updater ? { autoUpdater: options.updater }
+    : name === './src/native/app-update-installer' && options.updateInstallerFactory ? { createUpdateInstaller: options.updateInstallerFactory }
     : name === './src/native/merge-runner' && options.mergeRunner ? options.mergeRunner : req(name),
     __dirname: path.dirname(source), process: { ...process, platform, env: {} }, Buffer, URL, Response, Request, Headers,
     AbortController, setTimeout: options.setTimeout || setTimeout, clearTimeout: options.clearTimeout || clearTimeout,
@@ -49,6 +51,65 @@ function timers() {
   };
 }
 const checks = [
+  ['shorter episode responses preserve known episodes and refresh matching access metadata', async () => {
+    const h = fixture('win32');
+    h.run(`store.saveSeries = () => {}; seriesRegistry = [{ series_id: '123456789', series_title: 'Fixture', total: 10,
+      episodes: Array.from({ length: 10 }, (_, i) => ({ vid: String(8000000 + i), vid_index: i + 1, locked: false })) }];`);
+    h.context.upsertSeriesRegistry({ series_id: '123456789', series_title: 'Updated',
+      episodes: [{ vid: '8000000', vid_index: 1, locked: true }, { vid: '8000001', vid_index: 2 }] });
+    h.context.collectSeriesEpisodeFiles = () => ({ dir: null, ordered: [] });
+    const response = await h.handlers['get-series-episodes']({}, '123456789');
+    assert.equal(response.data.total, 10);
+    assert.equal(response.data.series_title, 'Updated');
+    assert.equal(response.data.episodes[0].locked, true);
+    assert.ok(response.data.episodes.some(ep => ep.vid_index === 10));
+    h.context.upsertSeriesRegistry({ series_id: '123456789', episodes: Array.from({ length: 11 }, (_, i) => ({ vid: String(8000000 + i), vid_index: i + 1 })) });
+    assert.equal((await h.handlers['get-series-episodes']({}, '123456789')).data.total, 11);
+  }],
+  ['batch task deletion blocks quit and installation until all records are saved', async () => {
+    let blocker, status = 'downloaded', release;
+    const updater = new EventEmitter();
+    const h = fixture('win32', { updater, updateInstallerFactory: options => {
+      blocker = options.installBlocker;
+      return { getState: () => ({ status }) };
+    } });
+    h.context.getAppUpdateInstaller();
+    const removed = [];
+    h.context.removeEpisodeFiles = async paths => {
+      if (removed.length) await new Promise(resolve => release = resolve);
+      removed.push(paths[0]); return { count: 1, freed: 1, failed: 0 };
+    };
+    h.run(`downloadTasks = ['a', 'b'].map((id, i) => ({ id, status: 'completed', savePath: id,
+      hongguoInfo: { series_id: '123456789', vid_index: i + 1 } }));`);
+    const deletion = h.handlers['delete-tasks']({}, ['a', 'b'], { deleteFiles: true });
+    await flush();
+    try {
+      assert.deepEqual(removed, ['a']);
+      assert.notEqual(blocker(), '', 'installation must wait for file and record cleanup');
+      let prevented = false;
+      h.app.emit('before-quit', { preventDefault: () => prevented = true });
+      assert.equal(prevented, true, 'quit must wait for the whole batch');
+      assert.equal(h.state.quits, 0);
+    } finally { release(); await deletion; await flush(); }
+    assert.equal(h.run('downloadTasks.length'), 0);
+    assert.equal(h.run('maintenanceOps.size'), 0);
+    assert.equal(h.state.quits, 1);
+    assert.equal(blocker(), '');
+    status = 'installing';
+    assert.match((await h.handlers['delete-task']({}, 'a')).error, /正在安装/);
+  }],
+  ['standalone maintenance blocks installation and releases its blocker on failure', async () => {
+    let blocker, reject;
+    const h = fixture('win32', { updater: new EventEmitter(), updateInstallerFactory: options => {
+      blocker = options.installBlocker; return { getState: () => ({ status: 'downloaded' }) };
+    } });
+    h.context.getAppUpdateInstaller();
+    const pending = h.context.trackMaintenance(new Promise((_, fail) => reject = fail));
+    const settled = pending.catch(() => {});
+    assert.notEqual(blocker(), '');
+    reject(new Error('fixture failure')); await settled; await flush();
+    assert.equal(blocker(), '');
+  }],
   ['Windows main close requests normal quit even when a hidden search window survives', async () => {
     const h = fixture('win32');
     h.context.createWindow();

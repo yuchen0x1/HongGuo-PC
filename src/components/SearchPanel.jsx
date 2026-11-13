@@ -217,7 +217,7 @@ function SearchPanel({ onSelectSeries, onSwitchToInput, active = true, seedTerm 
   // 全局搜索（Ctrl+K）选中的词条会带时间戳传入，仅首次生效并自动执行一次搜索。
   const appliedSeed = useRef('');
   useEffect(() => {
-    if (!seedTerm || appliedSeed.current === seedTerm) return;
+    if (!active || sourcesLoading || !seedTerm || appliedSeed.current === seedTerm) return;
     appliedSeed.current = seedTerm;
     const term = seedTerm.split('#')[0].trim();
     if (!term) return;
@@ -231,8 +231,8 @@ function SearchPanel({ onSelectSeries, onSwitchToInput, active = true, seedTerm 
     setPageTitle('');
     setMore({}); setMoreError(''); setMoreLoading(false); cancelMore();
     setKeyword(term);
-    if (!sourcesLoading) doSearch(term);
-  }, [seedTerm, sourcesLoading]);
+    doSearch(term);
+  }, [seedTerm, sourcesLoading, active]);
 
   // 选中某部剧 -> 拉取完整分集 -> 交给下载页
   const pick = async (item) => {

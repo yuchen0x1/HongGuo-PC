@@ -1,4 +1,4 @@
-// Unit and platform checks, including generated real-media decode/recovery fixtures (requires FFmpeg/libx264 and ffprobe).
+// Unit and platform checks, including randomly downloaded public Hongguo decoder fixtures (network + FFmpeg/libx264 + ffprobe).
 // Skips Windows installers, external media fixtures, architecture checks, and Electron GUI launches.
 const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');

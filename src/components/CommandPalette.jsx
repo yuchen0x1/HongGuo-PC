@@ -104,10 +104,11 @@ export default function CommandPalette({ open, onClose, onNavigate, onSearch }) 
         {results.map((item, index) => {
           if (item.kind === 'group') return <div className="command-group-label" key={`g:${item.label}:${index}`}>{item.label}</div>;
           selectableIndex++;
-          const isSelected = selectableIndex === active;
+          const itemIndex = selectableIndex;
+          const isSelected = itemIndex === active;
           return <button key={`${item.kind}:${item.id || item.row?.series_id || item.item?.id || item.value}:${index}`}
             className={`command-item ${isSelected ? 'active' : ''}`} aria-selected={isSelected} role="option"
-            onMouseEnter={() => setActive(selectableIndex)} onClick={() => run(item)}>
+            onMouseEnter={() => setActive(itemIndex)} onClick={() => run(item)}>
             {item.kind === 'page' && <item.Icon size={16} />}
             {item.kind === 'history' && <ClockIcon size={16} />}
             {item.kind === 'library' && <Heart size={16} />}

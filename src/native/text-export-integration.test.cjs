@@ -77,10 +77,12 @@ test('text export runs in background and returns request identity and submitted 
   assert.equal(result.exportRequested, true);
   assert.equal(result.requestId, input.requestId);
   assert.equal(h.events.some(event => event.channel === 'text-export-done'), false);
+  assert.equal(h.run('maintenanceOps.size'), 1, 'background export must keep quit/update protection active');
   input.export.comments = false;
   finish({ comments: { ok: 1, fail: 0, skipped: 0, partial: 0 } });
   await flush();
   const done = h.events.find(event => event.channel === 'text-export-done').data;
+  assert.equal(h.run('maintenanceOps.size'), 0, 'finished export must release quit/update protection');
   assert.equal(done.requestId, 'request-one');
   assert.equal(done.seriesId, sid);
   assert.equal(done.kinds.comments, true);

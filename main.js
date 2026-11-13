@@ -82,7 +82,9 @@ let pendingUpdateOperations = 0;
 let quitCleanup = null;
 let quitReady = false;
 let mergeTempCleanup = null;
-const UPDATE_BLOCKED_CHANNELS = new Set(['hongguo-download-batch', 'download-single-episode', 'download-series-to-nas', 'retry-task', 'retry-tasks', 'resume-all', 'merge-series', 'transcode-for-playback', 'prepare-online-play', 'start-casting', 'save-settings', 'set-boss-key']);
+const MAINTENANCE_CHANNELS = new Set(['delete-task', 'delete-tasks', 'delete-series-files', 'delete-episode-file',
+  'cleanup-watched-episode', 'delete-all-downloaded', 'clear-series-playback-cache', 'forget-series', 'clear-online-cache', 'clear-compat-cache']);
+const UPDATE_BLOCKED_CHANNELS = new Set(['hongguo-download-batch', 'download-single-episode', 'download-series-to-nas', 'retry-task', 'retry-tasks', 'resume-all', 'merge-series', 'transcode-for-playback', 'prepare-online-play', 'start-casting', 'save-settings', 'set-boss-key', ...MAINTENANCE_CHANNELS]);
 const ipcMain = {
   handle(channel, handler) {
     rawIpcMain.handle(channel, async (event, ...args) => {
@@ -93,7 +95,10 @@ const ipcMain = {
       }
       const blocksUpdate = UPDATE_BLOCKED_CHANNELS.has(channel);
       if (blocksUpdate) pendingUpdateOperations++;
-      try { return await handler(event, ...args); }
+      try {
+        const operation = handler(event, ...args);
+        return await (MAINTENANCE_CHANNELS.has(channel) ? trackMaintenance(operation) : operation);
+      }
       finally { if (blocksUpdate) pendingUpdateOperations--; }
     });
   },
@@ -679,7 +684,7 @@ function saveSeriesRegistry() {
 
 /**
  * 登记/更新一部短剧。data 需含 series_id 与 episodes。
- * 已有的不覆盖 episodes（避免接口异常时把好数据冲掉），仅补全标题与封面。
+ * 较短响应保留已知分集，仅刷新对应分集的元数据；完整响应允许更新和新增分集。
  */
 function upsertSeriesRegistry(data) {
   if (!data || !data.series_id || !Array.isArray(data.episodes) || data.episodes.length === 0) return;
@@ -703,6 +708,15 @@ function upsertSeriesRegistry(data) {
     dismissed: false, // 用户主动移除过；再次登记时自动恢复显示
     forgotten: false,
   };
+  const existing = seriesRegistry[idx];
+  if (existing?.episodes?.length > entry.episodes.length) {
+    const freshById = new Map(entry.episodes.map(episode => [episode.vid, episode]));
+    entry.episodes = existing.episodes.map(episode => {
+      const fresh = freshById.get(String(episode.vid));
+      return fresh && Number(fresh.vid_index) === Number(episode.vid_index) ? fresh : episode;
+    });
+    entry.total = entry.episodes.length;
+  }
   if (idx === -1) seriesRegistry.unshift(entry);
   else seriesRegistry[idx] = { ...seriesRegistry[idx], ...entry, dismissed: false };
   saveSeriesRegistry();
@@ -4066,7 +4080,7 @@ ipcMain.handle('hongguo-download-batch', async (event, payload) => {
     const requestId = typeof payload.requestId === 'string' && payload.requestId.length <= 128 && payload.requestId
       ? payload.requestId : randomUUID();
     if (exportRequested) {
-      Promise.resolve().then(() => {
+      trackMaintenance(Promise.resolve().then(() => {
         // Reuse persisted task destinations, including old settings and repaired filename conflicts.
         const destinations = episodes.map(ep => {
           const task = downloadTasks.find(item => String(item.hongguoInfo?.series_id) === String(seriesId)
@@ -4080,7 +4094,7 @@ ipcMain.handle('hongguo-download-batch', async (event, payload) => {
       }).then(result => sendToRenderer('text-export-done', { ...result, requestId, seriesId, kinds }))
         .catch(error => sendToRenderer('text-export-done', {
           requestId, seriesId, kinds, failed: true, error: String(error?.message || error),
-        }));
+        })));
     }
     return { success: true, count, requested: episodes.length, exportRequested, requestId };
   } catch (error) {
@@ -4942,7 +4956,7 @@ async function deleteSeriesFiles(seriesId, options) {
   }
 }
 
-ipcMain.handle('delete-series-files', (_event, seriesId, options) => trackMaintenance(deleteSeriesFiles(seriesId, options)));
+ipcMain.handle('delete-series-files', (_event, seriesId, options) => deleteSeriesFiles(seriesId, options));
 
 /** 删除单集本地文件（看完即删用） */
 async function deleteEpisodeFile(seriesId, vidIndex) {
@@ -4969,7 +4983,7 @@ async function deleteEpisodeFile(seriesId, vidIndex) {
   }
 }
 
-ipcMain.handle('delete-episode-file', (_event, seriesId, vidIndex) => trackMaintenance(deleteEpisodeFile(seriesId, vidIndex)));
+ipcMain.handle('delete-episode-file', (_event, seriesId, vidIndex) => deleteEpisodeFile(seriesId, vidIndex));
 
 /** 前端先释放看完的媒体；只清本集，不影响预缓存的下一集。 */
 ipcMain.handle('cleanup-watched-episode', async (_event, seriesId, vidIndex) => {
@@ -5241,9 +5255,9 @@ function getAppUpdateInstaller() {
       currentVersion: APP_VERSION,
       isEnabled: () => !IS_PREVIEW && getCurrentSettings().app_updates_enabled !== false,
       installBlocker: () => {
-        if (pendingUpdateOperations) return '正在处理任务或保存设置，请稍后再安装更新。';
+        if (pendingUpdateOperations || maintenanceOps.size || settingsSaving || compatClearing || mergeTempCleanup) return '正在处理任务或保存设置，请稍后再安装更新。';
         if (downloadRuns.size || downloadQueue.length || sourceRetryTimers.size) return '还有下载或等待重试的任务，请先在下载管理中暂停全部任务，再安装更新。';
-        if (mergeTasks.some(task => task.status === 'running') || compatPreparing.size || onlinePreparing.size) return '正在合并或准备视频，请等待完成或取消后再安装更新。';
+        if (mergeTasks.some(task => task.status === 'running') || compatPreparing.size || onlinePreparing.size || onlineWork.size) return '正在合并或准备视频，请等待完成或取消后再安装更新。';
         if (storageError) return '本地数据保存异常，请先处理保存问题，再安装更新。';
         return '';
       },

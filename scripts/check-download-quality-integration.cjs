@@ -45,7 +45,8 @@ const checks = [
     const ffmpeg = h.context.resolveFfmpeg('ffmpeg');
     assert.ok(ffmpeg && h.context.resolveFfmpeg('ffprobe'), 'local FFmpeg and ffprobe are required');
     const valid = path.join(h.root, 'valid.mp4'), broken = path.join(h.root, 'broken.mp4');
-    execFileSync(ffmpeg, ['-v', 'error', '-nostdin', '-f', 'lavfi', '-i', 'testsrc2=s=640x360:r=24:d=1',
+    const original = await require('./fixtures/hongguo-video.cjs').downloadTestMedia(h.root);
+    execFileSync(ffmpeg, ['-v', 'error', '-nostdin', '-i', original, '-t', '1', '-vf', 'scale=640:360', '-an',
       '-c:v', 'libx264', '-preset', 'ultrafast', '-qp', '0', '-pix_fmt', 'yuv420p', valid],
       { stdio: ['ignore', 'pipe', 'pipe'], timeout: 15000 });
     const bytes = fs.readFileSync(valid), damaged = Buffer.from(bytes);

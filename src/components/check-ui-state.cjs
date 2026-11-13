@@ -122,6 +122,48 @@ async function mount(file, api, props = {}, storage = null) {
 (async () => {
   let failures = 0;
   const test = async (name, fn) => { if (process.argv[2] && !new RegExp(process.argv[2]).test(name)) return; try { await fn(); console.log(`PASS ${name}`); } catch (e) { failures++; console.error(`FAIL ${name}: ${e.stack}`); } };
+  await test('command palette hover and Enter open the hovered result', async () => {
+    const opened = [];
+    const ui = await mount('CommandPalette', { getWatchHistory: async () => ({ success: true, results: [] }) },
+      { open: true, onClose() {}, onNavigate: page => opened.push(page) });
+    for (const [label, page] of [['发现短剧', 'browse'], ['下载管理', 'manager']]) {
+      ui.button(label).props.onMouseEnter();
+      await ui.flush();
+      const selected = ui.nodes().filter(node => node.props.role === 'option' && node.props['aria-selected']);
+      assert.equal(selected.length, 1);
+      assert.equal(selected[0], ui.button(label));
+      ui.find(node => node.props.role === 'dialog').props.onKeyDown({ key: 'Enter', preventDefault() {} });
+      assert.equal(opened.at(-1), page);
+    }
+    ui.unmount();
+  });
+  await test('global search waits for sources and submits only the newest pending seed once', async () => {
+    const registry = deferred(), calls = [];
+    const ui = await mount('SearchPanel', {
+      getMediaSources: () => registry.promise,
+      searchSeries: async (keyword, options) => { calls.push([keyword, options.source]); return { success: true, results: [] }; },
+    }, { seedTerm: '旧搜索#1', active: true });
+    assert.equal(calls.length, 0);
+    ui.setProps({ seedTerm: '新搜索#2' });
+    registry.resolve({ success: true, sources: [{ id: 'hongguo', label: '红果' }] });
+    await ui.flush();
+    assert.deepEqual(calls, [['新搜索', 'hongguo']]);
+    await ui.flush();
+    assert.equal(calls.length, 1);
+    ui.unmount();
+  });
+  await test('global search defers hidden seeds until the search page becomes active', async () => {
+    const calls = [];
+    const ui = await mount('SearchPanel', {
+      getMediaSources: async () => ({ success: true, sources: [{ id: 'hongguo', label: '红果' }] }),
+      searchSeries: async keyword => { calls.push(keyword); return { success: true, results: [] }; },
+    }, { seedTerm: '待搜索#1', active: false });
+    await ui.flush();
+    assert.equal(calls.length, 0);
+    ui.setProps({ active: true }); await ui.flush();
+    assert.deepEqual(calls, ['待搜索']);
+    ui.unmount();
+  });
   await test('builtin sources settings lock hongguo and persist toggles with failure recovery', async () => {
     let enabled = true, fail = false;
     const saved = [];
