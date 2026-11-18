@@ -23,7 +23,7 @@
   },
   "dependencies": {
     "anime4k-webgpu": "1.0.0",
-    "axios": "1.20.0",
+    "axios": "1.21.1",
     "electron-updater": "6.8.9"
   },
   "devDependencies": {
