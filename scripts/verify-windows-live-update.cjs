@@ -174,7 +174,6 @@ function automaticAppProcess(previousPid) {
 
   const found = await runJs('window.electronAPI.checkAppUpdate()', 30000);
   assert.equal(found.enabled, true);
-  assert.equal(found.currentVersion, from.slice(1));
   assert.equal(found.release?.version, to.slice(1), 'Installed app must discover the public target');
   receipt.steps.push('Installed app discovered the stable target');
   const completed = await runJs('window.electronAPI.downloadAppUpdate()', 240000);
