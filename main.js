@@ -58,6 +58,7 @@ const { availableRelease } = require('./src/native/app-update');
 const { buildDiagnostics } = require('./src/native/diagnostics');
 const { parseExternalUrl } = require('./src/native/external-links');
 const { createReleaseNotesService } = require('./src/native/release-notes');
+const { summarizeDownloadQueue } = require('./src/native/download-queue-health');
 const { fetchPublicDetails } = require('./src/native/public-details');
 const { fetchEpisodeComments } = require('./src/native/episode-comments');
 const { fetchDanmaku, setDeviceIdentityFile } = require('./src/native/danmaku');
@@ -5419,9 +5420,10 @@ ipcMain.handle('resume-all', async () => {
 });
 
 // 队列实时状态（供界面显示「进行中 x/并发上限」）
-ipcMain.handle('get-queue-status', async () => ({
+ipcMain.handle('get-queue-status', async () => summarizeDownloadQueue({
+  tasks: downloadTasks,
+  queue: downloadQueue,
   active: activeDownloads,
-  queued: downloadQueue.length,
   maxConcurrent: MAX_CONCURRENT_DOWNLOADS,
 }));
 

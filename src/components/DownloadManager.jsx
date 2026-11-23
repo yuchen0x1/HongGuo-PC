@@ -71,7 +71,7 @@ function DownloadManager({ onNavigate, active = true }) {
   const [tasks, setTasks] = useState([]);
   const [selected, setSelected] = useState(new Set());
   const [toast, setToast] = useState(null);
-  const [queue, setQueue] = useState({ active: 0, queued: 0, maxConcurrent: 3 });
+  const [queue, setQueue] = useState({ active: 0, queued: 0, maxConcurrent: 3, retrying: 0, manualAction: 0, retryAfterMs: null });
   const [seriesList, setSeriesList] = useState([]);
   const [mergeSeriesId, setMergeSeriesId] = useState('');
   const [merging, setMerging] = useState(false);
@@ -746,15 +746,16 @@ function DownloadManager({ onNavigate, active = true }) {
         </div>
       )}
 
-      {queue.active > 0 && (
+      {(queue.active > 0 || queue.queued > 0 || queue.retrying > 0 || queue.manualAction > 0) && (
         <div className="dm-queue-bar">
           <span className="dm-queue-running">
-            <span className="dm-queue-pulse" />
-            正在并发下载 <b>{queue.active}</b> / {queue.maxConcurrent}
-            {queue.queued > 0 ? <> · 队列等待 <b>{queue.queued}</b></> : null}
+            {queue.active > 0 && <><span className="dm-queue-pulse" />正在并发下载 <b>{queue.active}</b> / {queue.maxConcurrent}</>}
+            {queue.active === 0 && queue.queued > 0 && <>队列等待 <b>{queue.queued}</b></>}
+            {queue.retrying > 0 ? <> · 自动重试 <b>{queue.retrying}</b>{Number.isFinite(queue.retryAfterMs) ? `（最近一次约 ${Math.max(0, Math.ceil(queue.retryAfterMs / 60000))} 分钟后）` : ''}</> : null}
+            {queue.manualAction > 0 ? <> · 需处理 <b>{queue.manualAction}</b></> : null}
           </span>
           <span className="dm-queue-hint">
-            并发数可在「设置 → 最大并发下载数」调整
+            {queue.manualAction > 0 ? '磁盘、权限或来源问题不会自动重试，请检查失败详情' : '并发数可在「设置 → 最大并发下载数」调整'}
           </span>
         </div>
       )}

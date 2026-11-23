@@ -1,5 +1,20 @@
 # 自主开发变更记录
 
+## 2026-11-23 · 下载队列健康快照（发行 6.27）
+
+**巡检结论**：下载队列状态此前只能从任务列表推断；并发槽位、自动重试倒计时和“必须人工处理”的失败混在一起，长时间批量下载时用户难以判断程序是否还在工作、还需不需要干预。对照 qBittorrent/aria2 的队列状态展示（[EV-005](UPGRADE_ROADMAP.md)），补一个可解释的快照。
+
+**代码变更**：
+
+1. `src/native/download-queue-health.js`（新）：`summarizeDownloadQueue` 纯函数汇总并发、排队（按 id 去重）、自动重试、人工处理、完成数与最近一次重试剩余时间；非法 `maxConcurrent`、非法 `retryAt`、过去时间均安全收敛。
+2. `main.js`：`get-queue-status` 改为调用快照函数，保留 `active/queued/maxConcurrent` 字段兼容旧界面。
+3. `src/components/DownloadManager.jsx`：状态条在只有自动重试或人工处理任务时也显示，并提示“磁盘、权限或来源问题不会自动重试”。
+4. `src/native/download-queue-health.test.cjs`（新）：2 项单测。
+
+**验证**：`node --test src/native/download-queue-health.test.cjs` 2/2 通过；`npm test` 单元测试与 111 项平台检查通过；`npm run build:react` 构建通过。
+
+**边界**：不改变任务持久化格式、重试策略、并发默认值和公开 IPC 字段；真实 GUI 状态条与真机长任务观察未在本轮做安装包级验收。
+
 ## 2026-11-21 · 关闭按钮收进系统托盘（发行 6.25）
 
 **需求来源**：用户反馈「点关闭按钮直接退出，没有缩小化」。确认为最小化到系统托盘后台运行：点 × 收起窗口、下载不中断、托盘可恢复与退出。
