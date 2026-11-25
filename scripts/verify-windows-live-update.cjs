@@ -138,12 +138,19 @@ function finishInstaller() {
 }
 
 function automaticAppProcess(previousPid) {
-  const list = pwsh([
-    'Get-Process -Name "红果短剧" -ErrorAction SilentlyContinue |',
-    '  Where-Object { $_.Path -eq $env:HONGGUO_TEST_EXE -and $_.MainWindowHandle -ne 0 } |',
-    '  Select-Object -ExpandProperty Id',
-  ].join('\n'), { HONGGUO_TEST_EXE: exe });
-  return list.split(/\s+/).map(Number).find(pid => pid > 0 && pid !== previousPid);
+  try {
+    const list = pwsh([
+      '$target = [System.IO.Path]::GetFullPath($env:HONGGUO_TEST_EXE)',
+      'try {',
+      "  Get-CimInstance -ClassName Win32_Process -Filter \"Name = '红果短剧.exe'\" -ErrorAction Stop |",
+      '    Where-Object { $_.ExecutablePath -and [string]::Equals([System.IO.Path]::GetFullPath($_.ExecutablePath), $target, [StringComparison]::OrdinalIgnoreCase) } |',
+      '    Select-Object -ExpandProperty ProcessId',
+      '} catch {}',
+    ].join('\n'), { HONGGUO_TEST_EXE: exe });
+    return list.split(/\s+/).map(Number).find(pid => pid > 0 && pid !== previousPid);
+  } catch {
+    return null;
+  }
 }
 
 (async () => {
