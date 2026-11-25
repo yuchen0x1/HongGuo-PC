@@ -269,7 +269,9 @@ async function runInstallerCheck() {
     const installedPackage = JSON.parse(asar.extractFile(archive, 'package.json').toString('utf8'));
     assert.equal(installedPackage.main, pkg.main, 'Installed application must use the declared bootstrap');
     for (const entryFile of [pkg.main, 'main.js', 'src/native/account-uninstall.js']) {
-      assert.equal(asar.extractFile(archive, entryFile).toString('utf8'), fs.readFileSync(path.join(root, entryFile), 'utf8'), `Installed ${entryFile} must match the verified source`);
+      const entrySegments = entryFile.split(/[\\/]+/);
+      const archiveEntry = path.join(...entrySegments);
+      assert.equal(asar.extractFile(archive, archiveEntry).toString('utf8'), fs.readFileSync(path.join(root, ...entrySegments), 'utf8'), `Installed ${entryFile} must match the verified source`);
     }
     result.checks.push('Installed ASAR declares the bootstrap and includes the matching normal main and account cleanup implementation');
     assert(fs.existsSync(correspondingSource), 'Installed application directory must retain the GPL FFmpeg/x264 corresponding source document');

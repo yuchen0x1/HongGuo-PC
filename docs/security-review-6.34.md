@@ -1,11 +1,86 @@
 # Security review for 6.34
 
-Review date: 2026-11-25. Scope: all 31 historical CodeQL alerts, including the
-17 production locations listed below, their release-candidate implementations
-and relevant downstream uses. The remaining 14 locations were checked against
-the actual remote main source. This is a source and disposition review, not a
-penetration test or a new CodeQL scan. Unless explicitly marked as remote main,
-fix descriptions refer to the unmerged 6.34 release worktree.
+Review date: 2026-11-25. The initial scope covered 31 historical CodeQL alerts,
+including 17 production locations and 14 test/acceptance locations. Review then
+covered four newly reported PR alerts and the completed main scan of the source
+frozen for `v6.34`. The final scope is 35 historical alerts. This is a source,
+disposition and scan-evidence review, not a penetration test. Pre-merge snapshots
+and decisions are retained below as history; the following section records the
+formal main result.
+
+## Formal main result
+
+The main push workflow `45583572172` completed successfully at
+`2026-11-25T09:17:25Z` for the exact source frozen as `v6.34`:
+`30c0e480f1624b87caba8ea35e8d075f11574041`. Its `javascript` job
+`139099378114` completed in 2m32s. CodeQL analysis `2246543962`, created at
+`2026-11-25T09:16:39Z`, identifies `refs/heads/main`, category
+`.github/workflows/codeql.yml:javascript`, that same commit, 87 rules and empty
+error/warning fields. The analysis contains 20 raw results, not zero.
+
+An independent alert API query at `2026-11-25T09:17:56Z` returned:
+
+| Scope | Open | Dismissed | Fixed |
+| --- | ---: | ---: | ---: |
+| Original 17 production alerts | 0 | 7 | 10 |
+| Three additional production alerts, #32-#34 | 0 | 3 | 0 |
+| All 15 test/acceptance alerts, including #35 | 0 | 11 | 4 |
+| All 35 historical alerts | 0 | 21 | 14 |
+
+The nine reopened alerts, #1, #14, #16, #21, #22, #23, #25, #26 and #27,
+all received `fixed_at: 2026-11-25T09:16:39Z` from this main analysis. This
+includes the NAS ownership implementation at #26 and the old script-extraction
+regex at #21. No new result was reported at `src/native/html-script-blocks.js`
+in this analysis.
+
+The old double-decoding instances #14 and #16 becoming `fixed` must not be
+described as removal of entity decoding. The same intended display behavior is
+still reported at the revised account/search locations as #33 and #34, which
+were individually reviewed and dismissed as `false positive`. Likewise the
+protocol MD5 implementations remain; their dismissals document compatibility
+boundaries rather than claiming stronger cryptography.
+
+The complete main SARIF was read and all 20 raw results were matched to current
+alert instances:
+
+| Raw result category | Current alerts and main locations | Count / disposition |
+| --- | --- | --- |
+| Required protocol MD5 | #10 `app-source.js:43`; #11 `:104`; #32 `:128`; #13 `:169` | 4, `won't fix` with protocol explanations |
+| URL/display entity decoding | #15 `app-source.js:33`; #17 `hongguo-search.js:38`; #18 `hongguo.js:208`; #33 `account-session.js:57`; #34 `hongguo-app-search.js:14` | 5, `false positive` with consumer/guard explanations |
+| Test/acceptance programs | #2-#9, #19, #20 and #35 | 11, verified `used in tests` |
+
+The API also retains #12 as `dismissed` with its existing protocol reason and a
+new `fixed_at` value, although it has no result in this main SARIF. This explains
+why the historical API count is 21 dismissed while the current analysis has
+20 raw results. Counts above use the API's actual `state`, without relabeling
+#12 as fixed or implying a protocol implementation was removed. SARIF
+`suppressions` is null for these results; the individual dispositions were
+verified separately through GitHub's alert API.
+
+No open main alert or additional unreviewed result remained in this dated
+snapshot. This does not mean all historical findings were code fixes, that the
+raw analysis is empty, or that future scans cannot report new findings.
+
+## PR findings and dispositions
+
+PR #48 head `bd36b2131569eb5d74b3f8667e85b0146b21e16e` was analyzed by workflow
+`45582795290` and analysis `2246507526` at `2026-11-25T09:11:14Z`, against merge
+commit `7cdfbfa70cee6093450f42a74ea04b53c5a45b84`. The analysis job succeeded,
+but security check `139097449441` initially failed on four new high-severity
+instances. Each was independently reviewed before the release owner corrected
+its disposition. The subsequent main analysis, rather than this PR result,
+establishes the formal main status above.
+
+| Alert | Reviewed path and evidence | Verified disposition history |
+| --- | --- | --- |
+| #32 | `app-source.js:128`, `buildMedusa` body MD5. All four SARIF flows originate in anonymous catalog/new-release pagination `session_id` cursors at `hongguo-app-catalog.js:139` and `hongguo-app-new.js:111`, `:122`, `:134`. `signedMetadataRequest` serializes them into the request body and uses a process-local anonymous metadata device without a website Cookie. This is the upstream-required Medusa body digest, not password storage, account encryption or local update integrity. | `won't fix`, updated `09:14:07Z`; protocol compatibility explanation, not test-only and not a claim that MD5 is secure. |
+| #33 | `account-session.js:57-58`, profile/history display normalization. The retained entity-decoding chain can produce markup-like text; reviewed consumers use ordinary React text/attributes, including account nickname and history titles. It is not an HTML sanitizer. | `false positive`, updated `09:14:10Z`, with the production text-sink explanation. |
+| #34 | `hongguo-app-search.js:14-15`, title/introduction/keyword normalization. Display results use ordinary React text/attributes; search keywords enter the separately URL-encoded signed query. No executable HTML sink was identified. | `false positive`, updated `09:14:12Z`, with the display/encoding boundary explanation. |
+| #35 | `plain-text.test.cjs:31`, the legacy script regex used only as an output oracle against fixed samples for the new sequential extractor. The package excludes `src/native/**/*.test.cjs`; production extraction uses `readScriptBlocks`. | `used in tests`, updated `09:14:14Z`; this reason applies to this actual regression fixture. |
+
+All times in this section are UTC on 2026-11-25. These four dispositions were
+present on their main instances in the final query; no blanket dismissal was
+used, and this reviewer made no remote changes.
 
 ## Historical alert status
 
@@ -61,9 +136,9 @@ demonstrated by this targeted review. That conclusion is specific to the
 reviewed consumers; it does not make the normalization helpers safe for future
 HTML sinks.
 
-## Main source and scan baseline
+## Pre-merge main baseline
 
-At the same verification, remote main was
+At the `09:04:39Z` pre-merge verification, remote main was
 `d7ea27edfe72a1fa4f84072bbbf5c650a0d0f62f` (6.33 release receipt).
 The latest successful main CodeQL analysis was `2245628783`, created at
 `2026-11-25T06:30:04Z` for
@@ -82,11 +157,11 @@ display helpers and website JSON-LD extraction still used their old regexes.
 states were consistent with the scanned main baseline; local regression success
 alone cannot change them to scan-confirmed fixes.
 
-The recorded PR analysis for `refs/pull/46/merge` had zero results, but that is a
-different ref and analysis from main. It does not clear the 26 main results or
-validate unmerged 6.34 source. Main push/PR scans use the existing CodeQL workflow;
-the integration owner must inspect a successful main analysis at the actual
-merged commit before recording the remaining outcomes.
+The recorded PR analysis for `refs/pull/46/merge` had zero results, but it was a
+different ref and analysis from main. That result did not clear the 26 main
+results or validate the then-unmerged 6.34 source. This established the need to
+inspect a successful main analysis at the actual merged commit; that later
+verification is recorded in the formal main result above.
 
 ## Test-only dispositions
 
@@ -121,33 +196,35 @@ context assignment for the fixture root rather than the former dynamic code
 interpolation. They are not part of the 10 retained test dismissals and were
 not reopened or re-dismissed by this review.
 
-## Pending scan decisions
+## Pre-scan decisions and outcomes
 
-- Verify #1 and #26 against a main analysis containing their actual source
-  changes. The NAS ownership defect has a real file-conflict safety impact and
-  must not be dismissed merely because a local test passes.
-- #22, #23, #25 and #27 no longer use the old stripping regex in the candidate.
-  Confirm the new scan result; if an alert relocates to a shared helper, inspect
-  its actual data consumers rather than assuming a moved line is a fix.
-- #14 and #16 may remain because the candidate intentionally retains entity
-  decoding and its output contract. If the same rule persists and all reviewed
-  consumers remain ordinary React text/attributes or properly encoded XML,
-  `false positive` with a production data-flow explanation is appropriate.
-  Recheck any newly introduced HTML sink before making that disposition.
-- #21 may disappear at its old line and reappear on `html-script-blocks.js`.
+- #1 and #26 required a main analysis containing their actual source changes;
+  local tests could not establish their scan status. Both are now fixed in
+  analysis `2246543962`. The NAS ownership defect had a real file-conflict safety
+  impact and was not dismissed merely because local tests passed.
+- #22, #23, #25 and #27 stopped using the old stripping regex in the candidate.
+  All four became fixed in the same main analysis. No new shared-helper result
+  appeared in its SARIF; moving a line alone was not treated as proof of a fix.
+- Entity decoding and its output contract were intentionally retained. The
+  pre-scan review anticipated repeat findings even if #14 and #16 moved. Main
+  confirmed their old instances as fixed while #33 and #34 report the revised
+  locations; those were individually reviewed as production false positives.
+  Recheck any newly introduced HTML sink before reusing that disposition.
+- The pre-scan review considered whether #21 might disappear at its old line
+  and reappear on `html-script-blocks.js`; the actual main analysis reported no
+  new result there. It instead retained the test oracle result #35.
   The official `BadTagFilter.ql` directly selects an HTML-matching regex whose
   opening/closing-tag handling is incomplete; it does not require an executable
   HTML sink. The scanner intentionally preserves inert JSON-LD extraction
-  semantics and still uses a restricted closing-tag regex. A repeat of this
-  specific security claim can be a documented `false positive` after verifying
-  `JSON.parse`, episode binding and URL checks at the new location. It remains
-  an extraction reliability limitation, not a general HTML sanitizer.
+  semantics and still uses a restricted closing-tag regex. Absence of a result
+  is not a general HTML-sanitizer guarantee; extraction reliability limitations
+  remain subject to the existing `JSON.parse`, episode binding and URL checks.
 - Newly reported paths or rules require their own review. Do not bulk-dismiss
   new results or change protocol/display behavior solely to lower the alert
   count.
 
-The repeat-alert expectations above are source-based predictions, not results
-from a new scan. Rule semantics were checked against the official
+The pre-scan predictions and actual outcomes are distinguished above. Rule
+semantics were checked against the official
 [CodeQL query help](https://codeql.github.com/codeql-query-help/javascript/js-bad-tag-filter/)
 and
 [BadTagFilter.ql source](https://github.com/github/codeql/blob/main/javascript/ql/src/Security/CWE-116/BadTagFilter.ql).
@@ -215,10 +292,13 @@ all possible malformed inputs.
 
 ## Verification and limits
 
-- Queried all 31 historical alerts and the main analysis metadata through the
-  GitHub code-scanning API without modifying remote state. The final disposition
-  snapshot for this review is `2026-11-25T09:04:39Z`; later integration/scan results
-  must be recorded separately.
+- Queried the initial 31 alerts, the four subsequent PR alerts, their main
+  instances and analysis metadata through GitHub's code-scanning API without
+  modifying remote state. The pre-merge snapshot is `2026-11-25T09:04:39Z`; the
+  formal main disposition snapshot is `2026-11-25T09:17:56Z`.
+- Monitored the identified PR/main workflows to completion, checked the main
+  SHA against the source frozen for `v6.34`, and read their SARIF. The main
+  analysis contains 20 raw results, all individually accounted for above.
 - Traced the listed production helpers to account, search, browse, feed, player,
   NAS XML, casting XML and JSON text-export consumers. The reviewed JSX consumers
   use text children/attributes; casting and NAS XML encode text at their sinks.
@@ -233,6 +313,7 @@ all possible malformed inputs.
 - No account profile, Cookie store or live account process was accessed for this
   audit. No credentials, signatures, device identifiers or signed media URLs are
   included in this report.
-- No new CodeQL run, complete adversarial HTML parser evaluation, external
-  penetration test or real-media playback result is claimed here. Release-wide
-  unit, packaging and live playback validation are recorded separately.
+- CodeQL evidence is limited to the exact PR/main analyses identified above;
+  it is not a complete adversarial HTML parser evaluation, external penetration
+  test or real-media playback result. Release-wide unit, packaging and live
+  playback validation are recorded separately.
