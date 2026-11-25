@@ -65,11 +65,11 @@ test('HTTP 200 empty body walks one official ladder and does not relabel identit
   const f = fixture(async () => ({ status: 200, headers: {}, data: '' }));
   const events = [];
   await assert.rejects(f.fetchAppPlayUrl(vid, { onPlaybackEvent: value => events.push(value) }), { code: 'EMPTY_RESPONSE' });
-  assert.equal(f.calls.length, 7);
+  assert.equal(f.calls.length, 8);
   assert.equal(f.registrations, 1);
   assert.deepEqual(events.map(event => event.routeId), [
     'preload-primary', 'preload-alternate', 'video-tab',
-    'upstream-player-b', 'upstream-player-a', 'upstream-model-a', 'upstream-model-c',
+    'upstream-grouped-b', 'upstream-player-b', 'upstream-player-a', 'upstream-model-a', 'upstream-model-c',
   ]);
   assert.ok(events.every(event => event.code === 'EMPTY_RESPONSE' && !event.modelValid));
   assert.equal(f.getPlaybackIdentityStatus().state, 'ready');

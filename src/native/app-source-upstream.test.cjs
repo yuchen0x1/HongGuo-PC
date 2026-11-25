@@ -9,7 +9,7 @@ const otherVid = '7701643128951802905';
 const assetId = 'synthetic-media-asset';
 const mediaUrl = 'https://qznovelvod.com/upstream-clear-fixture.mp4';
 const duration = 56.007;
-const routeIds = ['upstream-player-b', 'upstream-player-a', 'upstream-model-a', 'upstream-model-c'];
+const routeIds = ['upstream-grouped-b', 'upstream-player-b', 'upstream-player-a', 'upstream-model-a', 'upstream-model-c'];
 const allRouteIds = ['preload-primary', 'preload-alternate', 'video-tab', ...routeIds];
 const identity = Object.freeze({
   device_id: '1000000000000001', iid: '1000000000000002',
@@ -78,10 +78,10 @@ function assertNoProtectedWork(f) {
   assert.deepEqual(f.forbiddenDependencies, []);
 }
 
-test('the four upstream requests are distinct, bounded public-host profiles without account credentials', () => {
+test('the five upstream requests are distinct, bounded public-host profiles without account credentials', () => {
   const f = fixture();
   const requests = routeIds.map(routeId => f.upstreamPlaybackRequest(routeId, identity, vid));
-  assert.equal(new Set(requests.map(request => new URL(request.url).origin + new URL(request.url).pathname)).size, 4);
+  assert.equal(new Set(requests.map(request => new URL(request.url).origin + new URL(request.url).pathname)).size, 5);
   for (const request of requests) {
     const url = new URL(request.url);
     assert.equal(url.protocol, 'https:');
@@ -212,11 +212,11 @@ for (const [index, routeId] of routeIds.entries()) {
   });
 }
 
-test('all seven empty responses exhaust exactly one ladder without resetting the device', async () => {
+test('all eight empty responses exhaust exactly one ladder without resetting the device', async () => {
   const f = fixture(emptyResponse);
   const events = [];
   await assert.rejects(f.fetchAppPlayUrl(vid, { onPlaybackEvent: value => events.push(value) }), { code: 'EMPTY_RESPONSE' });
-  assert.equal(f.calls.length, 7);
+  assert.equal(f.calls.length, allRouteIds.length);
   assert.equal(f.registrations, 1);
   assert.deepEqual(events.map(event => event.routeId), allRouteIds);
   assert.ok(events.every(event => event.code === 'EMPTY_RESPONSE' && !event.modelValid));

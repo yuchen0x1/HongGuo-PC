@@ -172,3 +172,6 @@ https://github.com/dawei233/hongguo-drama
 
 二十五、2026-11-25 上游普通播放请求有限同步（未发行）
 参考 jackotom/hongguo-drama v8.3，冻结提交 f31d87437a77e9b1b3fa8dfd81c9cecee52296eb，适配四条普通 player/video_model 请求与独立静态画像，沿用 GPL-3.0-only 许可和上游作者声明。未引入 SDK/helper、受保护内容密钥提取、设备轮换或远程策略；本项目增加明确明文响应守卫和拒绝即停诊断。此项不是完整同步，也不构成后续集播放修复声明。范围与验收见 docs/upstream-sync-2026-11-25.md。
+
+二十六、2026-11-25 播放请求预算与普通路径补充（未发行）
+修复普通请求候选共用首条请求截止时间而提前停止的问题，保留完整操作总预算及拒绝即停边界。另参考 beilunyang/openhongguo（Apache-2.0）PR #17 的普通接口路径，冻结 head 068831a1a04ba6ae2f496fef07362f71bdca2d5b，独立补充一条 V5 player 候选；未复制 SDK 或密钥处理实现，不代表该未合并提案已获本项目真实播放验证。范围与实际结果见 docs/playback-route-budget-2026-11-25.md。

@@ -544,8 +544,7 @@ async function fetchAppPlayUrlFresh(vid, options) {
     const overallDeadline = Math.min(options.deadline, Date.now() + profile.timeout.modelTotalMs);
     const request = boundedSignal(options.signal, Math.max(1, overallDeadline - Date.now()));
     const { signal } = request;
-    const firstDeadline = Math.min(Date.now() + profile.timeout.requestMs, overallDeadline);
-    let deadline = firstDeadline;
+    let deadline = overallDeadline;
     let routeId = '', selectedProfile = profile, requestElapsedMs = 0, requestCount = 0, networkRetries = 0, deviceRefreshes = 0;
     const observe = event => {
         const routeProfile = getPlaybackRouteProfile(event.routeId);
@@ -559,7 +558,6 @@ async function fetchAppPlayUrlFresh(vid, options) {
         let model, clearResult;
         for (;;) {
             throwIfAborted(signal);
-            deadline = requestCount === 0 ? firstDeadline : Math.min(Date.now() + profile.timeout.requestMs, overallDeadline);
             try {
                 for (const [index, route] of routes.entries()) {
                     const upstream = index >= profile.routes.length;
@@ -567,6 +565,9 @@ async function fetchAppPlayUrlFresh(vid, options) {
                         : route.method === 'GET' ? videoTabRequest(identity, vid) : playbackRequest(payload, identity, vid, index === 1);
                     signed.headers.Connection = 'close';
                     const started = Date.now();
+                    // Each candidate has its own request cap inside the shared
+                    // model budget; an earlier empty response must not starve it.
+                    deadline = Math.min(started + profile.timeout.requestMs, overallDeadline);
                     requestCount++;
                     try {
                         const response = await requestJson(signed.url, { method: signed.method, headers: signed.headers, data: signed.body }, deadline, signal);
@@ -586,7 +587,7 @@ async function fetchAppPlayUrlFresh(vid, options) {
                         // Compatibility routes are attempted only for an observed empty
                         // body, never for forbidden/rate-limited/business rejections.
                         if (error.code !== 'EMPTY_RESPONSE' || index === routes.length - 1
-                            || deadline - Date.now() < profile.timeout.minimumRouteMs) throw error;
+                            || overallDeadline - Date.now() < profile.timeout.minimumRouteMs) throw error;
                     }
                 }
                 throwIfAborted(signal);

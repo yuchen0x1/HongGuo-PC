@@ -142,5 +142,12 @@ SOFTWARE.
 - 来源项目：jackotom/hongguo-drama，标签 v8.3，冻结提交 f31d87437a77e9b1b3fa8dfd81c9cecee52296eb。
 - 许可：GPL-3.0-only；保留上游作者与既有签名算法来源说明。
 - 适配范围：`app-source.js` 的四条普通 player/video_model 请求构造，以及 `playback-profiles.js` 中对应的静态请求配置。
-- 未引入 openhongguo、SDK helper、上游远程策略、设备拒绝后的身份轮换或受保护内容密钥提取。响应守卫、诊断与回归测试由本项目补充。
+- 未引入 openhongguo SDK、SDK helper、上游远程策略、设备拒绝后的身份轮换或受保护内容密钥提取。响应守卫、诊断与回归测试由本项目补充。
 - 开源许可不代表平台授权；本轮仅为有限源码同步，真实后续集播放未通过验收，范围见 `docs/upstream-sync-2026-11-25.md`。
+
+## 普通接口路径参考：beilunyang/openhongguo PR #17
+
+- 来源项目：beilunyang/openhongguo，Apache-2.0；PR #17 冻结 head 为 `068831a1a04ba6ae2f496fef07362f71bdca2d5b`，核对时未合并。
+- 参考范围：`internal/protocol/playback_v5.go` 中普通播放请求路径改为 `/novel/player/multi_video_model/v1/` 的记录；本项目独立将该路径接入既有请求构造和明文模型守卫。
+- 未复制其 SDK、WASM、签名算法、内容密钥或地址解密代码，没有新增该项目运行时依赖。请求预算修复、调度及回归测试由本项目实现。
+- 不把上游提案或离线测试作为真实后续集播放证明；结果及限制见 `docs/playback-route-budget-2026-11-25.md`。

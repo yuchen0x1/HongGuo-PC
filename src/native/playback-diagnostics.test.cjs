@@ -287,7 +287,7 @@ test('upstream source-only profile routes are measured without certifying playba
   for (const [index, route] of profile.routes.entries()) {
     collector.record({ type: 'source-request', sourceRoute: 'app', profileId: profile.id,
       profileVersion: profile.version, routeId: route.id, status: 200, elapsedMs: index + 1,
-      modelValid: index === 0, code: index === 0 ? '' : index === 3 ? 'DRM_UNSUPPORTED' : 'EMPTY_RESPONSE' });
+      modelValid: index === 0, code: index === 0 ? '' : index === profile.routes.length - 1 ? 'DRM_UNSUPPORTED' : 'EMPTY_RESPONSE' });
   }
   const snapshot = collector.snapshot({ profile: getPlaybackProfile() });
   assert.equal(snapshot.sourceRoute, 'app');
@@ -298,7 +298,7 @@ test('upstream source-only profile routes are measured without certifying playba
   assert.equal(snapshot.playbackAuthorization, 'unverified');
   assert.equal(snapshot.lastSuccessAt, null);
   assert.equal(snapshot.lastSourceAt, null);
-  assert.equal(snapshot.counts.sourceAttempts, 4);
+  assert.equal(snapshot.counts.sourceAttempts, profile.routes.length);
   assert.equal(snapshot.counts.sourceSuccesses, 0);
   assert.equal(snapshot.counts.playbackSuccesses, 0);
   for (const [index, route] of profile.routes.entries()) {

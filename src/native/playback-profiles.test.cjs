@@ -49,10 +49,12 @@ test('upstream route candidates keep their source-only profile separate from ver
   assert.equal(profile.evidence.scope, 'source-only');
   assert.equal(profile.evidence.mediaVerified, false);
   assert.equal(profile.evidence.commit, 'f31d87437a77e9b1b3fa8dfd81c9cecee52296eb');
+  assert.equal(profile.version, '2026-11-25.2');
   assert.deepEqual(profile.routes.map(route => route.id), [
-    'upstream-player-b', 'upstream-player-a', 'upstream-model-a', 'upstream-model-c',
+    'upstream-grouped-b', 'upstream-player-b', 'upstream-player-a', 'upstream-model-a', 'upstream-model-c',
   ]);
   assert.deepEqual(profile.routes.map(route => [new URL(route.endpoint).hostname, new URL(route.endpoint).pathname, route.method, route.kind]), [
+    ['api5-normal-sinfonlineb.fqnovel.com', '/novel/player/multi_video_model/v1/', 'POST', 'player'],
     ['api5-normal-sinfonlineb.fqnovel.com', '/novel/player/multi_video_model/player/v1', 'POST', 'player'],
     ['api5-normal-sinfonlinea.fqnovel.com', '/novel/player/multi_video_model/player/v1', 'POST', 'player'],
     ['api5-normal-sinfonlinea.fqnovel.com', '/novel/player/video_model/v1/', 'POST', 'model'],

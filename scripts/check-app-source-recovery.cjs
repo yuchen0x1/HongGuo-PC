@@ -11,7 +11,7 @@ const vid = '7700946421087751193';
 const fixtureCdid = '00000000-0000-4000-8000-000000000003';
 const emptyLadder = [
   'preload-primary', 'preload-alternate', 'video-tab',
-  'upstream-player-b', 'upstream-player-a', 'upstream-model-a', 'upstream-model-c',
+  'upstream-grouped-b', 'upstream-player-b', 'upstream-player-a', 'upstream-model-a', 'upstream-model-c',
 ];
 
 function load(axios, { realDevice = false, getPlaybackDevice, registerPlaybackDevice = getPlaybackDevice, now } = {}) {
@@ -131,7 +131,7 @@ function row(definition, width, height, suffix) {
   } });
   const recoveryRoutes = [];
   await assert.rejects(recovery.fetchAppPlayUrl(vid, { onPlaybackEvent: event => recoveryRoutes.push(event.routeId) }), { code: 'EMPTY_RESPONSE' });
-  assert.equal(recoverCalls, 7, 'one empty response walks the compatibility ladder once');
+  assert.equal(recoverCalls, emptyLadder.length, 'one empty response walks the compatibility ladder once');
   assert.deepEqual(recoveryRoutes, emptyLadder, 'all-empty replies visit each bundled route once in the recorded order');
   assert.equal(renewals, 0, 'empty responses alone do not prove that a device identity has expired');
   for (const status of [200, 403, 404]) {
@@ -139,13 +139,13 @@ function row(definition, width, height, suffix) {
     const unavailable = load(async () => { calls++; return { status, headers: {}, data: '' }; },
       { registerPlaybackDevice: async () => identities[registrations++] });
     await assert.rejects(unavailable.fetchAppPlayUrl(vid), error => status === 200 ? error.code === 'EMPTY_RESPONSE' : error.status === status);
-    assert.equal(calls, status === 200 ? 7 : 1, 'empty replies permit one compatibility ladder; refusals stop immediately');
+    assert.equal(calls, status === 200 ? emptyLadder.length : 1, 'empty replies permit one compatibility ladder; refusals stop immediately');
     assert.equal(registrations, 1, `registration count for HTTP ${status}`);
   }
   let cooldownCalls = 0;
   await assert.rejects(load(async () => { cooldownCalls++; return { status: 200, headers: {}, data: '' }; },
     { getPlaybackDevice: async () => identities[0] }).fetchAppPlayUrl(vid), error => error.code === 'EMPTY_RESPONSE');
-  assert.equal(cooldownCalls, 7, 'the ladder stays bounded without cycling identities');
+  assert.equal(cooldownCalls, emptyLadder.length, 'the ladder stays bounded without cycling identities');
   let clock = Date.now(), slowCalls = 0;
   const slowRegistration = load(async config => {
     slowCalls++;

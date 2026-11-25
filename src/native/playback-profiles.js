@@ -35,10 +35,12 @@ const MODEL_PROFILE = freeze({
 });
 
 const UPSTREAM_PLAYBACK_PROFILE = freeze({
-  id: 'hongguo-app-74332-medusa377-upstream-v8.3', version: '2026-11-25.1', schema: 1,
+  id: 'hongguo-app-74332-medusa377-upstream-v8.3', version: '2026-11-25.2', schema: 1,
   evidence: { repository: 'jackotom/hongguo-drama', tag: 'v8.3',
     commit: 'f31d87437a77e9b1b3fa8dfd81c9cecee52296eb', date: '2026-11-25',
-    scope: 'source-only', mediaVerified: false },
+    scope: 'source-only', mediaVerified: false,
+    groupedRoute: { repository: 'beilunyang/openhongguo', pullRequest: 17,
+      commit: '068831a1a04ba6ae2f496fef07362f71bdca2d5b', scope: 'source-only', mediaVerified: false } },
   app: {
     aid: '8662', app_name: 'novelread', version_code: '74332', version_name: '7.4.3.32',
     channel: 'vivo_8662_64', device_platform: 'android', device_type: 'PGT-AN10', os_version: '12',
@@ -48,6 +50,7 @@ const UPSTREAM_PLAYBACK_PROFILE = freeze({
   signature: { scheme: 'helios-medusa-v5', medusaField21: 377 },
   headers: { Accept: 'application/json', 'Content-Type': 'application/json; charset=utf-8', 'Content-Encoding': 'gzip' },
   routes: [
+    { id: 'upstream-grouped-b', endpoint: 'https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/v1/', method: 'POST', kind: 'player' },
     { id: 'upstream-player-b', endpoint: 'https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/player/v1', method: 'POST', kind: 'player' },
     { id: 'upstream-player-a', endpoint: 'https://api5-normal-sinfonlinea.fqnovel.com/novel/player/multi_video_model/player/v1', method: 'POST', kind: 'player' },
     { id: 'upstream-model-a', endpoint: 'https://api5-normal-sinfonlinea.fqnovel.com/novel/player/video_model/v1/', method: 'POST', kind: 'model' },
@@ -82,8 +85,9 @@ function getPlaybackRouteProfile(routeId) {
 }
 
 const LEGACY_PLAYBACK = freeze({
-  // The old model endpoint is retained for reproducible protocol tests, never
-  // selected as a live fallback after the 6.28 single-variable rejection test.
+  // The legacy request format is retained for reproducible protocol tests, never
+  // selected live after the 6.28 rejection test. A separate V5 candidate can
+  // share this endpoint without enabling the legacy format or signer.
   endpoint: 'https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/v1/',
   medusaField21: 312, argusField21: 738,
   baseDevice: {
