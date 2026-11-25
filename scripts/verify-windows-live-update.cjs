@@ -17,10 +17,11 @@ assert.equal(process.arch, 'x64');
 const repo = 'yuchen0x1/HongGuo-PC';
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hongguo-live-update-'));
 const out = path.resolve('dist/windows-live-update.json');
-const installDir = path.join(root, '红果短剧');
+// Match NSIS APP_FILENAME so the assisted upgrade does not normalize /D to a new subdirectory.
+const installDir = path.join(root, 'hongguo-downloader');
 const exe = path.join(installDir, '红果短剧.exe');
 const targetInstaller = 'hongguo-downloader-' + to.slice(1) + '-win-x64-setup.exe';
-const receipt = { from, to, steps: [], passed: false };
+const receipt = { from, to, installDir, expectedExecutable: exe, steps: [], passed: false };
 const marker = randomUUID();
 const storageKey = 'hongguo-live-update-test';
 let port = 0;
@@ -272,7 +273,9 @@ function captureInstallDiagnostics() {
       '$path = [System.IO.Path]::GetFullPath($env:HONGGUO_TEST_EXE)',
       '$version = if (Test-Path -LiteralPath $path) { (Get-Item -LiteralPath $path).VersionInfo.ProductVersion } else { $null }',
       '$windows = @($installerWindows | ForEach-Object { [PSCustomObject]@{ window = $_; controls = @([InstallerControls]::Windows($_.Handle)) } })',
-      '[PSCustomObject]@{ appExists = (Test-Path -LiteralPath $path); installedVersion = $version; installerProcesses = $installerProcesses; windows = $windows } | ConvertTo-Json -Compress -Depth 6',
+      "$apps = @($allProcesses | Where-Object { $_.Name -eq '红果短剧.exe' } | Select-Object ProcessId,ParentProcessId,ExecutablePath,CommandLine)",
+      "$locations = @(Get-ChildItem -LiteralPath 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall', 'HKLM:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall' -ErrorAction SilentlyContinue | Get-ItemProperty | Where-Object { $_.DisplayName -like '*红果短剧*' } | Select-Object DisplayName,DisplayVersion,InstallLocation)",
+      '[PSCustomObject]@{ appExists = (Test-Path -LiteralPath $path); installedVersion = $version; appProcesses = $apps; registeredInstallations = $locations; installerProcesses = $installerProcesses; windows = $windows } | ConvertTo-Json -Compress -Depth 6',
     ].join('\n'), { HONGGUO_TEST_ROOT: root, HONGGUO_TEST_EXE: exe, HONGGUO_TEST_INSTALLER: path.parse(targetInstaller).name });
     receipt.installDiagnostics = JSON.parse(output);
   } catch (error) {
@@ -363,6 +366,8 @@ function automaticAppProcess(previousPid) {
   });
   const version = pwsh('(Get-Item -LiteralPath $env:HONGGUO_TEST_EXE).VersionInfo.ProductVersion', { HONGGUO_TEST_EXE: exe });
   assert.equal(version, to.slice(1) + '.0');
+  receipt.restartedProcessId = restarted;
+  receipt.installedVersion = version;
   receipt.steps.push('Update installer exited the old app and launched the new installed executable');
 
   process.kill(restarted);
@@ -370,7 +375,7 @@ function automaticAppProcess(previousPid) {
   await launch(to.slice(1) + '.0');
   assert.equal(await runJs('localStorage.getItem(' + JSON.stringify(storageKey) + ')'), marker);
   assert.equal((await runJs('window.electronAPI.getSettings()')).root, path.join(root, 'downloads'));
-  receipt.steps.push('New app reports the exact target version and retains settings and local storage');
+  receipt.steps.push('Reopened target app with the isolated profile reports the exact version and retains settings and local storage');
   receipt.passed = true;
 })().catch(error => {
   receipt.error = error.message;
