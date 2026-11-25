@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
 const { routeDiagnostic, safeCode, sanitizePlaybackDiagnostics, updatePlaybackRoute, playbackFailureMessage, createPlaybackDiagnostics } = require('./playback-diagnostics');
-const { getPlaybackProfile } = require('./playback-profiles');
+const { getPlaybackProfile, UPSTREAM_PLAYBACK_PROFILE } = require('./playback-profiles');
 const { OFFICIAL_WEB_PROFILE } = require('./official-web-playback');
 
 test('route diagnostics preserve only known source and playback-stage fields', () => {
@@ -124,6 +124,32 @@ test('website episode unavailability crosses diagnostics as a fixed stop reason 
   assert.equal(snapshot.lastErrorCode, code);
   assert.equal(snapshot.faults[code], 1);
   assert.doesNotMatch(JSON.stringify({ diagnostic, snapshot }), /Cookie|token=|secret|signed\.invalid/);
+});
+
+test('protected media retains only its safe reason and directs users to an official authorized player', () => {
+  const code = 'DRM_UNSUPPORTED';
+  assert.equal(safeCode(code), code);
+  const diagnostic = sanitizePlaybackDiagnostics({ code, faultCode: code,
+    routes: [routeDiagnostic('app', { attempted: true, status: 'failed', code, message: 'Cookie=secret' })],
+    message: 'token=secret', key: 'private-key', url: 'https://signed.invalid/?token=secret' });
+  assert.equal(diagnostic.code, code);
+  assert.equal(diagnostic.faultCode, undefined);
+  assert.equal(diagnostic.routes[0].code, code);
+  for (const error of [{ code }, { faultCode: code }, { code, faultCode: 'CODEC_UNSUPPORTED' },
+    { code: 'SOURCE_UNAVAILABLE', sources: [{ code: 'WEB_EPISODE_UNAVAILABLE' }, { source: 'app', code }] },
+    { sources: [{ sources: [{ code }] }] }]) {
+    assert.equal(playbackFailureMessage(error), '本集返回受保护或加密片源，请使用官方授权播放器。');
+  }
+  const collector = createPlaybackDiagnostics();
+  collector.record({ event: 'source-failure', sourceRoute: 'app', code, faultCode: 'CODEC_UNSUPPORTED',
+    message: 'Cookie=secret', key: 'private-key' });
+  const snapshot = collector.snapshot();
+  assert.equal(snapshot.lastErrorCode, code);
+  assert.equal(snapshot.events.at(-1).code, code);
+  assert.equal(snapshot.events.at(-1).faultCode, undefined);
+  assert.equal(snapshot.faults.CODEC_UNSUPPORTED, 0);
+  assert.equal(snapshot.counts.playbackSuccesses, 0);
+  assert.doesNotMatch(JSON.stringify({ diagnostic, snapshot }), /Cookie|token=|secret|private-key|signed\.invalid/);
 });
 
 test('diagnostic report omits credentials, identities, raw errors and signed addresses in every supplied field', () => {
@@ -253,6 +279,38 @@ test('official public website observations keep their profile and metrics after 
   assert.equal(snapshot.counts.playbackSuccesses, 0);
   assert.equal(snapshot.decoderStatus, 'pending');
   assert.equal(snapshot.mediaStatus, 'loading');
+});
+
+test('upstream source-only profile routes are measured without certifying playback or overwriting the observed profile', () => {
+  const collector = createPlaybackDiagnostics({ now: () => 1200 });
+  const profile = UPSTREAM_PLAYBACK_PROFILE;
+  for (const [index, route] of profile.routes.entries()) {
+    collector.record({ type: 'source-request', sourceRoute: 'app', profileId: profile.id,
+      profileVersion: profile.version, routeId: route.id, status: 200, elapsedMs: index + 1,
+      modelValid: index === 0, code: index === 0 ? '' : index === 3 ? 'DRM_UNSUPPORTED' : 'EMPTY_RESPONSE' });
+  }
+  const snapshot = collector.snapshot({ profile: getPlaybackProfile() });
+  assert.equal(snapshot.sourceRoute, 'app');
+  assert.equal(snapshot.profileId, profile.id);
+  assert.equal(snapshot.profileVersion, profile.version);
+  assert.equal(snapshot.routeId, profile.routes.at(-1).id);
+  assert.equal(snapshot.lastErrorCode, 'DRM_UNSUPPORTED');
+  assert.equal(snapshot.playbackAuthorization, 'unverified');
+  assert.equal(snapshot.lastSuccessAt, null);
+  assert.equal(snapshot.lastSourceAt, null);
+  assert.equal(snapshot.counts.sourceAttempts, 4);
+  assert.equal(snapshot.counts.sourceSuccesses, 0);
+  assert.equal(snapshot.counts.playbackSuccesses, 0);
+  for (const [index, route] of profile.routes.entries()) {
+    const metrics = snapshot.requestRoutes.find(value => value.routeId === route.id);
+    assert.equal(metrics.attempts, 1);
+    assert.equal(metrics.modelsAccepted, index === 0 ? 1 : 0);
+    assert.equal(metrics.failures, index === 0 ? 0 : 1);
+  }
+  const protectedRoute = snapshot.requestRoutes.find(value => value.routeId === profile.routes.at(-1).id);
+  assert.equal(protectedRoute.lastErrorCode, 'DRM_UNSUPPORTED');
+  assert.equal(protectedRoute.lastFaultCode, '');
+  assert.equal(profile.evidence.mediaVerified, false);
 });
 
 test('profile pairs and subroutes cannot be attributed to another provider', () => {

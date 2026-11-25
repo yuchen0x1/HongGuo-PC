@@ -10,7 +10,7 @@ const { createPlaybackManager } = require('./playback-manager');
 const { createPlaybackDiagnostics } = require('./playback-diagnostics');
 const { throwIfAborted } = require('./request-signal');
 const { isMediaExpired } = require('./media-url-manager');
-const { classifyPlaybackError } = require('./playback-errors');
+const { classifyPlaybackError, isProtectedPlaybackError } = require('./playback-errors');
 const { resolveOfficialPublicPlayback } = require('./official-web-playback');
 const { readScriptBlocks } = require('./html-script-blocks');
 let playbackManager;
@@ -741,6 +741,8 @@ async function fetchAppPlayUrlForQuality(vid, sid, quality, allowLowerQuality, o
 function sourceFailure(source, error) {
   const message = String(error?.message || '');
   const code = String(error?.code || '');
+  if (isProtectedPlaybackError(error)) return { source, code: 'DRM_UNSUPPORTED',
+    message: playbackFailureMessage({ code: 'DRM_UNSUPPORTED' }) };
   const faultCode = classifyPlaybackError(error, { stage: 'source' });
   if (code === 'WEB_EPISODE_UNAVAILABLE') return { source, code,
     message: '官网当前播放入口不提供本集，请在官方客户端查看可用播放方式。' };
@@ -783,10 +785,11 @@ function sourceFailure(source, error) {
 }
 
 function unavailableSources(sources, quality = 'auto', routeTrace = []) {
-  const error = new Error(quality === 'auto'
+  const protectedPlayback = isProtectedPlaybackError({ sources });
+  const error = new Error(protectedPlayback ? playbackFailureMessage({ code: 'DRM_UNSUPPORTED' }) : quality === 'auto'
     ? '当前内容暂时无法播放，请稍后重试。'
     : `当前所选清晰度 ${quality} 暂不可用。`);
-  error.code = 'SOURCE_UNAVAILABLE';
+  error.code = protectedPlayback ? 'DRM_UNSUPPORTED' : 'SOURCE_UNAVAILABLE';
   error.sources = sources;
   error.routeTrace = routeTrace;
   return error;
@@ -806,7 +809,7 @@ async function fetchPlayUrlFresh(vid, sid, skipWeb = false, options = {}) {
   }, options);
   throwIfAborted(options.signal);
   if (sources.some(item => /^HTTP_4\d{2}$/.test(item.code) || ['BUSINESS_REJECTED', 'ACCOUNT_REQUIRED',
-    'ACCOUNT_EXPIRED', 'ACCOUNT_UNAUTHORIZED', 'API_FORBIDDEN', 'API_RATE_LIMITED'].includes(item.code))) {
+    'ACCOUNT_EXPIRED', 'ACCOUNT_UNAUTHORIZED', 'API_FORBIDDEN', 'API_RATE_LIMITED', 'DRM_UNSUPPORTED'].includes(item.code))) {
     throw unavailableSources(sources, 'auto', routeTrace);
   }
   if (skipWeb) routeTrace.push(routeDiagnostic('web', { status: 'skipped' }));
@@ -830,7 +833,7 @@ async function fetchPlayUrlFresh(vid, sid, skipWeb = false, options = {}) {
       code: failure.code,
     }));
     if (['HTTP_401', 'HTTP_403', 'HTTP_429', 'BUSINESS_REJECTED', 'ACCOUNT_REQUIRED',
-      'ACCOUNT_EXPIRED', 'ACCOUNT_UNAUTHORIZED', 'SIGNATURE_INVALID', 'API_FORBIDDEN', 'API_RATE_LIMITED'].includes(failure.code)) {
+      'ACCOUNT_EXPIRED', 'ACCOUNT_UNAUTHORIZED', 'SIGNATURE_INVALID', 'API_FORBIDDEN', 'API_RATE_LIMITED', 'DRM_UNSUPPORTED'].includes(failure.code)) {
       throw unavailableSources(sources, 'auto', routeTrace);
     }
   }

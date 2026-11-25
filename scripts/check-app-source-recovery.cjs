@@ -8,6 +8,11 @@ const vm = require('node:vm');
 const sourcePath = path.resolve(__dirname, '../src/native/app-source.js');
 const source = fs.readFileSync(sourcePath, 'utf8');
 const vid = '7700946421087751193';
+const fixtureCdid = '00000000-0000-4000-8000-000000000003';
+const emptyLadder = [
+  'preload-primary', 'preload-alternate', 'video-tab',
+  'upstream-player-b', 'upstream-player-a', 'upstream-model-a', 'upstream-model-c',
+];
 
 function load(axios, { realDevice = false, getPlaybackDevice, registerPlaybackDevice = getPlaybackDevice, now } = {}) {
   const module = { exports: {} };
@@ -26,13 +31,13 @@ function load(axios, { realDevice = false, getPlaybackDevice, registerPlaybackDe
       if (name === './request-signal') return require('../src/native/request-signal');
       if (name === './playback-device') return getPlaybackDevice || registerPlaybackDevice ? {
         createPlaybackIdentityManager: require('../src/native/playback-device').createPlaybackIdentityManager,
-        getPlaybackDevice: getPlaybackDevice || (async () => ({ device_id: '1000000000000001', iid: '1000000000000002', cdid: 'fixture' })),
-        registerPlaybackDevice: registerPlaybackDevice || (async () => ({ device_id: '1000000000000001', iid: '1000000000000002', cdid: 'fixture' })),
+        getPlaybackDevice: getPlaybackDevice || (async () => ({ device_id: '1000000000000001', iid: '1000000000000002', cdid: fixtureCdid })),
+        registerPlaybackDevice: registerPlaybackDevice || (async () => ({ device_id: '1000000000000001', iid: '1000000000000002', cdid: fixtureCdid })),
       } : realDevice ? require('../src/native/playback-device')
         : {
           createPlaybackIdentityManager: require('../src/native/playback-device').createPlaybackIdentityManager,
-          getPlaybackDevice: async () => ({ device_id: '1000000000000001', iid: '1000000000000002', cdid: 'fixture' }),
-          registerPlaybackDevice: async () => ({ device_id: '1000000000000001', iid: '1000000000000002', cdid: 'fixture' }),
+          getPlaybackDevice: async () => ({ device_id: '1000000000000001', iid: '1000000000000002', cdid: fixtureCdid }),
+          registerPlaybackDevice: async () => ({ device_id: '1000000000000001', iid: '1000000000000002', cdid: fixtureCdid }),
         };
       if (name === 'axios') return axios;
       return require(name);
@@ -113,7 +118,7 @@ function row(definition, width, height, suffix) {
       data: { [id]: { video_model: model } } }) };
   };
   const plain = { ...row('1080p', 1080, 1920, 'inline'), encrypt_info: { encrypt: false } };
-  const identities = Array.from({ length: 8 }, (_, i) => ({ device_id: String(11 + i * 10), iid: String(12 + i * 10), cdid: 'fixture' }));
+  const identities = Array.from({ length: 8 }, (_, i) => ({ device_id: String(11 + i * 10), iid: String(12 + i * 10), cdid: fixtureCdid }));
   let recoverCalls = 0, renewals = 0, recoveryRegistrations = 0;
   const recovery = load(async config => {
     recoverCalls++;
@@ -124,21 +129,23 @@ function row(definition, width, height, suffix) {
     if (recoveryRegistrations > 1) renewals++;
     return identities[recoveryRegistrations - 1];
   } });
-  await assert.rejects(recovery.fetchAppPlayUrl(vid), { code: 'EMPTY_RESPONSE' });
-  assert.equal(recoverCalls, 3, 'one empty response walks the compatibility ladder once');
+  const recoveryRoutes = [];
+  await assert.rejects(recovery.fetchAppPlayUrl(vid, { onPlaybackEvent: event => recoveryRoutes.push(event.routeId) }), { code: 'EMPTY_RESPONSE' });
+  assert.equal(recoverCalls, 7, 'one empty response walks the compatibility ladder once');
+  assert.deepEqual(recoveryRoutes, emptyLadder, 'all-empty replies visit each bundled route once in the recorded order');
   assert.equal(renewals, 0, 'empty responses alone do not prove that a device identity has expired');
   for (const status of [200, 403, 404]) {
     let calls = 0, registrations = 0;
     const unavailable = load(async () => { calls++; return { status, headers: {}, data: '' }; },
       { registerPlaybackDevice: async () => identities[registrations++] });
     await assert.rejects(unavailable.fetchAppPlayUrl(vid), error => status === 200 ? error.code === 'EMPTY_RESPONSE' : error.status === status);
-    assert.equal(calls, status === 200 ? 3 : 1, 'empty replies permit one compatibility ladder; refusals stop immediately');
+    assert.equal(calls, status === 200 ? 7 : 1, 'empty replies permit one compatibility ladder; refusals stop immediately');
     assert.equal(registrations, 1, `registration count for HTTP ${status}`);
   }
   let cooldownCalls = 0;
   await assert.rejects(load(async () => { cooldownCalls++; return { status: 200, headers: {}, data: '' }; },
     { getPlaybackDevice: async () => identities[0] }).fetchAppPlayUrl(vid), error => error.code === 'EMPTY_RESPONSE');
-  assert.equal(cooldownCalls, 3, 'the ladder stays bounded without cycling identities');
+  assert.equal(cooldownCalls, 7, 'the ladder stays bounded without cycling identities');
   let clock = Date.now(), slowCalls = 0;
   const slowRegistration = load(async config => {
     slowCalls++;
@@ -176,7 +183,7 @@ function row(definition, width, height, suffix) {
   let registrations = 0;
   const stableDevice = load(async config => inlineResponse([plain]), {
     getPlaybackDevice: async () => assert.fail('playback model must use its separate identity lifetime'),
-    registerPlaybackDevice: async () => ({ device_id: String(++registrations), iid: '2', cdid: 'fixture' }),
+    registerPlaybackDevice: async () => ({ device_id: String(++registrations), iid: '2', cdid: fixtureCdid }),
   });
   await stableDevice.fetchAppPlayUrl(vid);
   await stableDevice.fetchAppPlayUrl(vid);

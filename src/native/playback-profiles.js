@@ -34,6 +34,53 @@ const MODEL_PROFILE = freeze({
   recovery: { maxNetworkRetries: 1, maxDeviceRefreshes: 1, retryDelayMs: 250, pacingMs: 1000 },
 });
 
+const UPSTREAM_PLAYBACK_PROFILE = freeze({
+  id: 'hongguo-app-74332-medusa377-upstream-v8.3', version: '2026-11-25.1', schema: 1,
+  evidence: { repository: 'jackotom/hongguo-drama', tag: 'v8.3',
+    commit: 'f31d87437a77e9b1b3fa8dfd81c9cecee52296eb', date: '2026-11-25',
+    scope: 'source-only', mediaVerified: false },
+  app: {
+    aid: '8662', app_name: 'novelread', version_code: '74332', version_name: '7.4.3.32',
+    channel: 'vivo_8662_64', device_platform: 'android', device_type: 'PGT-AN10', os_version: '12',
+    update_version_code: '74332',
+  },
+  userAgent: 'okhttp/4.12.0',
+  signature: { scheme: 'helios-medusa-v5', medusaField21: 377 },
+  headers: { Accept: 'application/json', 'Content-Type': 'application/json; charset=utf-8', 'Content-Encoding': 'gzip' },
+  routes: [
+    { id: 'upstream-player-b', endpoint: 'https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/player/v1', method: 'POST', kind: 'player' },
+    { id: 'upstream-player-a', endpoint: 'https://api5-normal-sinfonlinea.fqnovel.com/novel/player/multi_video_model/player/v1', method: 'POST', kind: 'player' },
+    { id: 'upstream-model-a', endpoint: 'https://api5-normal-sinfonlinea.fqnovel.com/novel/player/video_model/v1/', method: 'POST', kind: 'model' },
+    { id: 'upstream-model-c', endpoint: 'https://api5-normal-sinfonlinec.fqnovel.com/novel/player/video_model/v1/', method: 'POST', kind: 'model' },
+  ],
+  playerBody: {
+    biz_param: { detail_page_version: 0, device_level: 1, disable_digg_stat: false, disable_video_relate_book: false,
+      need_all_video_definition: true, need_mp4_align: false, use_os_player: false, use_server_dns: false, video_platform: 1024 },
+    dr_scene: 'player',
+  },
+  modelBody: {
+    biz_param: { detail_page_version: 0, device_level: 3, disable_digg_stat: false, from_video_id: '',
+      need_all_video_definition: true, need_mp4_align: false, source: 9, use_os_player: false,
+      use_server_dns: false, video_platform: 3 },
+  },
+});
+
+const signingProfiles = new Map([MODEL_PROFILE, UPSTREAM_PLAYBACK_PROFILE].map(profile => [profile.id, profile]));
+const routeProfiles = new Map([MODEL_PROFILE, UPSTREAM_PLAYBACK_PROFILE]
+  .flatMap(profile => profile.routes.map(route => [route.id, profile])));
+
+function getPlaybackSigningProfile(profileId = MODEL_PROFILE.id) {
+  const profile = typeof profileId === 'string' ? signingProfiles.get(profileId) : undefined;
+  if (!profile) throw new TypeError('Unknown bundled playback signing profile');
+  return profile;
+}
+
+function getPlaybackRouteProfile(routeId) {
+  const profile = typeof routeId === 'string' ? routeProfiles.get(routeId) : undefined;
+  if (!profile) throw new TypeError('Unknown bundled playback route');
+  return profile;
+}
+
 const LEGACY_PLAYBACK = freeze({
   // The old model endpoint is retained for reproducible protocol tests, never
   // selected as a live fallback after the 6.28 single-variable rejection test.
@@ -137,5 +184,5 @@ function createRequestProfileManager({ profiles = [MODEL_PROFILE], activeId = MO
 const requestProfiles = createRequestProfileManager();
 const getPlaybackProfile = () => requestProfiles.current();
 const getPlaybackProfileStatus = () => requestProfiles.status();
-module.exports = { MODEL_PROFILE, LEGACY_PLAYBACK, DEVICE_REGISTRATION, createRequestProfileManager,
-  getPlaybackProfile, getPlaybackProfileStatus, requestProfiles };
+module.exports = { MODEL_PROFILE, UPSTREAM_PLAYBACK_PROFILE, LEGACY_PLAYBACK, DEVICE_REGISTRATION, createRequestProfileManager,
+  getPlaybackSigningProfile, getPlaybackRouteProfile, getPlaybackProfile, getPlaybackProfileStatus, requestProfiles };

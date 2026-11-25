@@ -1,4 +1,4 @@
-const { FAULT_CODES, isPlaybackFault, classifyPlaybackError, playbackRecoveryPolicy } = require('./playback-errors');
+const { FAULT_CODES, isPlaybackFault, isProtectedPlaybackError, classifyPlaybackError, playbackRecoveryPolicy } = require('./playback-errors');
 const SOURCES = new Set(['web', 'app', 'api', 'xifan', 'custom']);
 const ROUTE_STATUSES = new Set(['skipped', 'failed', 'address-found', 'media-failed', 'ready']);
 const INITIALIZATION = new Set(['not-required', 'attempted', 'completed', 'failed', 'unknown']);
@@ -7,7 +7,7 @@ const MEDIA_READ = new Set(['not-requested', 'partial', 'complete', 'failed', 'u
 const CHECK_STATUS = new Set(['not-tested', 'passed', 'failed']);
 const SAFE_CODES = new Set([
   ...FAULT_CODES,
-  'ACCOUNT_REQUIRED', 'ABORT_ERR', 'BUSINESS_REJECTED', 'DEVICE_REGISTRATION_FAILED',
+  'ACCOUNT_REQUIRED', 'ABORT_ERR', 'BUSINESS_REJECTED', 'DEVICE_REGISTRATION_FAILED', 'DRM_UNSUPPORTED',
   'EACCES', 'EBUSY', 'ECONNABORTED', 'ECONNRESET', 'EDQUOT', 'EEXIST', 'EFBIG', 'EIO',
   'EISDIR', 'EMFILE', 'EMLINK', 'ENAMETOOLONG', 'ENETUNREACH', 'ENFILE', 'ENOENT',
   'ENOTDIR', 'ENOSPC', 'ENOTFOUND', 'EPIPE', 'EROFS', 'ETIMEDOUT', 'EAI_AGAIN', 'EPERM',
@@ -81,6 +81,7 @@ function updatePlaybackRoute(value, source, updates = {}, fields = {}) {
 }
 
 function playbackFailureMessage(error = {}) {
+  if (isProtectedPlaybackError(error)) return playbackRecoveryPolicy('DRM_UNSUPPORTED').message;
   if (isPlaybackFault(error.faultCode) || isPlaybackFault(error.code)) {
     return playbackRecoveryPolicy(isPlaybackFault(error.faultCode) ? error.faultCode : error.code).message;
   }
@@ -129,14 +130,17 @@ function boundedNumber(value, maximum) {
 
 function createPlaybackDiagnostics({ appVersion = '', now = Date.now } = {}) {
   // Profile identifiers come from the shipped configuration, never from request URLs or remote error text.
-  const profile = require('./playback-profiles').getPlaybackProfile();
+  const { getPlaybackProfile, UPSTREAM_PLAYBACK_PROFILE } = require('./playback-profiles');
+  const profile = getPlaybackProfile();
   const { OFFICIAL_WEB_PROFILE } = require('./official-web-playback');
   const knownProfiles = new Map([
     [profile.id, { version: profile.version, source: 'app' }],
+    [UPSTREAM_PLAYBACK_PROFILE.id, { version: UPSTREAM_PLAYBACK_PROFILE.version, source: 'app' }],
     [OFFICIAL_WEB_PROFILE.id, { version: OFFICIAL_WEB_PROFILE.version, source: 'web' }],
   ]);
   const knownRoutes = new Map([
     ...profile.routes.map(route => [route.id, 'app']),
+    ...UPSTREAM_PLAYBACK_PROFILE.routes.map(route => [route.id, 'app']),
     [OFFICIAL_WEB_PROFILE.routeId, 'web'],
   ]);
   const version = /^\d{1,3}\.\d{1,3}\.\d{1,3}(?:-[a-z]{1,12}\.\d{1,3})?$/.test(appVersion) ? appVersion : 'unknown';
@@ -150,7 +154,7 @@ function createPlaybackDiagnostics({ appVersion = '', now = Date.now } = {}) {
   const counts = { sourceAttempts: 0, sourceSuccesses: 0, sourceFailures: 0, playbackSuccesses: 0, recoveries: 0 };
   const routeCounts = Object.fromEntries([...DIAGNOSTIC_SOURCES].map(source => [source, { attempts: 0, successes: 0, failures: 0 }]));
   const requestRoutes = Object.fromEntries([...knownRoutes.keys()].map(routeId => [routeId,
-    { attempts: 0, modelsAccepted: 0, failures: 0, lastFaultCode: '', lastRequestDurationMs: null }]));
+    { attempts: 0, modelsAccepted: 0, failures: 0, lastFaultCode: '', lastErrorCode: '', lastRequestDurationMs: null }]));
   const faultCounts = Object.fromEntries(FAULT_CODES.map(code => [code, 0]));
   const events = [];
   let foregroundRequestId = '';
@@ -173,8 +177,10 @@ function createPlaybackDiagnostics({ appVersion = '', now = Date.now } = {}) {
     const suppliedProfile = knownProfiles.get(value.profileId);
     const validProfile = !!suppliedProfile && suppliedProfile.version === value.profileVersion && suppliedProfile.source === sourceRoute;
     const current = !foregroundRequestId || isForeground(value.requestId);
-    const faultCode = isPlaybackFault(value.faultCode) ? value.faultCode
+    const protectedPlayback = isProtectedPlaybackError(value);
+    const faultCode = protectedPlayback ? '' : isPlaybackFault(value.faultCode) ? value.faultCode
       : providerRequest ? classifyPlaybackError({ code: value.code, status: value.status }) : '';
+    const errorCode = protectedPlayback ? 'DRM_UNSUPPORTED' : faultCode || safeCode(value.code);
     const requestDurationMs = boundedNumber(providerRequest ? value.elapsedMs : value.requestDurationMs, 600000);
     const recoveryCount = Number.isSafeInteger(value.recoveryCount) && value.recoveryCount >= 0
       && value.recoveryCount <= 1000000 ? value.recoveryCount : null;
@@ -209,6 +215,7 @@ function createPlaybackDiagnostics({ appVersion = '', now = Date.now } = {}) {
       if (value.modelValid === true) row.modelsAccepted++;
       else row.failures++;
       row.lastFaultCode = faultCode;
+      row.lastErrorCode = errorCode;
       row.lastRequestDurationMs = requestDurationMs;
     }
     if (event === 'source-success') {
@@ -236,11 +243,12 @@ function createPlaybackDiagnostics({ appVersion = '', now = Date.now } = {}) {
     }
     if (current && event === 'failure') state.mediaStatus = 'failed';
     if (current && event === 'cancelled') state.mediaStatus = 'cancelled';
+    if (current && errorCode) state.lastErrorCode = errorCode;
     if (faultCode) {
-      if (current) state.lastErrorCode = faultCode;
       if (event === 'source-failure' || event === 'failure') faultCounts[faultCode]++;
     }
     events.push({ at, event, ...(sourceRoute ? { sourceRoute } : {}), ...(routeId ? { routeId } : {}),
+      ...(errorCode && errorCode !== faultCode ? { code: errorCode } : {}),
       ...(faultCode ? { faultCode } : {}), ...(STAGES.has(value.stage) ? { stage: value.stage } : {}),
       ...(requestDurationMs !== null ? { requestDurationMs } : {}) });
     if (events.length > 40) events.shift();
@@ -260,7 +268,7 @@ function createPlaybackDiagnostics({ appVersion = '', now = Date.now } = {}) {
     }
     if (DEVICE_STATES.has(device?.state)) state.deviceState = device.state;
     const configuredProfile = knownProfiles.get(selectedProfile?.id);
-    if (configuredProfile && (!state.sourceRoute || state.sourceRoute === configuredProfile.source)
+    if (configuredProfile && (!state.sourceRoute || !state.profileId && state.sourceRoute === configuredProfile.source)
       && configuredProfile.version === selectedProfile.version) {
       state.profileId = selectedProfile.id;
       state.profileVersion = selectedProfile.version;

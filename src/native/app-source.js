@@ -11,7 +11,8 @@ const { setTimeout: delay } = require('node:timers/promises');
 const { registerPlaybackDevice, createPlaybackIdentityManager } = require('./playback-device');
 const { signPlayer } = require('./playback-signature');
 const { signPlaybackV5 } = require('./playback-v5');
-const { getPlaybackProfile, getPlaybackProfileStatus, LEGACY_PLAYBACK, requestProfiles } = require('./playback-profiles');
+const { getPlaybackProfile, getPlaybackProfileStatus, LEGACY_PLAYBACK, requestProfiles,
+    UPSTREAM_PLAYBACK_PROFILE, getPlaybackRouteProfile } = require('./playback-profiles');
 const { abortError, throwIfAborted, boundedSignal, networkFailure } = require('./request-signal');
 const sm3 = require('./sm3');
 const { normalizeDownloadQuality, meetsDownloadQuality } = require('./download-quality');
@@ -218,6 +219,29 @@ function videoTabRequest(identity, videoId) {
     });
     return { url: signed.url, body: null, method: 'GET',
         headers: { ...signed.headers, 'User-Agent': profile.userAgent, Accept: 'application/json' } };
+}
+
+// Ordinary request routes adapted from jackotom/hongguo-drama v8.3,
+// f31d87437a77e9b1b3fa8dfd81c9cecee52296eb (GPL-3.0-only).
+// The upstream SDK, protected-key handling and device rotation are not used.
+function upstreamPlaybackRequest(routeId, identity, videoId) {
+    const profile = getPlaybackRouteProfile(routeId);
+    const route = UPSTREAM_PLAYBACK_PROFILE.routes.find(candidate => candidate.id === routeId);
+    if (!route || profile !== UPSTREAM_PLAYBACK_PROFILE) throw new TypeError('Unknown upstream playback route');
+    if (typeof videoId !== 'string' || !/^\d{1,30}$/.test(videoId)
+        || ![identity?.device_id, identity?.iid].every(value => typeof value === 'string' && /^\d{1,30}$/.test(value) && /[1-9]/.test(value))
+        || typeof identity?.cdid !== 'string' || !/^[a-f0-9-]{36}$/i.test(identity.cdid)) {
+        throw new TypeError('Invalid upstream playback identity or episode');
+    }
+    const payload = route.kind === 'model'
+        ? { ...profile.modelBody, content_type: 1004, video_id: videoId }
+        : { ...profile.playerBody, mixed_video_id_map: { '1004': [videoId] } };
+    const body = gzipSync(Buffer.from(JSON.stringify(payload)));
+    const signed = signPlaybackV5({ base: route.endpoint, profileId: profile.id,
+        values: { ...profile.app, iid: identity.iid, cdid: identity.cdid, device_id: identity.device_id },
+        body, now: Date.now() });
+    return { ...signed, body, method: 'POST', headers: { ...signed.headers,
+        'User-Agent': profile.userAgent, ...profile.headers } };
 }
 
 function parseSearchInteger(value) {
@@ -469,11 +493,11 @@ async function fetchAppPlayUrl(vid, options = {}) {
     } finally { options.signal.removeEventListener('abort', cancel); operation.dispose(); }
 }
 
-function playbackModel(response, vid) {
+function playbackModel(response, vid, requireKeyedEntry = false) {
     if (Number(response.Code || response.code || 0) !== 0) throw Object.assign(new Error('App 接口暂未提供本集播放信息'), { code: 'BUSINESS_REJECTED' });
     const data = response.data;
     const entry = [data?.['1004']?.[vid], data?.[vid], data?.video_model_data?.[vid],
-        data?.['1004']?.video_model_data?.[vid], data?.video_model ? data : null]
+        data?.['1004']?.video_model_data?.[vid], !requireKeyedEntry && data?.video_model ? data : null]
         .find(candidate => candidate && typeof candidate === 'object');
     const model = typeof entry?.video_model === 'string' ? jsonBody(entry.video_model) : entry?.video_model;
     if (!model || typeof model !== 'object' || Array.isArray(model)) {
@@ -508,6 +532,7 @@ function inspectPlaybackAuthProbeResponse(payload, vid) {
 
 async function fetchAppPlayUrlFresh(vid, options) {
     const profile = getPlaybackProfile();
+    const routes = [...profile.routes, ...UPSTREAM_PLAYBACK_PROFILE.routes];
     const payload = JSON.stringify({
         ...profile.body,
         mixed_video_id_map: { '1004': [vid] },
@@ -521,29 +546,34 @@ async function fetchAppPlayUrlFresh(vid, options) {
     const { signal } = request;
     const firstDeadline = Math.min(Date.now() + profile.timeout.requestMs, overallDeadline);
     let deadline = firstDeadline;
-    let routeId = '', requestElapsedMs = 0, requestCount = 0, networkRetries = 0, deviceRefreshes = 0;
+    let routeId = '', selectedProfile = profile, requestElapsedMs = 0, requestCount = 0, networkRetries = 0, deviceRefreshes = 0;
     const observe = event => {
-        const safe = { type: 'source-request', profileId: profile.id, profileVersion: profile.version, ...event };
+        const routeProfile = getPlaybackRouteProfile(event.routeId);
+        const safe = { type: 'source-request', profileId: routeProfile.id, profileVersion: routeProfile.version, ...event };
         requestProfiles.record(safe);
         try { options.onPlaybackEvent?.(safe); } catch (_) {}
     };
-    const ready = result => ({ ...result, profileId: profile.id, profileVersion: profile.version,
+    const ready = result => ({ ...result, profileId: selectedProfile.id, profileVersion: selectedProfile.version,
         routeId, requestElapsedMs, sourceRecoveryCount: networkRetries + deviceRefreshes });
     try {
-        let model;
+        let model, clearResult;
         for (;;) {
             throwIfAborted(signal);
             deadline = requestCount === 0 ? firstDeadline : Math.min(Date.now() + profile.timeout.requestMs, overallDeadline);
             try {
-                for (const [index, route] of profile.routes.entries()) {
-                    const signed = route.method === 'GET' ? videoTabRequest(identity, vid) : playbackRequest(payload, identity, vid, index === 1);
+                for (const [index, route] of routes.entries()) {
+                    const upstream = index >= profile.routes.length;
+                    const signed = upstream ? upstreamPlaybackRequest(route.id, identity, vid)
+                        : route.method === 'GET' ? videoTabRequest(identity, vid) : playbackRequest(payload, identity, vid, index === 1);
                     signed.headers.Connection = 'close';
                     const started = Date.now();
                     requestCount++;
                     try {
                         const response = await requestJson(signed.url, { method: signed.method, headers: signed.headers, data: signed.body }, deadline, signal);
-                        model = playbackModel(response, vid);
+                        model = playbackModel(response, vid, upstream);
                         routeId = route.id;
+                        selectedProfile = getPlaybackRouteProfile(routeId);
+                        if (upstream) clearResult = parseClearUpstreamModel(model, vid, options);
                         requestElapsedMs = Date.now() - started;
                         observe({ routeId, elapsedMs: requestElapsedMs, status: 200, code: '', attempt: requestCount, modelValid: true });
                         break;
@@ -555,7 +585,7 @@ async function fetchAppPlayUrlFresh(vid, options) {
                         throwIfAborted(signal);
                         // Compatibility routes are attempted only for an observed empty
                         // body, never for forbidden/rate-limited/business rejections.
-                        if (error.code !== 'EMPTY_RESPONSE' || index === profile.routes.length - 1
+                        if (error.code !== 'EMPTY_RESPONSE' || index === routes.length - 1
                             || deadline - Date.now() < profile.timeout.minimumRouteMs) throw error;
                     }
                 }
@@ -578,6 +608,11 @@ async function fetchAppPlayUrlFresh(vid, options) {
                 try { await delay(profile.recovery.retryDelayMs, undefined, { signal }); }
                 catch (waitError) { throwIfAborted(signal); throw waitError; }
             }
+        }
+        if (selectedProfile === UPSTREAM_PLAYBACK_PROFILE) {
+            // Refuse protected/ambiguous models before the legacy parser can
+            // derive a key or decrypt an address. These routes never read a fallback.
+            return ready(clearResult);
         }
         const inline = model.video_list && typeof model.video_list === 'object' && Object.keys(model.video_list).length > 0;
         const readFallback = async () => {
@@ -615,6 +650,43 @@ async function fetchAppPlayUrlFresh(vid, options) {
     } finally {
         request.dispose();
     }
+}
+
+function parseClearUpstreamModel(info, vid, options = {}) {
+    const present = value => value !== undefined && value !== null && value !== '' && value !== false && value !== 0 && value !== '0' && value !== 'false';
+    // Inspect the full model, including unselected renditions and nested metadata.
+    // A mixed model must not smuggle wrapped material into the existing parser.
+    const protectedKeys = new Set(['key_seed', 'spade', 'spade_a', 'kid', 'key_id', 'gear_des_key', 'check_info',
+        'drm', 'drm_info', 'drm_type', 'pssh', 'content_key', 'contentKey', 'key_material', 'keyMaterial']);
+    const inspect = (value, depth = 0) => {
+        if (!value || typeof value !== 'object') return;
+        if (depth > 20) throw Object.assign(new Error('App 片源模型嵌套过深'), { code: 'INVALID_RESPONSE' });
+        for (const [key, child] of Object.entries(value)) {
+            if (protectedKeys.has(key) && !!child
+                || ['protected', 'encrypted', 'encrypt', 'encryption_method'].includes(key) && present(child)) {
+                throw Object.assign(new Error('本集返回受保护或加密片源，请使用官方授权播放器'), { code: 'DRM_UNSUPPORTED' });
+            }
+            inspect(child, depth + 1);
+        }
+    };
+    inspect(info);
+    const duration = Number(info?.video_duration);
+    if (typeof info?.video_id !== 'string' || !info.video_id.trim() || !Number.isFinite(duration) || duration <= 0
+        || options.expectedVideoId !== undefined && info.video_id !== options.expectedVideoId
+        || options.expectedDuration !== undefined && (!Number.isFinite(Number(options.expectedDuration))
+            || Number(options.expectedDuration) <= 0 || Math.abs(Number(options.expectedDuration) - duration) > 0.5)) {
+        throw Object.assign(new Error('App 片源编号或完整时长无法确认，已停止取址'), { code: 'INVALID_RESPONSE' });
+    }
+    const rows = Object.values(info.video_list || {});
+    if (!rows.length) throw Object.assign(new Error('App 接口未返回本集明文片源'), { code: 'MISSING_MODEL' });
+    const clearValues = [false, 0, '0', 'false'];
+    if (rows.some(row => !row || typeof row !== 'object' || !clearValues.includes(row.encrypt_info?.encrypt ?? row.encrypt))) {
+        throw Object.assign(new Error('App 片源加密状态无法确认，已停止取址'), { code: 'INVALID_RESPONSE' });
+    }
+    const result = parseAppPlayModel(info, vid, options, true);
+    const timing = { duration, ...(options.expectedDuration === undefined ? {} : { expectedDuration: Number(options.expectedDuration) }) };
+    return { ...result, ...timing,
+        variants: result.variants.map(variant => ({ ...variant, ...timing })) };
 }
 
 function parseAppPlayModel(info, vid, options, inline, requireEncryptionMetadata = inline, minimumPixels = 0) {
@@ -705,4 +777,5 @@ function parseAppPlayModel(info, vid, options, inline, requireEncryptionMetadata
 
 module.exports = { fetchAppPlayUrl, signedSearchRequest, signedMetadataRequest, signedAccountRequest, parseSearchInteger,
     preserveLargeJsonIntegers, requestJson, SEARCH_API, SEARCH_UA, getPlaybackProfileStatus,
+    upstreamPlaybackRequest, parseClearUpstreamModel,
     getPlaybackIdentityStatus: () => playbackIdentity.status(), createPlaybackAuthProbeRequest, inspectPlaybackAuthProbeResponse };

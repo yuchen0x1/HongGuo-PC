@@ -169,3 +169,6 @@ https://github.com/dawei233/hongguo-drama
 
 二十四、4.3 网页扫码登录与 APP 观看记录（已发布）
 新增独立「登录管理」页，通过红果官网二维码登录账号，读取最近 50 部 APP 观看记录并支持剧名搜索和继续播放。登录态使用系统安全存储加密，与普通数据备份分离；不接入手机号验证码。APP 记录不混入本机观看历史，也不批量导入或上传。扫码协议参考 tsukiyo-zero/hongguoTV（GPL-3.0-only）并保留来源说明。正式发行与验证边界见 docs/release-4.3.md。
+
+二十五、2026-11-25 上游普通播放请求有限同步（未发行）
+参考 jackotom/hongguo-drama v8.3，冻结提交 f31d87437a77e9b1b3fa8dfd81c9cecee52296eb，适配四条普通 player/video_model 请求与独立静态画像，沿用 GPL-3.0-only 许可和上游作者声明。未引入 SDK/helper、受保护内容密钥提取、设备轮换或远程策略；本项目增加明确明文响应守卫和拒绝即停诊断。此项不是完整同步，也不构成后续集播放修复声明。范围与验收见 docs/upstream-sync-2026-11-25.md。

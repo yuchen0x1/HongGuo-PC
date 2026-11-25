@@ -1,6 +1,6 @@
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
-const { FAULT_CODES, classifyPlaybackError, playbackRecoveryPolicy } = require('./playback-errors');
+const { FAULT_CODES, isPlaybackFault, isProtectedPlaybackError, classifyPlaybackError, playbackRecoveryPolicy } = require('./playback-errors');
 
 test('playback classification uses HTTP/layer evidence and never guesses empty-body authentication failures', () => {
   for (const [error, context, expected] of [
@@ -66,4 +66,31 @@ test('website episode unavailability is a bounded stop fault and takes precedenc
   }
   assert.equal(classifyPlaybackError({ sources: [web, { code: 'HTTP_429' }] }), 'API_RATE_LIMITED');
   assert.equal(classifyPlaybackError({ sources: [web, { code: 'ACCOUNT_SESSION_EXPIRED' }] }), 'ACCOUNT_EXPIRED');
+});
+
+test('explicit protected media stops without inventing an account, codec or transport fault', () => {
+  const code = 'DRM_UNSUPPORTED';
+  assert.equal(FAULT_CODES.includes(code), false);
+  assert.equal(isPlaybackFault(code), false);
+  const policy = playbackRecoveryPolicy(code);
+  assert.equal(Object.isFrozen(policy), true);
+  assert.equal(policy.action, 'stop');
+  assert.equal(policy.maxRetries, 0);
+  assert.equal(policy.retryable, false);
+  assert.equal(policy.message, '本集返回受保护或加密片源，请使用官方授权播放器。');
+  for (const error of [
+    { code }, { faultCode: code }, { code, status: 403, faultCode: 'CODEC_UNSUPPORTED' },
+    { code: 'SOURCE_UNAVAILABLE', sources: [{ code: 'EMPTY_RESPONSE' }, { source: 'app', code }] },
+    { sources: [{ code: 'ETIMEDOUT' }, { sources: [{ code }] }] },
+  ]) {
+    assert.equal(isProtectedPlaybackError(error), true);
+    assert.equal(classifyPlaybackError(error), '');
+    assert.equal(classifyPlaybackError(error, { stage: 'decode' }), '');
+  }
+  for (const error of [null, 'DRM_UNSUPPORTED', { code: 'UNKNOWN', message: code }, { code: 'EMPTY_RESPONSE' }]) {
+    assert.equal(isProtectedPlaybackError(error), false);
+  }
+  const cycle = { sources: [] };
+  cycle.sources.push(cycle);
+  assert.equal(isProtectedPlaybackError(cycle), false);
 });

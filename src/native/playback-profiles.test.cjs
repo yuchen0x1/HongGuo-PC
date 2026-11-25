@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const { MODEL_PROFILE, DEVICE_REGISTRATION, createRequestProfileManager } = require('./playback-profiles');
+const { MODEL_PROFILE, UPSTREAM_PLAYBACK_PROFILE, DEVICE_REGISTRATION, createRequestProfileManager,
+  getPlaybackSigningProfile, getPlaybackRouteProfile } = require('./playback-profiles');
 const { inspectPlaybackAuthProbeResponse } = require('./app-source');
 
 test('the versioned request record keeps the jointly verified profile and signature settings together', () => {
@@ -34,6 +35,57 @@ test('unknown and incompatible configurations immediately fall back to the last 
     const invalid = { ...MODEL_PROFILE, ...overrides };
     assert.throws(() => createRequestProfileManager({ profiles: [invalid] }), 'unverified wire combinations must fail closed');
   }
+});
+
+test('upstream route candidates keep their source-only profile separate from verified preload records', () => {
+  const profile = UPSTREAM_PLAYBACK_PROFILE;
+  assert.equal(profile.app.version_code, '74332');
+  assert.equal(profile.app.version_name, '7.4.3.32');
+  assert.equal(profile.app.channel, 'vivo_8662_64');
+  assert.equal(profile.app.device_type, 'PGT-AN10');
+  assert.equal(profile.app.os_version, '12');
+  assert.equal(profile.signature.medusaField21, 377);
+  assert.equal(profile.userAgent, 'okhttp/4.12.0');
+  assert.equal(profile.evidence.scope, 'source-only');
+  assert.equal(profile.evidence.mediaVerified, false);
+  assert.equal(profile.evidence.commit, 'f31d87437a77e9b1b3fa8dfd81c9cecee52296eb');
+  assert.deepEqual(profile.routes.map(route => route.id), [
+    'upstream-player-b', 'upstream-player-a', 'upstream-model-a', 'upstream-model-c',
+  ]);
+  assert.deepEqual(profile.routes.map(route => [new URL(route.endpoint).hostname, new URL(route.endpoint).pathname, route.method, route.kind]), [
+    ['api5-normal-sinfonlineb.fqnovel.com', '/novel/player/multi_video_model/player/v1', 'POST', 'player'],
+    ['api5-normal-sinfonlinea.fqnovel.com', '/novel/player/multi_video_model/player/v1', 'POST', 'player'],
+    ['api5-normal-sinfonlinea.fqnovel.com', '/novel/player/video_model/v1/', 'POST', 'model'],
+    ['api5-normal-sinfonlinec.fqnovel.com', '/novel/player/video_model/v1/', 'POST', 'model'],
+  ]);
+  assert.equal(profile.playerBody.dr_scene, 'player');
+  assert.equal(profile.playerBody.biz_param.device_level, 1);
+  assert.equal(profile.playerBody.biz_param.video_platform, 1024);
+  assert.equal(profile.modelBody.biz_param.device_level, 3);
+  assert.equal(profile.modelBody.biz_param.source, 9);
+  assert.equal(profile.modelBody.biz_param.video_platform, 3);
+  for (const value of [profile, profile.app, profile.signature, profile.headers, profile.routes,
+    ...profile.routes, profile.evidence, profile.playerBody.biz_param, profile.modelBody.biz_param]) {
+    assert.ok(Object.isFrozen(value));
+  }
+  assert.doesNotMatch(JSON.stringify(profile), /device_id|iid|cdid|cookie|token|key_seed|spade_a|sdk/i);
+  const manager = createRequestProfileManager({ profiles: [MODEL_PROFILE, profile] });
+  assert.equal(manager.select(profile.id), MODEL_PROFILE, 'source-only candidates never become a verified profile fallback');
+  assert.equal(manager.status().lastVerifiedId, MODEL_PROFILE.id);
+  assert.deepEqual(manager.status().routes.map(route => route.routeId), MODEL_PROFILE.routes.map(route => route.id));
+});
+
+test('signing and route lookups accept only the two bundled immutable profiles', () => {
+  assert.equal(getPlaybackSigningProfile(), MODEL_PROFILE);
+  for (const profile of [MODEL_PROFILE, UPSTREAM_PLAYBACK_PROFILE]) {
+    assert.equal(getPlaybackSigningProfile(profile.id), profile);
+    for (const route of profile.routes) assert.equal(getPlaybackRouteProfile(route.id), profile);
+  }
+  for (const unknown of ['remote-profile', '__proto__', '', 377, null, {}, { ...UPSTREAM_PLAYBACK_PROFILE }]) {
+    assert.throws(() => getPlaybackSigningProfile(unknown), TypeError);
+    assert.throws(() => getPlaybackRouteProfile(unknown), TypeError);
+  }
+  assert.throws(() => getPlaybackRouteProfile(undefined), TypeError);
 });
 
 test('a successful model records evidence separately from media and never retains arbitrary diagnostic strings', () => {

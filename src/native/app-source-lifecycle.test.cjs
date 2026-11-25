@@ -13,7 +13,7 @@ const response = () => ({ status: 200, headers: {}, data: JSON.stringify({ code:
 function fixture(transport, register) {
   const module = { exports: {} }, calls = [];
   let registrations = 0;
-  const identity = Object.freeze({ device_id: '1234567890123456', iid: '1234567890123457', cdid: 'synthetic-device' });
+  const identity = Object.freeze({ device_id: '1234567890123456', iid: '1234567890123457', cdid: '00000000-0000-4000-8000-000000000003' });
   vm.runInNewContext(fs.readFileSync(require.resolve('./app-source'), 'utf8'), {
     module, Buffer, URL, AbortSignal, AbortController, setTimeout, clearTimeout,
     require(name) {
@@ -42,7 +42,7 @@ test('transient source failure retries once with the same identity and reports s
   assert.equal(new URL(f.calls[0].url).searchParams.get('device_id'), new URL(f.calls[1].url).searchParams.get('device_id'));
   assert.equal(events[0].code, 'ECONNRESET');
   assert.equal(events[1].modelValid, true);
-  assert.doesNotMatch(JSON.stringify(events), /PRIVATE|1234567890123456|synthetic-device|https|Cookie/);
+  assert.doesNotMatch(JSON.stringify(events), /PRIVATE|1234567890123456|00000000-0000-4000-8000-000000000003|https|Cookie/);
 });
 
 test('repeated network timeout is bounded without a new registration or compatibility-route loop', async () => {
@@ -65,9 +65,12 @@ test('HTTP 200 empty body walks one official ladder and does not relabel identit
   const f = fixture(async () => ({ status: 200, headers: {}, data: '' }));
   const events = [];
   await assert.rejects(f.fetchAppPlayUrl(vid, { onPlaybackEvent: value => events.push(value) }), { code: 'EMPTY_RESPONSE' });
-  assert.equal(f.calls.length, 3);
+  assert.equal(f.calls.length, 7);
   assert.equal(f.registrations, 1);
-  assert.deepEqual(events.map(event => event.routeId), ['preload-primary', 'preload-alternate', 'video-tab']);
+  assert.deepEqual(events.map(event => event.routeId), [
+    'preload-primary', 'preload-alternate', 'video-tab',
+    'upstream-player-b', 'upstream-player-a', 'upstream-model-a', 'upstream-model-c',
+  ]);
   assert.ok(events.every(event => event.code === 'EMPTY_RESPONSE' && !event.modelValid));
   assert.equal(f.getPlaybackIdentityStatus().state, 'ready');
 });

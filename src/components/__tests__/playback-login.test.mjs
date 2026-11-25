@@ -56,7 +56,7 @@ for (const faultCode of ['ACCOUNT_EXPIRED', 'ACCOUNT_UNAUTHORIZED']) {
 
 for (const [faultCode, stage] of [
   ['NETWORK_TIMEOUT', 'source'], ['NETWORK_DISCONNECTED', 'source'], ['API_RATE_LIMITED', 'source'],
-  ['WEB_EPISODE_UNAVAILABLE', 'source'],
+  ['WEB_EPISODE_UNAVAILABLE', 'source'], ['DRM_UNSUPPORTED', 'source'],
   ['PLAYER_DECODE_FAILED', 'decode'], ['CODEC_UNSUPPORTED', 'decode'], ['MEDIA_DECRYPT_FAILED', 'decrypt'],
 ]) {
   test(`${faultCode} does not automatically show an account QR`, async () => {
@@ -99,6 +99,56 @@ test('a public episode refusal is distinct from account authorization and stops 
       assert.equal(ui.prepares.length, 2, 'an explicit retry can check the current source again');
     } finally { ui.unmount(); }
   }
+});
+
+test('protected playback is terminal across code locations and cannot be treated as a codec fallback', async () => {
+  const faultCode = 'DRM_UNSUPPORTED';
+  const failures = [
+    { code: faultCode }, { faultCode }, { diagnostics: { code: faultCode } },
+    { diagnostics: { faultCode } },
+    { code: faultCode, diagnostics: { faultCode: 'CODEC_UNSUPPORTED' } },
+    { faultCode: 'CODEC_UNSUPPORTED', diagnostics: { code: faultCode } },
+  ];
+  assert.equal(stopsPlaybackRecovery(faultCode), true);
+  assert.match(playbackFaultMessage(faultCode), /受保护或加密片源.*官方授权播放器/);
+  for (const failure of failures) {
+    assert.equal(playbackFaultCode(failure), faultCode);
+    assert.equal(allowsQualityFallback(failure), false);
+    assert.equal(shouldOfferAccountLogin({ ...failure, stage: 'source' }, anonymous), false);
+    assert.equal(shouldOfferAccountLogin({ ...failure, stage: 'source' }, valid), false);
+  }
+
+  let downloads = 0, now = Date.now();
+  const ui = mount({ props: { target }, settings, now: () => now,
+    prepare: async () => ({ success: false, code: faultCode,
+      diagnostics: { source: 'app', stage: 'source', faultCode: 'CODEC_UNSUPPORTED' } }),
+    apiOverrides: { getAccountStatus: async () => anonymous,
+      downloadSingleEpisode: async () => { downloads++; return { success: true }; } } });
+  try {
+    await ui.flush();
+    assert.equal(ui.prepares.length, 1, 'protected content cannot be fixed by changing quality');
+    assert.equal(downloads, 0, 'protected content cannot enqueue a fallback download');
+    assert.equal(ui.transcodes.length, 0, 'protected content cannot start compatibility conversion');
+    assert.equal(dialog(ui), undefined);
+    assert.equal(ui.find(node => node.props.role === 'alert')?.children.join(''), playbackFaultMessage(faultCode));
+    assert(ui.reports.some(report => report.event === 'failure' && report.faultCode === faultCode));
+
+    now += 120000;
+    for (const [id, timer] of [...ui.timers]) {
+      ui.timers.delete(id);
+      timer.fn();
+    }
+    await ui.flush();
+    assert.equal(ui.prepares.length, 1, 'timers must not restart protected playback');
+    assert.equal(downloads, 0);
+    assert.equal(ui.transcodes.length, 0);
+    assert.equal(dialog(ui), undefined);
+    assert.equal(ui.find(node => node.props.role === 'alert')?.children.join(''), playbackFaultMessage(faultCode));
+    await ui.button('重试本集').props.onClick(); await ui.flush();
+    assert.equal(ui.prepares.length, 2, 'an explicit retry may check current authorized capabilities again');
+    assert.equal(downloads, 0);
+    assert.equal(ui.transcodes.length, 0);
+  } finally { ui.unmount(); }
 });
 
 test('a delayed account lookup from an earlier episode cannot open a QR on the next episode', async () => {

@@ -7,7 +7,7 @@
 const crypto = require('node:crypto');
 const { gunzipSync } = require('node:zlib');
 const sm3 = require('./sm3');
-const { getPlaybackProfile } = require('./playback-profiles');
+const { getPlaybackSigningProfile } = require('./playback-profiles');
 const PROCESS_NONCE = crypto.randomBytes(18).toString('base64url');
 const PROCESS_STARTED = Date.now();
 const MAGIC = Buffer.from('2d4b4fca49750d433fb5ae2c226dcc56', 'hex');
@@ -188,7 +188,7 @@ function xmxor(data, key) {
   return encoded;
 }
 
-function medusa(query, f13, ts, who) {
+function medusa(query, f13, ts, who, signingProfile) {
   const flags = Buffer.alloc(8);
   const device = proto([[1,1,'sint'], [2,2,'sint'], [3,'8662'], [4,who.device_id],
     [5,PROCESS_NONCE], [6,'!noperm!'], [12,'Asia/Shanghai,8'], [13,'zh_CN'],
@@ -199,7 +199,7 @@ function medusa(query, f13, ts, who) {
     [6,'646637794'], [7,who.version_name], [8,'v04.10.03-ml-android'], [9,0x040a0300,'sint'],
     [10,flags], [12,ts,'sint'], [13,f13], [14,query.subarray(0,6)],
     [15,proto([[1,1,'sint'], [2,1,'sint'], [3,1,'sint'], [5,1,'sint']])],
-    [17,ts,'sint'], [20,'none'], [21,getPlaybackProfile().signature.medusaField21,'sint'], [23,env],
+    [17,ts,'sint'], [20,'none'], [21,signingProfile.signature.medusaField21,'sint'], [23,env],
     [24,'{"cmr":16777216,"cmr2":16777216,"un_h":11,"vpn":0,"kd":0,"dyn":"","do":1,"tk":true}']]);
   const nonce = random32(), high = (nonce >>> 16) & 255;
   const hash = sm3(Buffer.concat([SIGN_KEY, le32(nonce), SIGN_KEY]));
@@ -271,7 +271,11 @@ function validatedValues(values) {
 
 function signPlaybackV5(input) {
   if (!plainObject(input)) throw new TypeError('V5 signing options are required');
-  const { base, values, body, now = Date.now() } = input;
+  if (Object.hasOwn(input, 'field21') || Object.hasOwn(input, 'medusaField21')) {
+    throw new TypeError('V5 signing accepts bundled profile IDs, not field21 overrides');
+  }
+  const { base, values, body, now = Date.now(), profileId } = input;
+  const signingProfile = getPlaybackSigningProfile(profileId);
   if (typeof base !== 'string' || base.length > 8192 || /[\s?#]/.test(base)) throw new TypeError('V5 base must be an HTTPS URL without query or fragment');
   let parsed;
   try { parsed = new URL(base); } catch { throw new TypeError('V5 base must be a valid HTTPS URL'); }
@@ -298,7 +302,7 @@ function signPlaybackV5(input) {
     if (branch(queryHash, bodyHash, ts) !== 12) continue;
     const f13 = hashF13(queryHash, bodyHash, ts);
     return { url: `${parsed.href}?${query}`, headers: {
-      'x-khronos': String(ts), 'x-helios': helios(ts), 'x-medusa': medusa(queryHash, f13, ts, who),
+      'x-khronos': String(ts), 'x-helios': helios(ts), 'x-medusa': medusa(queryHash, f13, ts, who, signingProfile),
       ...(hasBody ? { 'x-ss-stub': bodyHash.toString('hex').toUpperCase() } : {}), 'x-ss-req-ticket': ticket,
     } };
   }

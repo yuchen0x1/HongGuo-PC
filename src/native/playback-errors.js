@@ -24,11 +24,23 @@ const POLICIES = Object.freeze(Object.fromEntries([
   ['PLAYER_DECODE_FAILED', 'compat-decode', 1, '视频解码失败，可尝试兼容播放。'],
 ].map(([code, action, maxRetries, message]) => [code, Object.freeze({ action, maxRetries, retryable: maxRetries > 0, message })])));
 const UNKNOWN_POLICY = Object.freeze({ action: 'stop', maxRetries: 0, retryable: false, message: '当前内容暂时无法播放，请稍后重试。' });
+const PROTECTED_POLICY = Object.freeze({ action: 'stop', maxRetries: 0, retryable: false,
+  message: '本集返回受保护或加密片源，请使用官方授权播放器。' });
 
 function isPlaybackFault(value) { return typeof value === 'string' && faults.has(value); }
 
+function isProtectedPlaybackError(error, seen = new Set()) {
+  if (!error || typeof error !== 'object' || seen.has(error)) return false;
+  seen.add(error);
+  return error.code === 'DRM_UNSUPPORTED' || error.faultCode === 'DRM_UNSUPPORTED'
+    || Array.isArray(error.sources) && error.sources.some(source => isProtectedPlaybackError(source, seen));
+}
+
 function classifyPlaybackError(error = {}, { stage = 'source', now = Date.now(), expiresAt = 0 } = {}) {
   if (!error || typeof error !== 'object') return '';
+  // A protected model is a terminal capability limit, not evidence of an account,
+  // codec or transport fault. Do not recover it through a different source.
+  if (isProtectedPlaybackError(error)) return '';
   if (isPlaybackFault(error.faultCode)) return error.faultCode;
   if (isPlaybackFault(error.code)) return error.code;
   const code = typeof error.code === 'string' ? error.code : '';
@@ -58,6 +70,9 @@ function classifyPlaybackError(error = {}, { stage = 'source', now = Date.now(),
   return '';
 }
 
-function playbackRecoveryPolicy(faultCode) { return isPlaybackFault(faultCode) ? POLICIES[faultCode] : UNKNOWN_POLICY; }
+function playbackRecoveryPolicy(faultCode) {
+  if (faultCode === 'DRM_UNSUPPORTED') return PROTECTED_POLICY;
+  return isPlaybackFault(faultCode) ? POLICIES[faultCode] : UNKNOWN_POLICY;
+}
 
-module.exports = { FAULT_CODES, isPlaybackFault, classifyPlaybackError, playbackRecoveryPolicy };
+module.exports = { FAULT_CODES, isPlaybackFault, isProtectedPlaybackError, classifyPlaybackError, playbackRecoveryPolicy };
