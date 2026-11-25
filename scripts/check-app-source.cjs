@@ -6,6 +6,19 @@ const vm = require('node:vm');
 const { gunzipSync } = require('node:zlib');
 const nativeDir = path.join(__dirname, '../src/native');
 const playbackDevice = Object.freeze({ device_id: '7000000000000000001', iid: '7000000000000000002', cdid: '00000000-0000-4000-8000-000000000003' });
+const assetIdentity = vid => ({ video_id: `fixture-asset-${vid}`, video_duration: 150 });
+// Metadata-only boxes for resolver/cache checks; these are never used as a playable video fixture.
+function publicMetadata() {
+  const box = (type, body) => {
+    const bytes = Buffer.alloc(body.length + 8);
+    bytes.writeUInt32BE(bytes.length); bytes.write(type, 4); body.copy(bytes, 8); return bytes;
+  };
+  const header = Buffer.alloc(20);
+  header.writeUInt32BE(1000, 12); header.writeUInt32BE(150000, 16);
+  const data = Buffer.concat([box('ftyp', Buffer.from('isom0000')), box('moov', box('mvhd', header))]);
+  return { status: 206, headers: { 'content-type': 'video/mp4',
+    'content-range': `bytes 0-${data.length - 1}/${data.length + 1000}` }, data };
+}
 
 // Published SM3 vectors plus a long input cross-checked with Node 22/OpenSSL.
 const vectors = [
@@ -60,7 +73,9 @@ function fixture({ wrongVid = false, fallback = 'https://vod.snssdk.com/info', m
       assert.equal(body.dr_scene, isV5 ? 'preload' : 'player');
       if (isV5) assert.equal(body.biz_param.device_level, 2);
       assert.equal(body.biz_param.disable_video_relate_book, false);
-      assert.deepEqual(body.mixed_video_id_map['1004'], ['11']);
+      const requestedVid = body.mixed_video_id_map['1004'][0];
+      assert.match(requestedVid, /^\d+$/);
+      assert.equal(body.mixed_video_id_map['1004'].length, 1);
       if (isV5) {
         for (const name of ['x-medusa', 'x-helios', 'x-khronos', 'x-ss-stub']) assert.ok(typeof config.headers[name] === 'string' && config.headers[name]);
         for (const name of ['x-ladon', 'x-argus', 'x-gorgon']) assert.equal(config.headers[name], undefined);
@@ -78,16 +93,27 @@ function fixture({ wrongVid = false, fallback = 'https://vod.snssdk.com/info', m
       if (tabEmpty && isV5 && calls.filter(call => String(call.url).includes('/preload/v1?')).length === 1) {
         return { status: 200, headers: {}, data: '' };
       }
-      const model = { video_model: JSON.stringify({ fallback_api: fallback }) };
+      const model = vid => {
+        const endpoint = new URL(fallback);
+        endpoint.searchParams.set('fixture_vid', vid);
+        return { video_model: JSON.stringify({ ...assetIdentity(vid), fallback_api: endpoint.href }) };
+      };
       return { status: 200, headers: {}, data: JSON.stringify({ code: 0, data: {
-        '999': model, ...(wrongVid ? {} : { '11': model }),
+        '999': model('999'), ...(wrongVid ? {} : { [requestedVid]: model(requestedVid) }),
       } }) };
     }
     if (redirect) return { status: 302, headers: { location: redirect }, data: '' };
-    return { status: 200, headers: {}, data: JSON.stringify({ video_info: { data: { key_seed: encrypted ? seed.toString('base64') : null, video_list: videoList || {
+    const requestedVid = new URL(config.url).searchParams.get('fixture_vid');
+    assert.match(requestedVid, /^\d+$/);
+    const rows = videoList || {
       bad: { main_url: media, codec_type: 'bytevc2', quality_desc: '2160P', spade_a: encodedKey() },
       good: { main_url: encryptedUrl, codec_type: 'h264', quality_desc: '720P', spade_a: malformedKey ? 'bad' : encodedKey() },
-    } } } }) };
+    };
+    const explicitRows = Object.fromEntries(Object.entries(rows).map(([id, row]) => [id,
+      !row.spade_a && row.encrypt_info === undefined ? { ...row, encrypt_info: { encrypt: false } } : row]));
+    return { status: 200, headers: {}, data: JSON.stringify({ video_info: { data: {
+      ...assetIdentity(requestedVid), key_seed: encrypted ? seed.toString('base64') : null, video_list: explicitRows,
+    } } }) };
   };
   const context = { Buffer, URL, URLSearchParams, AbortSignal, module: { exports: {} },
     require: name => {
@@ -120,14 +146,24 @@ function fixture({ wrongVid = false, fallback = 'https://vod.snssdk.com/info', m
 function nativeFixture() {
   const pending = [];
   const context = { module: { exports: {} }, Buffer, URL, process: { env: {} },
-    require: name => name === 'axios' ? { get: () => new Promise(resolve => pending.push(resolve)) }
+    require: name => name === 'axios' ? { get: (url, options) => {
+      if (options.responseType === 'arraybuffer') {
+        assert.match(options.headers.Range, /^bytes=0-\d+$/);
+        assert.equal(new URL(url).hostname, 'media.example');
+        return Promise.resolve(publicMetadata());
+      }
+      return new Promise(resolve => pending.push(resolve));
+    } }
       : name === './app-source' ? { fetchAppPlayUrl: async () => { throw new Error('Unexpected App lookup in Web cache fixture'); } }
       : require(name.startsWith('.') ? path.join(nativeDir, name) : name),
   };
   vm.runInNewContext(fs.readFileSync(path.join(nativeDir, 'hongguo.js'), 'utf8') + '\nmodule.exports.parseModelVideo = parseModelVideo;', context);
   return { ...context.module.exports, pending,
     finish(index, name) { pending[index]({ data: `<script>window._ROUTER_DATA=${JSON.stringify({ loaderData: {
-      'player_(series_id)/(vid)/page': { vid: '11', series_id: '1', seriesDetail: { series_id: '1' }, publicVideoSeo: { available: true, itemId: '11', seriesId: '1' } },
+      'player_(series_id)/(vid)/page': { isSuccess: true, vid: '11', series_id: '1',
+        req: { pcLoginRequired: false, pcAuthenticatedPlayback: false, encryptedBrowserAllowed: false },
+        seriesDetail: { series_id: '1', pay_type: 0, vid_list: ['11'], accessible_episode_cnt: 1 },
+        publicVideoSeo: { available: true, itemId: '11', seriesId: '1', durationSeconds: 150 } },
     } })}</script><script type="application/ld+json">${JSON.stringify({ '@type': 'VideoObject', url: 'https://hongguoduanju.com/player/1/11', contentUrl: `https://media.example/${name}.mp4` })}</script>` }); },
   };
 }
@@ -136,6 +172,12 @@ const appRows = videoList => fixture({ videoList, encrypted: false }).fetch('11'
 const turn = () => new Promise(resolve => setImmediate(resolve));
 
 const checks = [
+  ['fallback fixtures bind their asset identity to each actual requested episode', async () => {
+    const f = fixture();
+    for (const vid of ['11', '22']) assert.equal((await f.fetch(vid)).vid, vid);
+    assert.deepEqual(f.calls.filter(call => call.method !== 'POST')
+      .map(call => new URL(call.url).searchParams.get('fixture_vid')), ['11', '22']);
+  }],
   ['sequential and concurrent signed lookups preserve the same valid device identity', async () => {
     const f = fixture();
     await f.fetch('11');

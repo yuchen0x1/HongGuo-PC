@@ -244,10 +244,9 @@ async function prepareHlsFile(playInfo, output, options = {}) {
     checkCustomAccess(playInfo.vid);
     error.stage ||= 'media';
     const status = Number(error.mediaStatus || error.status || error.response?.status);
-    error.faultCode ||= classifyPlaybackError(error, { stage: 'hls', expiresAt: playInfo.expiresAt || 0 });
+    error.faultCode ||= classifyPlaybackError(error, { stage: error.stage, expiresAt: playInfo.expiresAt || 0 });
     const refused = [401, 403, 429].includes(status) && error.faultCode !== 'MEDIA_URL_EXPIRED';
     if (refused) {
-      error.faultCode = status === 429 ? 'API_RATE_LIMITED' : 'API_FORBIDDEN';
       error.mediaRetryable = false;
     } else if (!options.signal?.aborted && !options.cancelToken?.reason) error.mediaRetryable = true;
     throw error;
@@ -1149,14 +1148,15 @@ async function executeHongguoDownload(task) {
       notifyQuality(Math.min(Number(playInfo.width), Number(playInfo.height)));
       task.progress = 0; task.receivedBytes = 0; task.totalBytes = 0;
       sendToRenderer('download-progress', { id, progress: 0, receivedBytes: 0, totalBytes: 0 });
-      if (playInfo.format === 'hls') {
+      const receiveHls = async () => {
         await prepareHlsFile(playInfo,tmpPath,{signal: recoverySignal,cancelToken:source.token,onProgress:received => { task.receivedBytes = received; sendToRenderer('download-progress',{id,progress:0,receivedBytes:received,totalBytes:0}); }});
         task.actualQuality = await verifyReceived(tmpPath);
         source.token.throwIfRequested(); checkCustomAccess(vid);
         publishDownloadFile(tmpPath,finalPath);
-        return;
-      }
+      };
+      if (playInfo.format === 'hls') return receiveHls();
       response = await requestMedia(playInfo, { cancelToken: source.token, signal: recoverySignal });
+      if (playInfo.format === 'hls') { response.data.destroy(); return receiveHls(); }
       stopMediaIdle = guardMediaIdle(response.data);
       source.token.throwIfRequested();
       const totalLength = Number(response.headers['content-length']) || 0;
@@ -2991,6 +2991,17 @@ async function requestMedia(playInfo, options = {}) {
     response.data.destroy();
     throw mediaTransferError('片源返回了错误页面，请重新获取片源');
   }
+  if ([200, 206].includes(response.status)) {
+    const mime = String(response.headers['content-type'] || '').split(';', 1)[0].trim().toLowerCase();
+    if (/^(?:application|audio)\/(?:vnd\.apple\.mpegurl|x-mpegurl|mpegurl)$/.test(mime)) {
+      playInfo.format = 'hls';
+    } else if (mime === 'application/dash+xml' || playInfo.format === 'dash') {
+      response.data.destroy();
+      throw Object.assign(new Error('当前播放器尚未支持此 DASH 片源'), {
+        code: 'UNSUPPORTED_MEDIA_FORMAT', faultCode: 'MEDIA_FORMAT_UNSUPPORTED', stage: 'media', mediaRetryable: false,
+      });
+    }
+  }
   if (config.method === 'GET' && !config.headers.Range && response.status === 206) {
     const range = /^bytes 0-(\d+)\/(\d+)$/.exec(response.headers['content-range'] || '');
     if (!range || Number(range[1]) + 1 !== Number(range[2])) {
@@ -3068,6 +3079,15 @@ function awaitMediaOperation(promise, signal, timeout = 0) {
 }
 
 /** Retry the complete operation so a broken body never counts as a successful download. */
+function playbackHttpStatus(value) {
+  const status = Number(value?.httpStatus || value?.status || value?.mediaStatus || value?.response?.status);
+  return Number.isInteger(status) && status >= 100 && status <= 599 ? status : 0;
+}
+
+function attemptPlaybackDiagnostics(requestId, value) {
+  return sanitizePlaybackDiagnostics({ ...(value || {}), ...(hongguo.playbackDiagnostics?.attempt?.(requestId) || {}) });
+}
+
 async function withMediaRecovery(vid, seriesId, options, consume) {
   if (/^hema:/.test(String(vid)) || /^hema:/.test(String(seriesId || ''))) throw new Error('河马来源已移除');
   const controller = new AbortController();
@@ -3129,7 +3149,8 @@ async function withMediaRecovery(vid, seriesId, options, consume) {
       } catch (error) {
         cancelled();
         if (error?.routeTrace) playbackDiagnostics = retainRouteHistory(sanitizePlaybackDiagnostics({
-          sourceTrace: error.routeTrace, stage: 'source', code: error.code,
+          sourceTrace: error.routeTrace, stage: error.stage || 'source', code: error.code,
+          faultCode: error.faultCode, httpStatus: playbackHttpStatus(error),
         }));
         attachDiagnostics(error);
         if (!recoverable(error)) throw error;
@@ -3140,13 +3161,17 @@ async function withMediaRecovery(vid, seriesId, options, consume) {
       playbackDiagnostics = retainRouteHistory(sanitizePlaybackDiagnostics({
         source: info?.source,
         sourceTrace: info?.routeTrace,
-        stage: 'source',
+        stage: info?.stage || 'source',
+        httpStatus: playbackHttpStatus(info),
       }));
       reportDiagnostics();
       if (!info?.url) {
-        lastError = Object.assign(new Error(info?.error || '未获取到有效播放地址'), { code: info?.code, faultCode: info?.faultCode, sources: info?.sources });
+        lastError = Object.assign(new Error(info?.error || '未获取到有效播放地址'), { code: info?.code,
+          faultCode: info?.faultCode, sources: info?.sources, stage: info?.stage || 'source',
+          status: playbackHttpStatus(info), httpStatus: playbackHttpStatus(info) });
         lastError.playbackDiagnostics = sanitizePlaybackDiagnostics({
-          source: info?.source, routes: playbackDiagnostics.routes, stage: 'source', code: info?.code,
+          source: info?.source, routes: playbackDiagnostics.routes, stage: lastError.stage, code: info?.code,
+          faultCode: info?.faultCode, httpStatus: playbackHttpStatus(info),
         });
         playbackDiagnostics = lastError.playbackDiagnostics;
         reportDiagnostics();
@@ -3289,11 +3314,12 @@ function registerStreamProtocol() {
         ? classifyPlaybackError(diagnostics, { stage: diagnostics.stage, expiresAt: entry.playInfo?.expiresAt || 0 }) || 'CDN_UNAVAILABLE'
         : '';
       hongguo.playbackDiagnostics?.record({ requestId: session.requestId, event: faultCode ? 'failure' : 'media-state', faultCode,
+        code: diagnostics.code, httpStatus: diagnostics.httpStatus,
         stage: diagnostics.stage, mediaStatus: terminalFailure ? 'failed' : 'loading' });
       sendToRenderer('online-play-diagnostics', {
         requestId: session.requestId,
         streamId: id,
-        diagnostics: entry.playbackDiagnostics,
+        diagnostics: attemptPlaybackDiagnostics(session.requestId, entry.playbackDiagnostics),
         ...(faultCode ? { faultCode, stage: diagnostics.stage } : {}),
       });
     };
@@ -3306,24 +3332,40 @@ function registerStreamProtocol() {
           if (session.mediaStarted && session.mediaIdentity !== identity) throw new Error('片源已变化，请重新连接播放');
         };
         checkIdentity();
-        if (playInfo.format === 'hls') {
+        const hlsResponse = async () => {
           if (!entry.hlsJob) {
             entry.hlsIdentity = identity;
-            entry.hlsJob = trackOnlineWork(controller, (async () => {
+            // Range readers share this session's staging job. Cancelling one reader
+            // must not abort another reader that is waiting for the same MP4.
+            const hlsController = new AbortController();
+            session.requests.add(hlsController);
+            let hlsTimedOut = false;
+            const hlsDeadline = setTimeout(() => { hlsTimedOut = true; hlsController.abort(); }, 90000);
+            entry.hlsJob = trackOnlineWork(hlsController, (async () => {
               const prepared = {...entry}; delete prepared.hlsJob;
-              await prepareHlsEntry(playInfo,prepared,recoverySignal,received => sendToRenderer('online-play-progress',
+              await prepareHlsEntry(playInfo,prepared,hlsController.signal,received => sendToRenderer('online-play-progress',
                 {vid:session.vid,seriesId:entry.seriesId,vidIndex:entry.vidIndex,requestId:session.requestId,received,total:0,percent:0,phase:'downloading'}));
-              try { checkIdentity(); } catch (error) { disposeOnlineDisk(prepared); throw error; }
+              try {
+                if (hlsController.signal.aborted || !onlineSessions.has(id)) throw Object.assign(new Error('已取消 HLS 准备'), { code: 'ERR_CANCELED' });
+                checkIdentity();
+              } catch (error) { disposeOnlineDisk(prepared); throw error; }
               Object.assign(entry,prepared,{mediaIdentity:identity,vid:session.vid,source:/^custom:[^:]+/.exec(session.vid)?.[0] || 'hongguo',complete:true});
               delete entry.playInfo;
               onlineCache.set(session.cacheKey || session.vid,entry); trimOnlineCache();
-            })().catch(error => { delete entry.hlsJob; delete entry.hlsIdentity; throw error; }));
+            })().catch(error => {
+              delete entry.hlsJob; delete entry.hlsIdentity;
+              if (hlsTimedOut) error.code = 'ETIMEDOUT';
+              throw error;
+            }).finally(() => {
+              clearTimeout(hlsDeadline); session.requests.delete(hlsController);
+            }));
           }
           if (entry.hlsIdentity !== identity) throw new Error('片源已变化，请重新连接播放');
-          await entry.hlsJob; checkIdentity();
+          await awaitMediaOperation(entry.hlsJob, controller.signal); checkIdentity();
           session.mediaStarted = true; session.mediaIdentity = identity;
           cleanup(); return diskMediaResponse(request,entry,session);
-        }
+        };
+        if (playInfo.format === 'hls') return hlsResponse();
         // A fallback can change encryption and size; serve Range only after decoding that candidate.
         if (playInfo.spadeA || playInfo.contentKey) {
           const buffer = await trackOnlineWork(controller, fetchDecryptedEpisodeOnce(session.vid, null, entry.seriesId, playInfo, recoverySignal));
@@ -3336,8 +3378,11 @@ function registerStreamProtocol() {
         const upstream = await requestMedia(playInfo, { method: request.method, signal: controller.signal,
           headers: range ? { Range: range } : {}, validateStatus: status => [200, 206, 416].includes(status) });
         try { checkIdentity(); } catch (error) { upstream.data.destroy(); throw error; }
+        if (playInfo.format === 'hls') { upstream.data.destroy(); return hlsResponse(); }
         entry.playInfo = playInfo;
-        const headers = { 'Content-Type': 'video/mp4', 'Cache-Control': 'no-store' };
+        const mime = String(upstream.headers['content-type'] || '').split(';', 1)[0].trim().toLowerCase();
+        const headers = { 'Content-Type': /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/.test(mime)
+          ? mime : playInfo.format === 'mp4' ? 'video/mp4' : 'application/octet-stream', 'Cache-Control': 'no-store' };
         for (const name of ['content-length', 'content-range', 'accept-ranges']) {
           if (upstream.headers[name]) headers[name] = upstream.headers[name];
         }
@@ -3408,9 +3453,13 @@ function registerStreamProtocol() {
       cleanup();
       const faultCode = classifyPlaybackError(error, { stage: error.stage || 'media', expiresAt: entry.playInfo?.expiresAt || 0 });
       if (!controller.signal.aborted) {
-        hongguo.playbackDiagnostics?.record({ requestId: session.requestId, event: 'failure', faultCode, stage: error.stage || 'media' });
+        hongguo.playbackDiagnostics?.record({ requestId: session.requestId, event: 'failure', faultCode,
+          code: error.code, httpStatus: playbackHttpStatus(error), stage: error.stage || 'media' });
         sendToRenderer('online-play-diagnostics', { requestId: session.requestId, streamId: id, faultCode,
-          stage: error.stage || 'media', diagnostics: error.playbackDiagnostics || sanitizePlaybackDiagnostics({ stage: error.stage || 'media', code: error.code }) });
+          stage: error.stage || 'media', diagnostics: attemptPlaybackDiagnostics(session.requestId, {
+            ...(error.playbackDiagnostics || {}), stage: error.stage || 'media', code: error.code,
+            faultCode, httpStatus: playbackHttpStatus(error),
+          }) });
       }
       if (error.code === 'MEDIA_TOO_LARGE') sendToRenderer('online-play-progress', { requestId: session.requestId, code: error.code, error: error.message });
       return new Response('media unavailable', { status: controller.signal.aborted ? 499 : 502 });
@@ -3556,11 +3605,22 @@ async function fetchDecryptedEpisode(vid, onProgress, seriesId, playInfo, signal
 async function fetchDecryptedEpisodeOnce(vid, onProgress, seriesId, playInfo, signal, maxBytes = ONLINE_MAX_BYTES) {
   maxBytes = Math.min(maxBytes, ONLINE_MAX_BYTES);
   const tooLarge = () => Object.assign(new Error('本集过大，请下载后播放'), { code: 'MEDIA_TOO_LARGE' });
-  if (playInfo?.format === 'hls') throw new Error('HLS 视频必须先准备为本地媒体文件');
   if (!playInfo?.url) throw new Error(playInfo?.error || '未获取到有效播放地址');
   if (signal?.aborted) throw new Error('已取消播放');
+  const receiveHls = async () => {
+    const directory = await fsp.mkdtemp(path.join(app.getPath('temp'), 'hongguo-hls-buffer-'));
+    const file = path.join(directory, 'video.mp4');
+    try {
+      await prepareHlsFile(playInfo, file, { signal, tempCapacityBytes: maxBytes, onProgress: received => onProgress?.(received, 0) });
+      if (fs.statSync(file).size > maxBytes) throw tooLarge();
+      if (signal?.aborted) throw Object.assign(new Error('已取消播放'), { code: 'ERR_CANCELED' });
+      return await fsp.readFile(file);
+    } finally { await fsp.rm(directory, { recursive: true, force: true }); }
+  };
+  if (playInfo.format === 'hls') return receiveHls();
   if (playInfo.contentKey && !/^[a-f\d]{32}$/i.test(playInfo.contentKey)) throw new Error('片源解密密钥格式无效');
   const response = await requestMedia(playInfo, { signal });
+  if (playInfo.format === 'hls') { response.data.destroy(); return receiveHls(); }
   const stopIdle = guardMediaIdle(response.data);
   const total = Number(response.headers['content-length']) || 0;
   if (total > maxBytes) { stopIdle(); response.data.destroy(); throw tooLarge(); }
@@ -3690,7 +3750,7 @@ ipcMain.handle('prepare-online-play', async (event, payload) => {
     const source = entry.playbackSource || entry.playInfo?.source || 'unknown';
     return { success: true, url: `${STREAM_SCHEME}://play/${streamId}`, streamId, size: entry.size,
       cached, streaming: !!entry.playInfo, codec: entry.codec || '', source,
-      diagnostics: sanitizePlaybackDiagnostics({
+      diagnostics: attemptPlaybackDiagnostics(requestId, {
         ...(entry.playbackDiagnostics || {}),
         source: entry.playbackDiagnostics?.source || source,
         stage: entry.playbackDiagnostics?.stage || (entry.complete ? 'media' : 'source'),
@@ -3706,14 +3766,15 @@ ipcMain.handle('prepare-online-play', async (event, payload) => {
       return { success: false, cancelled: true, error: '已取消播放', code: 'ERR_CANCELED', stage,
         diagnostics: sanitizePlaybackDiagnostics({ stage }) };
     }
-    const diagnostics = error?.playbackDiagnostics || sanitizePlaybackDiagnostics({
-      sourceTrace: error?.routeTrace, stage: error?.code === 'MEDIA_DECODE_ERROR' ? 'decode' : 'source', code: error?.code,
-    });
     const code = safeCode(error?.code);
     const faultCode = classifyPlaybackError(error, { stage });
-    hongguo.playbackDiagnostics?.record({ requestId, event: 'failure', faultCode, stage });
-    return { success: false, error: playbackFailureMessage(error || {}), ...(code ? { code } : {}),
-      ...(faultCode ? { faultCode } : {}), stage, diagnostics };
+    const httpStatus = playbackHttpStatus(error);
+    hongguo.playbackDiagnostics?.record({ requestId, event: 'failure', code, faultCode, httpStatus, stage });
+    const diagnostics = attemptPlaybackDiagnostics(requestId, {
+      ...(error?.playbackDiagnostics || {}), sourceTrace: error?.routeTrace, stage, code, faultCode, httpStatus,
+    });
+    return { success: false, error: playbackFailureMessage({ ...(error || {}), faultCode }), ...(code ? { code } : {}),
+      ...(faultCode ? { faultCode } : {}), ...(httpStatus ? { httpStatus } : {}), stage, diagnostics };
   }
 });
 

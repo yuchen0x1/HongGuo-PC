@@ -74,7 +74,8 @@ test('upstream route candidates keep their source-only profile separate from ver
   const manager = createRequestProfileManager({ profiles: [MODEL_PROFILE, profile] });
   assert.equal(manager.select(profile.id), MODEL_PROFILE, 'source-only candidates never become a verified profile fallback');
   assert.equal(manager.status().lastVerifiedId, MODEL_PROFILE.id);
-  assert.deepEqual(manager.status().routes.map(route => route.routeId), MODEL_PROFILE.routes.map(route => route.id));
+  assert.deepEqual(manager.status().routes.map(route => route.routeId),
+    [...MODEL_PROFILE.routes, ...UPSTREAM_PLAYBACK_PROFILE.routes].map(route => route.id));
 });
 
 test('signing and route lookups accept only the two bundled immutable profiles', () => {
@@ -104,6 +105,36 @@ test('a successful model records evidence separately from media and never retain
   assert.equal(status.routes[0].failed, 1);
   assert.equal(status.routes[1].lastError, 'UNKNOWN');
   assert.doesNotMatch(JSON.stringify(status), /PRIVATE|cookie|device_id|signature|mediaUrl|decoded/i);
+});
+
+test('every bundled candidate records diagnostics without promoting source-only evidence', () => {
+  const profiles = createRequestProfileManager();
+  const routeIds = [...MODEL_PROFILE.routes, ...UPSTREAM_PLAYBACK_PROFILE.routes].map(route => route.id);
+  assert.deepEqual(profiles.status().routes.map(route => route.routeId), routeIds);
+  for (const route of UPSTREAM_PLAYBACK_PROFILE.routes) {
+    profiles.record({ routeId: route.id, code: 'EMPTY_RESPONSE', elapsedMs: 42, at: 100 });
+    profiles.record({ routeId: route.id, code: 'INVALID_RESPONSE', elapsedMs: 12, at: 200 });
+    profiles.record({ routeId: route.id, modelValid: true, elapsedMs: 8, at: 300 });
+  }
+  const status = profiles.status();
+  for (const route of status.routes.slice(MODEL_PROFILE.routes.length)) {
+    assert.equal(route.requests, 3);
+    assert.equal(route.failed, 2);
+    assert.equal(route.succeeded, 1);
+    assert.equal(route.lastError, '');
+    assert.equal(route.lastElapsedMs, 8);
+  }
+  assert.equal(status.lastVerifiedId, MODEL_PROFILE.id);
+  assert.equal(status.state, 'historically-verified');
+  assert.equal(status.lastShapeFailureAt, 0);
+  assert.equal(status.lastModelSuccessAt, 0);
+  for (const code of ['DRM_UNSUPPORTED', 'NO_COMPATIBLE_SOURCE', 'QUALITY_UNAVAILABLE']) {
+    profiles.record({ routeId: UPSTREAM_PLAYBACK_PROFILE.routes[0].id, code });
+    assert.equal(profiles.status().routes[MODEL_PROFILE.routes.length].lastError, code);
+  }
+  profiles.record({ routeId: UPSTREAM_PLAYBACK_PROFILE.routes[0].id, code: 'PRIVATE_UNTRUSTED_ERROR' });
+  assert.equal(profiles.status().routes[MODEL_PROFILE.routes.length].lastError, 'UNKNOWN');
+  assert.doesNotMatch(JSON.stringify(profiles.status()), /PRIVATE_UNTRUSTED_ERROR/);
 });
 
 test('account authorization probe inspects only the exact episode and exports boolean structure evidence', () => {

@@ -7,10 +7,32 @@ require('./fixtures/direct-http.cjs'); // 本地回环回归必须直连，见�
 const nativeDir = path.join(__dirname, '../src/native');
 const playbackDevice = Object.freeze({ device_id: '7000000000000000001', iid: '7000000000000000002', cdid: '00000000-0000-4000-8000-000000000003' });
 const media = name => `https://v3-reading.qznovelvod.com/${name}.mp4`;
+const publicDuration = 166.488;
+// Binary metadata-only fixtures exercise identity/duration guards, never video playback.
+function publicMetadata(options) {
+  assert.equal(options.responseType, 'arraybuffer');
+  assert.match(options.headers.Range, /^bytes=0-\d+$/);
+  assert.match(options.headers['User-Agent'], /HongGuo-PC\//);
+  assert.equal(options.headers.Referer, 'https://hongguoduanju.com/');
+  assert.equal(options.maxRedirects, 0);
+  assert.equal(typeof options.lookup, 'function');
+  const box = (type, body) => {
+    const bytes = Buffer.alloc(body.length + 8);
+    bytes.writeUInt32BE(bytes.length); bytes.write(type, 4); body.copy(bytes, 8); return bytes;
+  };
+  const header = Buffer.alloc(20);
+  header.writeUInt32BE(1000, 12); header.writeUInt32BE(Math.round(publicDuration * 1000), 16);
+  const data = Buffer.concat([box('ftyp', Buffer.from('isom0000')), box('moov', box('mvhd', header))]);
+  return { status: 206, headers: { 'content-type': 'video/mp4',
+    'content-range': `bytes 0-${data.length - 1}/${data.length + 1000}` }, data };
+}
+const webResponse = (options, html) => options?.responseType === 'arraybuffer'
+  ? publicMetadata(options) : { status: 200, data: html };
 const webPage = (vid = '11', sid = '1', extra = {}) => `<script>window._ROUTER_DATA=${JSON.stringify({ loaderData: {
   'player_(series_id)/(vid)/page': { isSuccess: true, vid, series_id: sid,
+    req: extra.protectedPlayback === true ? {} : { pcLoginRequired: false, pcAuthenticatedPlayback: false, encryptedBrowserAllowed: false },
     seriesDetail: { series_id: sid, vid_list: ['11'], accessible_episode_cnt: 1, pay_type: 0 },
-    publicVideoSeo: { available: true, itemId: vid, seriesId: sid }, ...extra },
+    publicVideoSeo: { available: true, itemId: vid, seriesId: sid, durationSeconds: publicDuration }, ...extra },
 } })}</script><script type="application/ld+json">${JSON.stringify({ '@type': 'VideoObject', url: `https://hongguoduanju.com/player/${sid}/${vid}`, contentUrl: media('web') })}</script>`;
 function load(file, dependencies) {
   dependencies = { './playback-device': { createPlaybackIdentityManager: require('../src/native/playback-device').createPlaybackIdentityManager,
@@ -46,7 +68,10 @@ function routeFixture() {
   const state = { web: true, app: false, calls: [] };
   const native = load('hongguo.js', {
     axios: {
-      get: async url => { state.calls.push('web'); return { data: state.web && url.endsWith('/11') ? webPage() : '' }; },
+      get: async (url, options) => {
+        state.calls.push(options.responseType === 'arraybuffer' ? 'metadata' : 'web');
+        return webResponse(options, state.web && url.endsWith('/11') ? webPage() : '');
+      },
       post: async () => { state.calls.push('api'); return { status: 200, headers: {}, data: Buffer.alloc(0) }; },
     },
     './app-source': { fetchAppPlayUrl: async () => { state.calls.push('app'); if (!state.app) throw new Error('secret https://signed.invalid/?token=private'); return { url: media('app'), source: 'app' }; } },
@@ -79,16 +104,16 @@ const checks = [
     }
   }],
   ['Registration failures retain safe details and remain retryable only for transient causes', async () => {
-    for (const [failure, expected] of [
-      [{ code: 'ECONNRESET' }, 'NETWORK_ERROR'],
-      [{ code: 'ETIMEDOUT' }, 'TIMEOUT'],
-      [{ status: 503 }, 'HTTP_503'],
-      [{ status: 403 }, 'HTTP_403'],
-      [{ code: 'EMPTY_RESPONSE' }, 'DEVICE_REGISTRATION_FAILED'],
-      [{ code: 'INVALID_RESPONSE' }, 'DEVICE_REGISTRATION_FAILED'],
-      [{ code: 'BUSINESS_REJECTED' }, 'DEVICE_REGISTRATION_FAILED'],
-      [{ code: 'SECURITY_BLOCKED' }, 'DEVICE_REGISTRATION_FAILED'],
-      [{ code: 'secret' }, 'DEVICE_REGISTRATION_FAILED'],
+    for (const [failure, expected, expectedFault, message] of [
+      [{ code: 'ECONNRESET' }, 'NETWORK_ERROR', 'NETWORK_DISCONNECTED', /网络连接失败/],
+      [{ code: 'ETIMEDOUT' }, 'TIMEOUT', 'NETWORK_TIMEOUT', /网络连接失败/],
+      [{ status: 503 }, 'HTTP_503', 'API_HTTP_ERROR', /接口返回 HTTP 错误/],
+      [{ status: 403 }, 'HTTP_403', 'API_FORBIDDEN', /播放接口拒绝了请求/],
+      [{ code: 'EMPTY_RESPONSE' }, 'DEVICE_REGISTRATION_FAILED', '', /当前内容暂时无法播放/],
+      [{ code: 'INVALID_RESPONSE' }, 'DEVICE_REGISTRATION_FAILED', '', /当前内容暂时无法播放/],
+      [{ code: 'BUSINESS_REJECTED' }, 'DEVICE_REGISTRATION_FAILED', '', /当前内容暂时无法播放/],
+      [{ code: 'SECURITY_BLOCKED' }, 'DEVICE_REGISTRATION_FAILED', '', /当前内容暂时无法播放/],
+      [{ code: 'secret' }, 'DEVICE_REGISTRATION_FAILED', 'NETWORK_DISCONNECTED', /网络连接失败/],
     ]) {
       const device = load('playback-device.js', {});
       const registerPlaybackDevice = async request => device.registerPlaybackDevice(async (...args) => {
@@ -105,9 +130,8 @@ const checks = [
       const f = load('hongguo.js', { './app-source': routedApp });
       const result = await f.fetchPlayUrlSingle('11', '1', { quality: '720p' });
       assert.equal(result.sources[0].code, failure.code === 'secret' ? 'NETWORK_ERROR' : expected);
-      assert.equal(result.error, failure.code === 'secret' || ['ECONNRESET', 'ETIMEDOUT'].includes(failure.code) || expected === 'NETWORK_ERROR'
-        ? '网络连接失败，请检查网络后重试。'
-        : '当前内容暂时无法播放，请稍后重试。');
+      assert.equal(result.faultCode || '', expectedFault);
+      assert.match(result.error, message);
       assert.doesNotMatch(result.error, /签名|设备鉴权|匿名播放设备注册/);
       assert.doesNotMatch(JSON.stringify(result), /secret|signed\.invalid|private/);
     }
@@ -139,7 +163,8 @@ const checks = [
     }
   }],
   ['App distinguishes HTTP, business refusal, absent model, parsing and unsafe media', async () => {
-    const first = { data: { '11': { video_model: { fallback_api: 'https://vod.snssdk.com/info' } } } };
+    const identity = { video_id: 'offline-fallback-asset-11', video_duration: 120 };
+    const first = { data: { '11': { video_model: { ...identity, fallback_api: 'https://vod.snssdk.com/info' } } } };
     const cases = [
       [{ status: 403 }, null, 'HTTP_403'],
       [{ data: { code: 8, message: 'secret' } }, null, 'BUSINESS_REJECTED'],
@@ -147,10 +172,13 @@ const checks = [
       [{ data: 'not json secret' }, null, 'INVALID_RESPONSE'],
       [{ data: { data: { '11': { video_model: 'not json secret' } } } }, null, 'INVALID_RESPONSE'],
       [{ data: first }, { code: 8, message: 'secret' }, 'BUSINESS_REJECTED'],
-      [{ data: first }, { video_info: { data: { video_list: { one: { codec_type: 'h264', width: 720, height: 1280, main_url: 'https://127.0.0.1/private' } } } } }, 'SECURITY_BLOCKED'],
+      [{ data: first }, { video_info: { data: { ...identity, video_list: { one: { codec_type: 'h264', width: 720, height: 1280,
+        encrypt_info: { encrypt: false }, main_url: 'https://127.0.0.1/private' } } } } }, 'SECURITY_BLOCKED'],
     ];
     for (const [response, second, expected] of cases) {
+      const calls = [];
       const app = load('app-source.js', { axios: async config => {
+        calls.push(config);
         const result = { status: 200, headers: {}, ...(config.method === 'POST' ? response : { data: second }) };
         if (typeof result.data !== 'string') result.data = JSON.stringify(result.data);
         return result;
@@ -158,6 +186,11 @@ const checks = [
       const f = load('hongguo.js', { './app-source': app });
       const result = await f.fetchPlayUrlSingle('11', '1', { quality: '720p' });
       assert.equal(result.sources[0].code, expected);
+      if (second) {
+        assert.equal(calls.length, 2, 'identity-bound reference must reach its one permitted fallback');
+        assert.equal(calls[0].method, 'POST');
+        assert.equal(calls[1].url, 'https://vod.snssdk.com/info');
+      }
       assert.doesNotMatch(JSON.stringify(result), /secret|127\.0\.0\.1|private/);
     }
   }],
@@ -316,8 +349,10 @@ const checks = [
     let protectedPlayback = true, appAvailable = true;
     const f = load('hongguo.js', {
       axios: {
-        get: async () => { calls.push('web'); return { data: webPage('11', '1', { protectedPlayback,
-          publicVideoSeo: { available: true, itemId: '11', seriesId: '1', durationSeconds: 166.488 } }) }; },
+        get: async (_url, options) => {
+          calls.push(options.responseType === 'arraybuffer' ? 'metadata' : 'web');
+          return webResponse(options, webPage('11', '1', { protectedPlayback }));
+        },
         post: async () => { calls.push('api'); return { status: 200, headers: {}, data: Buffer.alloc(0) }; },
       },
       './app-source': { fetchAppPlayUrl: async (_vid, options) => {
@@ -355,7 +390,7 @@ const checks = [
   ['Web accepts only an identity-bound VideoObject and ignores earlier recommended media', async () => {
     const unrelated = `<script type="application/ld+json">${JSON.stringify({ '@type': 'VideoObject', url: 'https://hongguoduanju.com/player/2/22', contentUrl: media('recommendation') })}</script>`;
     let html = unrelated + webPage();
-    const f = load('hongguo.js', { axios: { get: async () => ({ data: html }) } });
+    const f = load('hongguo.js', { axios: { get: async (_url, options) => webResponse(options, html) } });
     assert.equal((await f.fetchPlayUrlFromWeb('11', '1')).url, media('web'));
     for (const bad of [webPage('10'), webPage('11', '2'), webPage('11', '1', { vid: undefined }),
       webPage('11', '1', { publicVideoSeo: { available: true, itemId: '10', seriesId: '1' } }),
@@ -367,7 +402,7 @@ const checks = [
     const url = 'https://hongguoduanju.com/video/public/11/360p.mp4';
     const page = webPage().replace('/player/1/11', '/player/1').replace(media('web'), url);
     let html = page;
-    const f = load('hongguo.js', { axios: { get: async () => ({ data: html }) } });
+    const f = load('hongguo.js', { axios: { get: async (_url, options) => webResponse(options, html) } });
     assert.equal((await f.fetchPlayUrlFromWeb('11', '1'))?.url, url);
     assert.equal((await f.fetchPlayUrlFromWeb('11'))?.url, url);
     for (const bad of [
@@ -459,7 +494,7 @@ const checks = [
     f.markWebMediaFailure(first); f.state.calls.length = 0;
     const recovered = await f.fetchPlayUrlSingle('11', '1', { force: true });
     assert.equal(recovered.source, 'web', 'five-minute penalty must not hide the only working source');
-    assert.deepEqual(f.state.calls, ['app', 'web']);
+    assert.deepEqual(f.state.calls, ['app', 'web', 'metadata']);
     f.state.app = true; f.state.calls.length = 0;
     assert.equal((await f.fetchPlayUrlSingle('11', '1')).source, 'app');
     assert.deepEqual(f.state.calls, ['app'], 'web penalty remains after last-resort recovery');

@@ -5,7 +5,6 @@ const path = require('node:path');
 const vm = require('node:vm');
 const http = require('node:http');
 const https = require('node:https');
-const os = require('node:os');
 const { EventEmitter } = require('node:events');
 const { createRequire } = require('node:module');
 require('./fixtures/direct-http.cjs'); // 本地回环回归必须直连，见文件内说明
@@ -19,6 +18,26 @@ const privateUrls = ['http://127.0.0.1/a', 'http://2130706433/a', 'http://0x7f00
   'http://printer/a', 'file:///etc/passwd', 'https://user:pass@media.example/a'];
 const publicUrls = ['https://fc-cdn.example/a', 'https://fd-cdn.example/a', 'https://fe80-cdn.example/a',
   'https://hongguoduanju.com/video/public/11/360p.mp4', 'https://8.8.8.8/a', 'https://[2606:4700::1111]/a'];
+
+// Metadata-only binary boxes exercise the guarded resolver, never playable-media acceptance.
+function publicMetadata(options) {
+  assert.equal(options.responseType, 'arraybuffer');
+  assert.match(options.headers.Range, /^bytes=0-\d+$/);
+  assert.match(options.headers['User-Agent'], /HongGuo-PC\//);
+  assert.equal(options.headers.Referer, 'https://hongguoduanju.com/');
+  assert.equal(options.maxRedirects, 0);
+  assert.equal(typeof options.lookup, 'function');
+  assert.equal(typeof options.beforeRedirect, 'function');
+  const box = (type, body) => {
+    const bytes = Buffer.alloc(body.length + 8);
+    bytes.writeUInt32BE(bytes.length); bytes.write(type, 4); body.copy(bytes, 8); return bytes;
+  };
+  const header = Buffer.alloc(20);
+  header.writeUInt32BE(1000, 12); header.writeUInt32BE(120000, 16);
+  const data = Buffer.concat([box('ftyp', Buffer.from('isom0000')), box('moov', box('mvhd', header))]);
+  return { status: 206, headers: { 'content-type': 'video/mp4',
+    'content-range': `bytes 0-${data.length - 1}/${data.length + 1000}` }, data };
+}
 
 function mainFixture(root, calls, marked) {
   const mainPath = path.resolve(__dirname, '../main.js'), mainRequire = createRequire(mainPath);
@@ -37,12 +56,17 @@ function mainFixture(root, calls, marked) {
 
 function provider(mediaUrl) {
   const data = { loaderData: { 'player_(series_id)/(vid)/page': { isSuccess: true, vid: '11', series_id: '1',
-    seriesDetail: { series_id: '1' }, publicVideoSeo: { available: true, itemId: '11', seriesId: '1' } } } };
+    req: { pcLoginRequired: false, pcAuthenticatedPlayback: false, encryptedBrowserAllowed: false },
+    seriesDetail: { series_id: '1', pay_type: 0, vid_list: ['11'], accessible_episode_cnt: 1 },
+    publicVideoSeo: { available: true, itemId: '11', seriesId: '1', durationSeconds: 120 } } } };
   const html = `<script>window._ROUTER_DATA=${JSON.stringify(data)}</script><script type="application/ld+json">${JSON.stringify({
     '@type': 'VideoObject', url: 'https://hongguoduanju.com/player/1/11', contentUrl: mediaUrl })}</script>`;
   const context = { module: { exports: {} }, Buffer, URL, URLSearchParams, AbortSignal, setTimeout, clearTimeout,
     process: { env: {} }, console: { warn() {} },
-    require: n => n === 'axios' ? { get: async () => ({ data: html }) } : req(n) };
+    require: n => n === 'axios' ? { get: async (url, options) => {
+      if (options.responseType === 'arraybuffer') { assert.equal(url, mediaUrl); return publicMetadata(options); }
+      return { status: 200, data: html };
+    } } : req(n) };
   vm.runInNewContext(fs.readFileSync(nativePath, 'utf8'), context);
   return context.module.exports;
 }
@@ -302,7 +326,9 @@ const checks = [
     } finally { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
   }],
   ['main blocks an unsafe web transfer then uses existing bounded App recovery', async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hongguo-guard-')), calls = [], marked = [];
+    const analysis = path.resolve(__dirname, '../.local/analysis');
+    fs.mkdirSync(analysis, { recursive: true });
+    const root = fs.mkdtempSync(path.join(analysis, 'hongguo-guard-')), calls = [], marked = [];
     try {
       const main = mainFixture(root, calls, marked);
       const result = await main.withMediaRecovery('11', '1', { playInfo: { url: 'http://127.0.0.1/private', source: 'web', vid: '11' } }, info => main.requestMedia(info));

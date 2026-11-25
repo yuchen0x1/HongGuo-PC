@@ -95,7 +95,7 @@ async function check(name, fn) {
         savePlaybackPosition: (...args) => ipc('save-playback-position', ...args),
       } });
       try {
-        await ui.flush(); ui.metadata(); ui.media.currentTime = 42;
+        await ui.flush(); ui.metadata(); ui.presentFrame(); ui.media.currentTime = 42;
         ui.props.active = false; ui.render();
         assert.equal((await ipc('remove-watch-history', sid)).success, true);
         const removal = events.findLast(event => event.name === 'watch-history-updated');

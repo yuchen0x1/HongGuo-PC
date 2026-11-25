@@ -5,13 +5,14 @@ const crypto = require('crypto');
 const { URL } = require('node:url');
 const { normalizeDownloadQuality } = require('./download-quality');
 const { isPublicMediaUrl, webMediaRequestOptions } = require('./web-media-guard');
-const { routeDiagnostic, playbackFailureMessage } = require('./playback-diagnostics');
+const { routeDiagnostic, playbackFailureMessage, safeCode } = require('./playback-diagnostics');
 const { createPlaybackManager } = require('./playback-manager');
 const { createPlaybackDiagnostics } = require('./playback-diagnostics');
 const { throwIfAborted } = require('./request-signal');
 const { isMediaExpired } = require('./media-url-manager');
 const { classifyPlaybackError, isProtectedPlaybackError } = require('./playback-errors');
-const { resolveOfficialPublicPlayback } = require('./official-web-playback');
+const { OFFICIAL_WEB_PROFILE, publicEpisodePermission, publicMovieDuration,
+  resolveOfficialPublicPlayback } = require('./official-web-playback');
 const { readScriptBlocks } = require('./html-script-blocks');
 let playbackManager;
 function getPlaybackManager() {
@@ -313,7 +314,8 @@ async function fetchPlayUrlFromWeb(vid, sid, onFailure, options = {}) {
       const actualSid = String(data?.series_id || '');
       lastErr = { code: !data ? 'MISSING_MODEL' : data.isSuccess === false ? 'BUSINESS_REJECTED'
         : data.publicVideoSeo?.available === false ? 'NO_PLAYABLE_SOURCE' : 'INVALID_RESPONSE' };
-      if (!data || data.isSuccess === false || !/^\d+$/.test(actualSid) ||
+      if (data?.isSuccess === false) throw Object.assign(new Error('官网接口返回业务错误'), { code: 'BUSINESS_REJECTED' });
+      if (!data || !/^\d+$/.test(actualSid) ||
           (sid && actualSid !== String(sid)) || String(data.seriesDetail?.series_id) !== actualSid) continue;
       if (data.protectedPlayback === true) {
         // The official player uses a public API for explicitly permitted episodes;
@@ -326,6 +328,10 @@ async function fetchPlayUrlFromWeb(vid, sid, onFailure, options = {}) {
           });
         } catch (error) { throwIfAborted(options.signal); lastErr = error; break; }
       }
+      // Older public HTML must establish the same permission and complete-media
+      // evidence as the current official route before its JSON-LD URL is usable.
+      const permission = publicEpisodePermission(data, vid, actualSid);
+      if (!permission.duration) throw Object.assign(new Error('官网未提供本集完整时长证据'), { code: 'PREVIEW_ONLY' });
       if (String(data.vid) !== String(vid)) continue;
       if (data.publicVideoSeo?.available !== true || String(data.publicVideoSeo.itemId) !== String(vid)
           || String(data.publicVideoSeo.seriesId) !== actualSid) continue;
@@ -349,12 +355,35 @@ async function fetchPlayUrlFromWeb(vid, sid, onFailure, options = {}) {
         try { videoUrl = new URL(normalizeVideoUrl(video.contentUrl)); } catch (_) { continue; }
         if (!matchesPlayer(video.url, videoUrl) || (video['@id'] && !matchesPlayer(video['@id'], videoUrl))) continue;
         if (!isPublicMediaUrl(videoUrl.href)) { lastErr = { code: 'SECURITY_BLOCKED' }; continue; }
-        return { url: videoUrl.href, spadeA: null, codec: '', source: 'web', vid: String(vid), userAgent: WEB_UA, referer: WEB_REFERER };
+        if (/\.mpd$/i.test(videoUrl.pathname)) throw Object.assign(new Error('当前播放器不支持 DASH 媒体清单'), {
+          code: 'UNSUPPORTED_MEDIA_FORMAT', faultCode: 'MEDIA_FORMAT_UNSUPPORTED', stage: 'source',
+        });
+        let metadata;
+        try {
+          const limit = OFFICIAL_WEB_PROFILE.metadataBytes;
+          metadata = await axios.get(videoUrl.href, { ...webMediaRequestOptions(videoUrl.href), maxRedirects: 0,
+            headers: { Range: `bytes=0-${limit - 1}`, 'User-Agent': WEB_UA, Referer: WEB_REFERER },
+            signal: options.signal, timeout: OFFICIAL_WEB_PROFILE.timeouts.metadataMs, responseType: 'arraybuffer',
+            maxContentLength: limit, maxBodyLength: limit });
+          const duration = publicMovieDuration(metadata, permission.duration, parseBoxes);
+          throwIfAborted(options.signal);
+          return { url: videoUrl.href, format: 'mp4', duration, expectedDuration: permission.duration,
+            officialPublicPlayback: true, spadeA: null, codec: '', source: 'web', vid: String(vid),
+            userAgent: WEB_UA, referer: WEB_REFERER };
+        } catch (error) {
+          error.stage = 'media';
+          const status = Number(error.status || error.response?.status || metadata?.status);
+          if (Number.isInteger(status) && status >= 100 && status <= 599) { error.status = status; error.httpStatus = status; }
+          error.faultCode ||= classifyPlaybackError(error, { stage: 'media' });
+          throw error;
+        }
       }
     } catch (e) {
       throwIfAborted(options.signal);
       lastErr = e;
-      if ([401, 403, 429].includes(Number(e?.response?.status))) break;
+      if (e.stage === 'media' || isProtectedPlaybackError(e)
+          || ['ACCOUNT_REQUIRED', 'ACCOUNT_ACCESS_DENIED', 'ACCOUNT_UNAUTHORIZED', 'BUSINESS_REJECTED'].includes(e.code)
+          || [401, 403, 429].includes(Number(e.httpStatus || e.status || e.response?.status))) break;
     }
   }
   if (lastErr) console.warn('[Web] 取播放直链失败:', sourceFailure('web', lastErr).message);
@@ -674,8 +703,7 @@ function parseModelVideo(vm) {
 async function fetchPlayUrlSingle(vid, sid, options = {}) {
   try { return await getPlaybackManager().resolve(vid, sid, options); }
   catch (error) {
-    const faultCode = classifyPlaybackError(error, { stage: 'source' });
-    return { url: null, code: error.code, ...(faultCode ? { faultCode } : {}), error: playbackFailureMessage(error) };
+    return { url: null, ...playbackErrorEvidence(error), error: playbackFailureMessage(error) };
   }
 }
 
@@ -700,7 +728,7 @@ async function resolvePlayUrlSingle(vid, sid, options = {}) {
     return result;
   } catch (error) {
     return { url: null, spadeA: null, codec: null, error: playbackFailureMessage(error),
-      ...(error.code ? { code: error.code } : {}),
+      ...playbackErrorEvidence(error),
       ...(error.sources ? { sources: error.sources } : {}),
       ...(error.routeTrace ? { routeTrace: error.routeTrace } : {}) };
   }
@@ -738,27 +766,41 @@ async function fetchAppPlayUrlForQuality(vid, sid, quality, allowLowerQuality, o
   }
 }
 
+function playbackErrorEvidence(error = {}) {
+  if (!error || typeof error !== 'object') return {};
+  const stage = ['source', 'media', 'hls', 'manifest', 'segment', 'decrypt', 'decode', 'player', 'first-frame'].includes(error.stage)
+    ? error.stage : '';
+  const status = Number(error.httpStatus || error.status || error.response?.status);
+  const httpStatus = Number.isInteger(status) && status >= 100 && status <= 599 ? status : 0;
+  const code = safeCode(error.code) || (httpStatus >= 300 ? `HTTP_${httpStatus}` : '');
+  const faultCode = classifyPlaybackError(error, { stage: stage || 'source' });
+  return { ...(code ? { code } : {}), ...(faultCode ? { faultCode } : {}),
+    ...(httpStatus ? { status: httpStatus, httpStatus } : {}), ...(stage ? { stage } : {}) };
+}
+
 function sourceFailure(source, error) {
+  error ||= {};
+  const describe = values => ({ source, ...playbackErrorEvidence(error), ...values });
   const message = String(error?.message || '');
   const code = String(error?.code || '');
-  if (isProtectedPlaybackError(error)) return { source, code: 'DRM_UNSUPPORTED',
-    message: playbackFailureMessage({ code: 'DRM_UNSUPPORTED' }) };
-  const faultCode = classifyPlaybackError(error, { stage: 'source' });
-  if (code === 'WEB_EPISODE_UNAVAILABLE') return { source, code,
-    message: '官网当前播放入口不提供本集，请在官方客户端查看可用播放方式。' };
+  if (isProtectedPlaybackError(error)) return describe({ code: 'DRM_UNSUPPORTED',
+    message: playbackFailureMessage({ code: 'DRM_UNSUPPORTED' }) });
+  const faultCode = classifyPlaybackError(error, { stage: error.stage || 'source' });
+  if (code === 'WEB_EPISODE_UNAVAILABLE') return describe({ code,
+    message: '官网当前播放入口不提供本集，请在官方客户端查看可用播放方式。' });
   const mediaFailures = {
     MEDIA_URL_EXPIRED: '视频地址已过期，需要重新获取片源',
     CDN_UNAVAILABLE: '视频线路暂时不可用，请重新连接',
     MEDIA_DECRYPT_FAILED: '公开视频仍含加密轨道，未尝试额外解密',
   };
-  if (Object.hasOwn(mediaFailures, faultCode)) return { source, code: faultCode, message: mediaFailures[faultCode] };
+  if (Object.hasOwn(mediaFailures, faultCode)) return describe({ code: safeCode(code) || faultCode, message: mediaFailures[faultCode] });
   if (code === 'DEVICE_REGISTRATION_FAILED') {
     const reason = String(error.registrationFailure || '');
-    return { source, code: /^(?:TIMEOUT|NETWORK_ERROR|HTTP_[3-5]\d{2})$/.test(reason) ? reason : code,
-      message: '官方服务暂未提供可用播放信息' };
+    return describe({ code: /^(?:TIMEOUT|NETWORK_ERROR|HTTP_[3-5]\d{2})$/.test(reason) ? reason : code,
+      message: '官方服务暂未提供可用播放信息' });
   }
-  const status = Number(error?.status || error?.response?.status || message.match(/HTTP\s+(\d{3})/)?.[1]);
-  if (status >= 300 && status <= 599) return { source, code: `HTTP_${status}`, message: `请求失败（HTTP ${status}）` };
+  const status = Number(error?.httpStatus || error?.status || error?.response?.status || message.match(/HTTP\s+(\d{3})/)?.[1]);
+  if (Number.isInteger(status) && status >= 300 && status <= 599) return describe({ code: `HTTP_${status}`, status, httpStatus: status, message: `请求失败（HTTP ${status}）` });
   const identityFailures = {
     ACCOUNT_EXPIRED: '账号登录已失效，请重新扫码登录',
     ACCOUNT_UNAUTHORIZED: '官方服务未授权本次播放请求',
@@ -767,21 +809,22 @@ function sourceFailure(source, error) {
     API_FORBIDDEN: '官方服务拒绝本次播放请求',
     API_RATE_LIMITED: '播放请求过于频繁，请稍后重试',
   };
-  if (Object.hasOwn(identityFailures, faultCode)) return { source, code: faultCode, message: identityFailures[faultCode] };
-  if (code === 'SECURITY_BLOCKED' || code.startsWith('ERR_WEB_MEDIA_')) return { source, code: 'SECURITY_BLOCKED', message: '片源地址被安全校验阻止' };
+  if (Object.hasOwn(identityFailures, faultCode)) return describe({ code: faultCode, message: identityFailures[faultCode] });
+  if (code === 'SECURITY_BLOCKED' || code.startsWith('ERR_WEB_MEDIA_')) return describe({ code: 'SECURITY_BLOCKED', message: '片源地址被安全校验阻止' });
   if (code === 'EMPTY_RESPONSE' || faultCode === 'API_EMPTY_RESPONSE' || error?.emptyResponse || /接口返回空响应/.test(message)) {
-    return { source, code: 'EMPTY_RESPONSE', message: '官方服务暂未提供可用播放信息' };
+    return describe({ code: 'EMPTY_RESPONSE', message: '播放接口返回空响应，未取得本集播放信息' });
   }
-  if (['ECONNABORTED', 'ETIMEDOUT', 'TIMEOUT'].includes(code) || /超时|timeout/i.test(message)) return { source, code: 'TIMEOUT', message: '请求超时' };
-  if (['ENOTFOUND', 'EAI_AGAIN', 'ECONNRESET', 'ECONNREFUSED', 'EHOSTUNREACH', 'ENETUNREACH', 'EPIPE', 'ERR_NETWORK', 'ERR_CANCELED'].includes(code)) return { source, code: 'NETWORK_ERROR', message: '网络连接失败，请稍后重试' };
-  if (code === 'PREVIEW_ONLY') return { source, code, message: '网页仅提供预览，未作为完整片源' };
-  if (code === 'QUALITY_UNAVAILABLE') return { source, code, message: ['720p', '1080p'].includes(error?.quality)
-    ? `本集暂无尺寸可确认且满足 ${error.quality} 的 H.264/HEVC 片源，未降级` : '未取得满足所选清晰度的片源，未降级' };
-  if (code === 'NO_COMPATIBLE_SOURCE') return { source, code, message: '本集暂未提供兼容的 H.264/HEVC 片源' };
-  if (code === 'BUSINESS_REJECTED') return { source, code, message: '接口暂时拒绝本次请求' };
-  if (code === 'MISSING_MODEL' || /未返回目录数据/.test(message)) return { source, code: 'MISSING_MODEL', message: '接口未返回本集片源模型' };
-  if (code === 'INVALID_RESPONSE' || /空响应|有效数据|目录数据不完整|JSON/.test(message)) return { source, code: 'INVALID_RESPONSE', message: '片源数据无法解析' };
-  return { source, code: 'NO_PLAYABLE_SOURCE', message: '暂未取得有效片源' };
+  if (['ECONNABORTED', 'ETIMEDOUT', 'TIMEOUT'].includes(code) || /超时|timeout/i.test(message)) return describe({ code: 'TIMEOUT', message: '请求超时' });
+  if (['ENOTFOUND', 'EAI_AGAIN', 'ECONNRESET', 'ECONNREFUSED', 'EHOSTUNREACH', 'ENETUNREACH', 'EPIPE', 'ERR_NETWORK', 'ERR_CANCELED'].includes(code)) return describe({ code: 'NETWORK_ERROR', message: '网络连接失败，请稍后重试' });
+  if (code === 'PREVIEW_ONLY') return describe({ code, message: '网页仅提供预览，未作为完整片源' });
+  if (code === 'QUALITY_UNAVAILABLE') return describe({ code, message: ['720p', '1080p'].includes(error?.quality)
+    ? `本集暂无尺寸可确认且满足 ${error.quality} 的 H.264/HEVC 片源，未降级` : '未取得满足所选清晰度的片源，未降级' });
+  if (code === 'NO_COMPATIBLE_SOURCE') return describe({ code, message: '本集暂未提供兼容的 H.264/HEVC 片源' });
+  if (code === 'UNSUPPORTED_MEDIA_FORMAT') return describe({ code, message: '当前播放器不支持此媒体格式' });
+  if (code === 'BUSINESS_REJECTED') return describe({ code, message: '接口返回业务错误，未取得本集播放信息' });
+  if (code === 'MISSING_MODEL' || /未返回目录数据/.test(message)) return describe({ code: 'MISSING_MODEL', message: '接口未返回本集片源模型' });
+  if (code === 'INVALID_RESPONSE' || /空响应|有效数据|目录数据不完整|JSON/.test(message)) return describe({ code: 'INVALID_RESPONSE', message: '片源数据无法解析' });
+  return describe({ code: 'NO_PLAYABLE_SOURCE', message: '暂未取得有效片源' });
 }
 
 function unavailableSources(sources, quality = 'auto', routeTrace = []) {
@@ -808,7 +851,9 @@ async function fetchPlayUrlFresh(vid, sid, skipWeb = false, options = {}) {
     }));
   }, options);
   throwIfAborted(options.signal);
-  if (sources.some(item => /^HTTP_4\d{2}$/.test(item.code) || ['BUSINESS_REJECTED', 'ACCOUNT_REQUIRED',
+  // A missing public HTML route is not a refusal from the independent App provider.
+  if (sources.some(item => (!item.stage || item.stage === 'source') && /^HTTP_4\d{2}$/.test(item.code)
+    && !['HTTP_404', 'HTTP_410'].includes(item.code) || ['BUSINESS_REJECTED', 'ACCOUNT_REQUIRED',
     'ACCOUNT_EXPIRED', 'ACCOUNT_UNAUTHORIZED', 'API_FORBIDDEN', 'API_RATE_LIMITED', 'DRM_UNSUPPORTED'].includes(item.code))) {
     throw unavailableSources(sources, 'auto', routeTrace);
   }

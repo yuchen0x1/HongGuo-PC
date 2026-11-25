@@ -60,7 +60,7 @@ console.log('PASS navigation: feed/library exclusivity without hidden playback r
     const ui = mount({ local, episodeCount: 2, settings: { cache_next_episode: false },
       props: { active: true, target: { seriesId: 'A', vidIndex: 1, ts: 1 } } });
     try {
-      await ui.flush(); ui.metadata(); await ui.media.play();
+      await ui.flush(); ui.metadata(); ui.presentFrame(); await ui.media.play();
       ui.enterFloatingPlayer();
       const source = ui.media.src;
       ui.props.active = false; ui.render(); await ui.flush();
@@ -73,7 +73,7 @@ console.log('PASS navigation: feed/library exclusivity without hidden playback r
       ui.media.currentTime = ui.media.duration;
       ui.find(node => node.type === 'video').props.onEnded(); await ui.flush();
       assert.notEqual(ui.media.src, source, 'picture-in-picture must advance to the next episode in the background');
-      ui.metadata(); await ui.flush();
+      ui.metadata(); ui.presentFrame(); await ui.flush();
       assert.equal(ui.media.paused, false, 'background next episode must autoplay after metadata');
       assert.equal(ui.isFloating(), true, 'auto-next must retain the owned floating window');
       ui.media.currentTime = 17;

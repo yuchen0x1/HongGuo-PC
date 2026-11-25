@@ -1,6 +1,19 @@
 const { boundedSignal, abortError, throwIfAborted } = require('./request-signal');
 const { bindMediaSession, isMediaExpired } = require('./media-url-manager');
 const { classifyPlaybackError, playbackRecoveryPolicy } = require('./playback-errors');
+const { safeCode } = require('./playback-diagnostics');
+
+const FAILURE_STAGES = new Set(['source', 'media', 'hls', 'manifest', 'segment', 'decrypt', 'decode', 'first-frame', 'player']);
+
+function failureContext(error = {}) {
+  const stage = FAILURE_STAGES.has(error.stage) ? error.stage : 'source';
+  const status = Number(error.httpStatus || error.status || error.response?.status);
+  const httpStatus = Number.isInteger(status) && status >= 100 && status <= 599 ? status : 0;
+  const code = safeCode(error.code) || (httpStatus >= 300 ? `HTTP_${httpStatus}` : '');
+  const faultCode = classifyPlaybackError(error, { stage });
+  return { stage, ...(code ? { code } : {}), ...(faultCode ? { faultCode } : {}),
+    ...(httpStatus ? { status: httpStatus, httpStatus } : {}) };
+}
 
 function waitFor(promise, signal, onRelease = () => {}) {
   return new Promise((resolve, reject) => {
@@ -65,7 +78,7 @@ function createPlaybackManager({ resolve, diagnostics, accountSession, now = Dat
         }), signal);
       } catch (error) {
         throwIfAborted(signal);
-        result = { url: null, code: error.code, faultCode: error.faultCode, sources: error.sources, routeTrace: error.routeTrace };
+        result = { url: null, ...failureContext(error), sources: error.sources, routeTrace: error.routeTrace };
       }
       throwIfAborted(signal);
       if (result?.url && isMediaExpired(result, now())) result = { url: null, code: 'MEDIA_URL_EXPIRED' };
@@ -77,14 +90,16 @@ function createPlaybackManager({ resolve, diagnostics, accountSession, now = Dat
           requestDurationMs: now() - started });
         return bound;
       }
-      const faultCode = classifyPlaybackError(result || {}, { stage: 'source' });
+      const stage = FAILURE_STAGES.has(result?.stage) ? result.stage : 'source';
+      const faultCode = classifyPlaybackError(result || {}, { stage });
       const policy = playbackRecoveryPolicy(faultCode);
       // Empty-response ladders and identity recovery belong to the versioned provider.
       const terminalRoute = result?.sources?.some(item => !['NETWORK_DISCONNECTED', 'NETWORK_TIMEOUT'].includes(
         classifyPlaybackError(item, { stage: 'source' })));
       const retryable = !terminalRoute && ['NETWORK_DISCONNECTED', 'NETWORK_TIMEOUT', 'MEDIA_URL_EXPIRED'].includes(faultCode);
       if (!retryable || attempt || now() - started + 750 >= budgetMs) {
-        record(work, { event: 'source-failure', faultCode, stage: 'source', requestDurationMs: now() - started });
+        record(work, { event: 'source-failure', code: result?.code, faultCode, stage,
+          httpStatus: result?.httpStatus || result?.status, requestDurationMs: now() - started });
         return { ...result, url: null, ...(faultCode ? { faultCode } : {}),
           error: result?.error || policy.message || '当前内容暂时无法播放，请稍后重试。' };
       }

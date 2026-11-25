@@ -50,6 +50,9 @@ function load(fetchPlayUrlSingle, overrides = {}) {
     if (r.url === '/partial') { s.writeHead(206, { 'content-length': '3', 'content-range': 'bytes 2-4/10' }); s.end('234'); return; }
     if (r.url === '/empty') { s.writeHead(200, { 'content-length': '0' }); s.end(); return; }
     if (r.url === '/error-page') { s.writeHead(200, { 'content-type': 'text/html' }); s.end('<html>expired</html>'); return; }
+    if (r.url === '/opaque-hls') { s.writeHead(200, { 'content-type': 'application/vnd.apple.mpegurl; charset=utf-8' }); s.end('#EXTM3U\n#EXT-X-ENDLIST\n'); return; }
+    if (r.url === '/opaque-dash') { s.writeHead(200, { 'content-type': 'application/dash+xml' }); s.end('<MPD/>'); return; }
+    if (r.url === '/opaque-binary') { s.writeHead(200, { 'content-type': 'application/octet-stream' }); s.end('opaque'); return; }
     if (r.url === '/missing') { s.writeHead(404); s.end('missing'); return; }
     if (r.url === '/referer' && !r.headers.referer) { s.writeHead(403); s.end('forbidden'); return; }
     if (r.url === '/large') { s.writeHead(200, { 'content-length': String(301 * 1024 * 1024) }); s.write('hello'); return; }
@@ -68,6 +71,87 @@ function load(fetchPlayUrlSingle, overrides = {}) {
   async function check(name, f) { if (process.argv.includes('--prefetch') && !name.startsWith('prefetch:')) return; if (process.argv.includes('--extras') && !name.startsWith('extra:')) return; try { await f(); console.log('PASS ' + name); } catch (e) { failures++; console.error('FAIL ' + name + ': ' + e.message); } }
   const harnesses = [];
   const hload = (fn, overrides) => { const h = load(fn, overrides); harnesses.push(h); return h; };
+  await check('format: opaque URLs use response MIME without claiming MP4', async () => {
+    const h = hload(async () => ({ url: base + '/opaque-binary', format: 'unknown', source: 'app' }));
+    const p = await h.handlers['prepare-online-play']({}, { vid: '11' });
+    const response = await h.protocols['hongguo-stream'](new Request(p.url));
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('content-type'), 'application/octet-stream');
+    assert.equal(await response.text(), 'opaque');
+  });
+  await check('format: DASH response is explicitly unsupported before MP4/decrypt handling', async () => {
+    const h = hload(async () => ({}));
+    await assert.rejects(h.context.requestMedia({ url: base + '/opaque-dash', format: 'unknown', source: 'app' }), error => {
+      assert.equal(error.code, 'UNSUPPORTED_MEDIA_FORMAT');
+      assert.equal(error.faultCode, 'MEDIA_FORMAT_UNSUPPORTED');
+      assert.equal(error.stage, 'media');
+      assert.equal(error.mediaRetryable, false);
+      return true;
+    });
+  });
+  await check('format: HLS MIME on opaque URL uses existing guarded staging for playback, prefetch and download', async () => {
+    const staged = [];
+    const h = hload(async () => ({ url: base + '/opaque-hls', format: 'unknown', source: 'app', userAgent: 'media-agent', referer: 'https://provider.example/' }), {
+      './src/native/hls-media': { remuxHls: async options => {
+        staged.push({ url: options.url, headers: options.headers });
+        fs.writeFileSync(options.output, 'staged-mp4');
+      } },
+    });
+    const p = await h.handlers['prepare-online-play']({}, { vid: '11' });
+    const response = await h.protocols['hongguo-stream'](new Request(p.url));
+    assert.equal(response.status, 200); assert.equal(response.headers.get('content-type'), 'video/mp4');
+    assert.equal(await response.text(), 'staged-mp4');
+    const prefetched = await h.handlers['prepare-online-play']({}, { vid: '12', prefetch: true });
+    assert.equal(prefetched.success, true); assert.equal(prefetched.size, 10);
+    const task = { id: 'hls', type: 'hongguo', filename: 'opaque-hls.mp4', customDir: root, hongguoInfo: { vid: '13' } };
+    await h.context.executeHongguoDownload(task); assert.equal(task.status, 'completed');
+    assert.equal(staged.length, 3);
+    assert.ok(staged.every(item => item.url === base + '/opaque-hls' && item.headers['User-Agent'] === 'media-agent'
+      && item.headers.Referer === 'https://provider.example/'));
+  });
+  await check('diagnostics: actual HLS transport stage and status survive main-process recovery wrapping', async () => {
+    for (const stage of ['manifest', 'segment']) for (const status of [403, 404, 500]) {
+      const h = hload(async () => ({ url: base + '/opaque-hls', format: 'hls', source: 'app' }), {
+        './src/native/hls-media': { remuxHls: async () => { throw Object.assign(new Error('private transport detail'), {
+          code: status < 500 ? 'ERR_BAD_REQUEST' : 'ERR_BAD_RESPONSE', stage, response: { status },
+        }); } },
+      });
+      const result = await h.handlers['prepare-online-play']({}, { vid: `hls-${stage}-${status}` });
+      assert.equal(result.success, false);
+      assert.equal(result.stage, stage);
+      assert.equal(result.httpStatus, status);
+      assert.equal(result.faultCode, stage === 'manifest' ? 'MANIFEST_LOAD_FAILED' : 'MEDIA_SEGMENT_FAILED');
+      assert.equal(result.diagnostics.stage, stage);
+      assert.equal(result.diagnostics.httpStatus, status);
+      assert.ok(!JSON.stringify(result).includes('private transport detail'));
+    }
+  });
+  await check('format: cancelling one opaque-HLS Range reader preserves another reader and one shared staging job', async () => {
+    let finish, started, stagingSignal, remuxCalls = 0;
+    const ready = new Promise(resolve => { started = resolve; });
+    const h = hload(async () => ({ url: base + '/opaque-hls', format: 'unknown', source: 'app' }), {
+      './src/native/hls-media': { remuxHls: async ({ output, signal }) => {
+        remuxCalls++; stagingSignal = signal; started();
+        await new Promise((resolve, reject) => {
+          finish = resolve;
+          signal.addEventListener('abort', () => reject(Object.assign(new Error('cancelled'), { code: 'ERR_CANCELED' })), { once: true });
+        });
+        fs.writeFileSync(output, 'staged-mp4');
+      } },
+    });
+    const p = await h.handlers['prepare-online-play']({}, { vid: 'concurrent-hls' });
+    const controller = new AbortController();
+    const first = h.protocols['hongguo-stream'](new Request(p.url, { headers: { Range: 'bytes=0-1' }, signal: controller.signal }));
+    await ready;
+    const second = h.protocols['hongguo-stream'](new Request(p.url, { headers: { Range: 'bytes=2-4' } }));
+    await sleep(0); controller.abort();
+    assert.equal((await first).status, 499);
+    assert.equal(stagingSignal.aborted, false);
+    finish();
+    const response = await second;
+    assert.equal(response.status, 206); assert.equal(await response.text(), 'age');
+    assert.equal(remuxCalls, 1);
+  });
   await check('web: stream, prefetch, download and compatibility input retain browser identity', async () => {
     const h = hload(async () => ({ url: base + '/web-identity', source: 'web', vid: '11' }));
     const before = hits;
@@ -118,16 +202,24 @@ function load(fetchPlayUrlSingle, overrides = {}) {
   });
   await check('web: real provider switches cached failed episode to App for five minutes, isolates episodes and expires', async () => {
     let now = Date.now(), webHits = 0, appHits = 0;
+    const box = (type, content) => { const bytes = Buffer.alloc(content.length + 8); bytes.writeUInt32BE(bytes.length); bytes.write(type, 4); content.copy(bytes, 8); return bytes; };
+    const mvhd = Buffer.alloc(20); mvhd.writeUInt32BE(1000, 12); mvhd.writeUInt32BE(120000, 16);
+    const metadata = Buffer.concat([box('ftyp', Buffer.from('isom0000')), box('moov', box('mvhd', mvhd))]);
     const nativePath = path.resolve(__dirname, '../src/native/hongguo.js');
     const nativeRequire = createRequire(nativePath);
     const context = vm.createContext({ module: { exports: {} }, Buffer, URL, process: { env: {} }, console,
       Date: class extends Date { static now() { return now; } },
       require: name => name === 'axios' ? { get: async url => {
+        if (url === 'https://media.example/web.mp4') return { status: 206, headers: {
+          'content-type': 'video/mp4', 'content-range': `bytes 0-${metadata.length - 1}/${metadata.length + 1000}`,
+        }, data: metadata };
         webHits++;
         const vid = /\/(\d+)$/.exec(url)?.[1];
         return { data: `<script>window._ROUTER_DATA=${JSON.stringify({ loaderData: {
-          'player_(series_id)/(vid)/page': { vid, series_id: '1', seriesDetail: { series_id: '1' },
-            publicVideoSeo: { available: true, itemId: vid, seriesId: '1' } },
+          'player_(series_id)/(vid)/page': { isSuccess: true, vid, series_id: '1', protectedPlayback: false,
+            req: { pcLoginRequired: false, pcAuthenticatedPlayback: false, encryptedBrowserAllowed: false },
+            seriesDetail: { series_id: '1', pay_type: 0, vid_list: ['11', '22'], accessible_episode_cnt: 2 },
+            publicVideoSeo: { available: true, itemId: vid, seriesId: '1', durationSeconds: 120 } },
         } })}</script><script type="application/ld+json">${JSON.stringify({ '@type': 'VideoObject', url: `https://hongguoduanju.com/player/1/${vid}`, contentUrl: 'https://media.example/web.mp4' })}</script>` };
       } }
         : name === './app-source' ? { fetchAppPlayUrl: async () => { appHits++; return { url: 'https://media.example/app.mp4', source: 'app' }; } } : nativeRequire(name),

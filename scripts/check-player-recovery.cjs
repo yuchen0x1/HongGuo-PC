@@ -249,7 +249,7 @@ async function check(name, run) {
     const ui = mount({ props: { target }, settings,
       prepare: async payload => ({ success: true, url: `hongguo-stream://${payload.requestId}`, streamId: payload.requestId }) });
     try {
-      await ui.flush(); ui.metadata(); ui.media.currentTime = 43;
+      await ui.flush(); ui.metadata(); ui.presentFrame(); ui.media.currentTime = 43;
       const request = ui.prepares[0];
       ui.onlinePlayDiagnostics({ requestId: request.requestId, streamId: request.requestId,
         faultCode: 'ACCOUNT_EXPIRED', diagnostics: { source: 'app', stage: 'media' } });
@@ -291,7 +291,7 @@ async function check(name, run) {
       assert(ui.presentFrame()); await ui.flush();
       assert.equal(ui.reports.filter(value => value.event === 'playback-success').length, 1);
       ui.media.pause(); await ui.media.play(); await ui.flush();
-      while (ui.presentFrame()) await ui.flush();
+      for (let frame = 0; frame < 3; frame += 1) { assert(ui.presentFrame()); await ui.flush(); }
       assert.equal(ui.reports.filter(value => value.event === 'playback-success').length, 1);
       assert(ui.reports.every(value => value.requestId && !Object.hasOwn(value, 'url')));
     } finally { ui.unmount(); }
@@ -305,7 +305,7 @@ async function check(name, run) {
       assert.equal(source(ui), 'file:///mock-compat.mp4'); ui.metadata(); await ui.flush();
       assert(!ui.releases.some(value => value.streamId === 'original-stream'));
       assert(!ui.reports.some(value => value.event === 'playback-success'));
-      while (ui.presentFrame()) await ui.flush();
+      for (let frame = 0; frame < 3; frame += 1) { assert(ui.presentFrame()); await ui.flush(); }
       assert(ui.releases.some(value => value.streamId === 'original-stream'));
       assert(ui.reports.some(value => value.event === 'playback-success' && value.decoderStatus === 'compat'));
       assert.equal(ui.media.currentTime, 17);

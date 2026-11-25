@@ -1,7 +1,6 @@
 // Real HLS staging with tiny files; only disk capacity and FFmpeg are simulated.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const vm = require('node:vm');
 const { createRequire } = require('node:module');
@@ -9,9 +8,11 @@ const { EventEmitter } = require('node:events');
 const { Readable } = require('node:stream');
 const source = path.resolve(__dirname, '../src/native/hls-media.js');
 const req = createRequire(source), MiB = 1024 * 1024, reserve = 512 * MiB;
+const analysis = path.resolve(__dirname, '../.local/analysis');
+fs.mkdirSync(analysis, { recursive: true });
 
 function fixture(capacity) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hongguo-hls-space-'));
+  const root = fs.mkdtempSync(path.join(analysis, 'hongguo-hls-space-'));
   const children = [], monitors = new Set();
   let external = 0, hold = false, afterManifest = null;
   const used = directory => fs.readdirSync(directory, { withFileTypes: true }).reduce((sum, entry) => {

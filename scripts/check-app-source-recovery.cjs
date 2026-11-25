@@ -4,11 +4,20 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+const { gunzipSync } = require('node:zlib');
 
 const sourcePath = path.resolve(__dirname, '../src/native/app-source.js');
 const source = fs.readFileSync(sourcePath, 'utf8');
 const vid = '7700946421087751193';
 const fixtureCdid = '00000000-0000-4000-8000-000000000003';
+const assetIdentity = id => ({ video_id: `fixture-asset-${id}`, video_duration: 150 });
+function requestVideoId(config) {
+  const query = new URL(config.url).searchParams;
+  if (config.method !== 'POST') return query.get('fixture_vid') || query.get('video_id');
+  const payload = JSON.parse((config.headers['Content-Encoding'] === 'gzip'
+    ? gunzipSync(config.data) : config.data).toString('utf8'));
+  return payload.video_id || payload.mixed_video_id_map['1004'][0];
+}
 const emptyLadder = [
   'preload-primary', 'preload-alternate', 'video-tab',
   'upstream-grouped-b', 'upstream-player-b', 'upstream-player-a', 'upstream-model-a', 'upstream-model-c',
@@ -54,15 +63,17 @@ function load(axios, { realDevice = false, getPlaybackDevice, registerPlaybackDe
   return module.exports;
 }
 
-function modelResponse(rows) {
-  const model = { fallback_api: 'https://api5-normal-sinfonlineb.fqnovel.com/fallback' };
+function modelResponse(config) {
+  const requestedVid = requestVideoId(config);
+  const model = { ...assetIdentity(requestedVid),
+    fallback_api: `https://api5-normal-sinfonlineb.fqnovel.com/fallback?fixture_vid=${requestedVid}` };
   return {
     status: 200,
     headers: { 'content-type': 'application/json' },
     data: JSON.stringify({
       code: 0,
       data: {
-        [vid]: {
+        [requestedVid]: {
           video_model: model,
         },
       },
@@ -70,17 +81,20 @@ function modelResponse(rows) {
   };
 }
 
-function fallbackResponse(rows) {
+function fallbackResponse(rows, config) {
   return {
     status: 200,
     headers: { 'content-type': 'application/json' },
-    data: JSON.stringify({ code: 0, video_info: { data: { video_list: rows } } }),
+    data: JSON.stringify({ code: 0, video_info: { data: {
+      ...assetIdentity(requestVideoId(config)), video_list: rows,
+    } } }),
   };
 }
 
 function row(definition, width, height, suffix) {
   return {
     codec_type: 'h264',
+    encrypt_info: { encrypt: false },
     quality_desc: definition,
     video_meta: { codec_type: 'h264', definition, vwidth: width, vheight: height },
     main_url: `https://qznovelvod.com/${suffix}.mp4`,
@@ -101,11 +115,11 @@ function row(definition, width, height, suffix) {
   assert.match(empty.message, /空响应/);
 
   let call = 0;
-  const api = load(async () => {
+  const api = load(async config => {
     call += 1;
     return call === 1
-      ? modelResponse()
-      : fallbackResponse([row('1080p', 1080, 1920, 'best'), row('720p', 720, 1280, 'lower')]);
+      ? modelResponse(config)
+      : fallbackResponse([row('1080p', 1080, 1920, 'best'), row('720p', 720, 1280, 'lower')], config);
   });
   const selected = await api.fetchAppPlayUrl(vid, { quality: 'auto' });
   assert.equal(selected.quality, '1080p');
@@ -113,7 +127,7 @@ function row(definition, width, height, suffix) {
   assert.ok(selected.variants.every(item => item.url.includes('best')), 'auto must not silently fall through to 720p');
 
   const inlineResponse = (rows, id = vid) => {
-    const model = { video_list: rows, fallback_api: 'https://vod.snssdk.com/must-not-fetch' };
+    const model = { ...assetIdentity(id), video_list: rows, fallback_api: 'https://vod.snssdk.com/must-not-fetch' };
     return { status: 200, headers: {}, data: JSON.stringify({ code: 0,
       data: { [id]: { video_model: model } } }) };
   };
@@ -233,7 +247,7 @@ function row(definition, width, height, suffix) {
 
   // video_tab GET recovery: both POST routes stay empty, then the signed GET recovers.
   const ladderCalls = [];
-  const videoTab = { video_list: { '0': plain }, video_duration: 3600, video_id: vid };
+  const videoTab = { ...assetIdentity(vid), video_list: { '0': plain } };
   const tabRecovery = load(async config => {
     ladderCalls.push({ method: config.method, url: new URL(config.url), headers: config.headers, data: config.data });
     if (ladderCalls.length < 3) return { status: 200, headers: {}, data: '' };
@@ -259,8 +273,8 @@ function row(definition, width, height, suffix) {
   // Model entries may arrive as JSON strings and array-shaped video_list; only the
   // requested episode id may match, never a sibling episode.
   for (const [label, entry] of [
-    ['string model', { video_model: JSON.stringify({ video_list: [plain] }) }],
-    ['array video_list', { video_model: { video_list: [plain], fallback_api: 'https://vod.snssdk.com/must-not-fetch' } }],
+    ['string model', { video_model: JSON.stringify({ ...assetIdentity(vid), video_list: [plain] }) }],
+    ['array video_list', { video_model: { ...assetIdentity(vid), video_list: [plain], fallback_api: 'https://vod.snssdk.com/must-not-fetch' } }],
   ]) {
     const shaped = load(async config => {
       if (config.method !== 'GET') return { status: 200, headers: {}, data: '' };
@@ -271,7 +285,7 @@ function row(definition, width, height, suffix) {
   await assert.rejects(load(async config => {
     if (config.method !== 'GET') return { status: 200, headers: {}, data: '' };
     return { status: 200, headers: {}, data: JSON.stringify({ code: 0,
-      data: { video_model_data: { '999': { video_model: JSON.stringify({ video_list: [plain] }) } } } }) };
+      data: { video_model_data: { '999': { video_model: JSON.stringify({ ...assetIdentity('999'), video_list: [plain] }) } } } }) };
   }, { getPlaybackDevice: async () => identities[0] }).fetchAppPlayUrl(vid), error => error.code === 'MISSING_MODEL');
   assert.ok(ladderCalls.length >= 3, 'ladder evidence retained for the sibling-episode guard');
 

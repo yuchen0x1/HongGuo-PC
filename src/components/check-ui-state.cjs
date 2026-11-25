@@ -1847,11 +1847,16 @@ async function mount(file, api, props = {}, storage = null) {
     await ui.button('下载选中').props.onClick(); assert.equal(submitted.episodes.length, 1); assert.equal(submitted.episodes[0].vid_index, 2); ui.unmount();
   });
   await test('xifan player skips locked episodes in auto next and download missing', async () => {
+    const { mount: mountPlayer } = require('../../scripts/check-player-resume.cjs');
     const data = detail('X'); data.total = 3; data.episodes.push(episode(3)); data.episodes[1].locked = true;
     const requested = [], downloaded = [];
-    const ui = await mount('Player', { getSeriesList: async () => [{ series_id: 'X' }], getSeriesEpisodes: async () => ok(data), getPlaybackPosition: async () => null, prepareOnlinePlay: async p => { requested.push(p); return { success: true, url: `hongguo-stream://${p.vidIndex}` }; }, downloadSingleEpisode: async (sid, n) => { downloaded.push(n); return { success: true, count: 1 }; } }, { target: { seriesId: 'X', vidIndex: 1, ts: 1 } });
+    const ui = mountPlayer({ seriesId: 'X', settings: { cache_next_episode: false },
+      props: { target: { seriesId: 'X', vidIndex: 1, ts: 1 } },
+      prepare: async p => { requested.push(p); return { success: true, url: `hongguo-stream://${p.vidIndex}` }; },
+      apiOverrides: { getSeriesEpisodes: async () => ok(data), downloadSingleEpisode: async (sid, n) => { downloaded.push(n); return { success: true, count: 1 }; } } });
     await ui.flush(); const locked = ui.find(n => n.props['aria-label'] === '第 2 集'); assert.equal(locked.props.disabled, true);
     locked.props.onClick(); await ui.flush(); assert.equal(requested.length, 1, 'handler must also guard locked');
+    ui.metadata(); ui.presentFrame();
     ui.find(n => n.type === 'video').props.onEnded(); await ui.flush(); assert.equal(requested.at(-1).vidIndex, 3);
     await ui.button('下载未完成集').props.onClick(); assert.deepEqual(downloaded, [1, 3]); ui.unmount();
   });

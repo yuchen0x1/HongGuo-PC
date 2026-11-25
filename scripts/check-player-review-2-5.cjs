@@ -90,7 +90,7 @@ const defer = () => { let resolve; const promise = new Promise(done => { resolve
       if (rejected) throw new Error('文件正在使用'); return { success: false, error: '文件正在使用' };
     } } });
     try {
-      await ui.flush(); ui.metadata(); ui.find(node => node.type === 'video').props.onEnded(); await ui.flush();
+      await ui.flush(); ui.metadata(); ui.presentFrame(); ui.find(node => node.type === 'video').props.onEnded(); await ui.flush();
       await new Promise(done => setImmediate(done));
       assert.equal(unhandled.length, before, 'delete must not leave an unhandled rejection');
       assert.deepEqual(cleaned, [['A', 1]], 'cleanup must target only the ended episode');

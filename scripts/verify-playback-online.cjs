@@ -2,6 +2,7 @@
 // node scripts/verify-playback-online.cjs --manifest manifest.json --output-dir dist/playback-online
 // Add --executable dist/win-unpacked/app.exe to verify the packaged application.
 // Add --through-search to begin with an empty library and use the actual catalog/search/details UI.
+// --quality compat selects the existing H.264/public-web-first mode, without the automatic App-first quality ladder.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -16,6 +17,7 @@ function option(name) {
   return index >= 0 ? args[index + 1] : null;
 }
 const output = path.resolve(option('--output-dir') || path.join(ROOT, 'dist', 'playback-online'));
+const qualityPreference = option('--quality') || 'auto';
 const check = (condition, message) => assert.ok(condition, message);
 const report = { schema: 1, startedAt: new Date().toISOString(), passed: false,
   scope: 'production Electron playSeries with official online sources and an empty independent download directory',
@@ -57,7 +59,7 @@ function prepareProfile() {
   fs.writeFileSync(path.join(profile, 'data.json'), JSON.stringify({ settings: { root: downloads,
     close_to_tray: false, app_updates_enabled: false, watch_updates_enabled: false,
     watch_sequels_enabled: false, watch_notifications_enabled: false, cache_next_episode: false,
-    auto_delete_watched: false, compat_mode: false, proxy_mode: 'direct', proxy_enabled: false },
+    auto_delete_watched: false, compat_mode: false, search_app_enabled: false, proxy_mode: 'direct', proxy_enabled: false },
   tasks: [], mergeTasks: [], playback: {}, series: throughSearch ? [] : [{ series_id: manifest.seriesId,
     series_title: manifest.title, cover: '', total: manifest.episodes.length,
     episodes: manifest.episodes.map(episode => ({ vid: episode.vid, vid_index: episode.index,
@@ -65,7 +67,7 @@ function prepareProfile() {
   const executable = option('--executable');
   check(!args.includes('--executable') || typeof executable === 'string' && executable.trim()
     && !executable.startsWith('--'), 'Supply the packaged Windows executable after --executable');
-  harness = createIsolatedPlaybackHarness({ profile, outputDir: output,
+  harness = createIsolatedPlaybackHarness({ profile, outputDir: output, onlineQuality: qualityPreference,
     ...(executable ? { executable: path.resolve(executable) } : {}) });
 }
 
@@ -176,6 +178,10 @@ function checkOnlineRoute(data, minimumSources) {
   const routes = data.requestRoutes;
   for (const routeId of ['preload-primary', 'preload-alternate', 'video-tab']) {
     const row = routes.find(route => route.routeId === routeId);
+    if (qualityPreference === 'compat') {
+      check(!row || row.attempts === 0, 'The selected public-web-first acceptance unexpectedly called an App playback route');
+      continue;
+    }
     check(row?.attempts >= minimumSources && row.failures >= minimumSources
       && row.lastFaultCode === 'API_EMPTY_RESPONSE', 'The automatic App empty-response route was not observed');
   }
@@ -186,6 +192,7 @@ function checkOnlineRoute(data, minimumSources) {
 
 async function main() {
   fs.mkdirSync(output, { recursive: true });
+  check(['auto', 'compat'].includes(qualityPreference), 'Supply --quality auto or compat');
   manifest = readManifest();
   phase = 'isolated-profile'; prepareProfile();
   phase = 'production-launch'; await harness.launch();
@@ -216,8 +223,9 @@ async function main() {
   report.app = await harness.client.evaluate('window.electronAPI.getAppInfo()').then(value => ({ version: value.version, ...harness.applicationEvidence }));
   if (!throughSearch) report.checks.before = await noLocalMedia();
   report.quality = { userPreference: await harness.client.evaluate('localStorage.getItem("hongguo:online-quality")'),
-    requestedPreference: '1080p', allowLowerQuality: true };
-  check(report.quality.userPreference === 'auto', 'The production player is not using its default automatic quality');
+    requestedPreference: qualityPreference === 'compat' ? 'auto' : '1080p', allowLowerQuality: qualityPreference === 'auto',
+    acceptanceMode: qualityPreference === 'compat' ? 'existing H.264/public-web-first option' : 'default automatic quality' };
+  check(report.quality.userPreference === qualityPreference, 'The production player is not using the selected quality preference');
   phase = 'real-online-navigation';
   if (throughSearch) await searchAndOpen();
   else {
@@ -228,7 +236,7 @@ async function main() {
   phase = 'online-first-frame';
   const first = await harness.waitFor(async () => {
     const value = await harness.client.evaluate(harness.videoState);
-    return value?.firstFrame && value.decodedFrames > 0 && value.width > 0 && !value.paused && !value.errorCode && value;
+    return value?.firstFrame && value.decodedFrames > 0 && value.width > 0 && !value.paused && !value.busy && !value.errorCode && value;
   }, 'The real online video did not present its first decoded frame', 60000);
   check(Math.abs(first.duration - manifest.episodes[0].duration) < 0.15,
     'The actual online media duration does not match the complete first episode');
@@ -250,7 +258,7 @@ async function main() {
     const ended = await harness.client.evaluate('window.__liveMedia.ended');
     const state = await harness.client.evaluate(harness.videoState);
     const hash = await sourceHash();
-    return ended > endedBefore && state?.readyState >= 2 && !state.paused && !state.errorCode
+    return ended > endedBefore && state?.readyState >= 2 && !state.paused && !state.busy && !state.errorCode
       && state.decodedFrames > 0 && Math.abs(state.duration - manifest.episodes[1].duration) < 0.15
       && hash && hash !== report.checks.firstFrame.sourceSha256 && { ...state, sourceSha256: hash, endedEvents: ended };
   }, 'The real online ended event did not start the next distinct complete episode', 60000);
@@ -278,7 +286,7 @@ async function main() {
     check(reopened?.success, 'The independent application could not reopen the real series after restart');
     const restarted = await harness.waitFor(async () => {
       const state = await harness.client.evaluate(harness.videoState);
-      return state?.firstFrame && state.decodedFrames > 0 && !state.paused && !state.errorCode && state;
+      return state?.firstFrame && state.decodedFrames > 0 && !state.paused && !state.busy && !state.errorCode && state;
     }, 'The independent application did not decode online video after restart', 60000);
     check(Math.abs(restarted.duration - manifest.episodes[0].duration) < 0.15,
       'The restarted online media is not the complete official episode');

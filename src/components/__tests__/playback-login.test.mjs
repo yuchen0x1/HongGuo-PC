@@ -11,24 +11,23 @@ const settings = { cache_next_episode: false, compat_mode: false };
 const anonymous = { success: true, signedIn: false, sessionValidity: 'anonymous' };
 const valid = { success: true, signedIn: true, sessionValidity: 'valid' };
 const empty = { success: false, faultCode: 'API_EMPTY_RESPONSE', diagnostics: { source: 'app', stage: 'source', faultCode: 'API_EMPTY_RESPONSE' } };
+const expired = { success: false, faultCode: 'ACCOUNT_EXPIRED', diagnostics: { source: 'app', stage: 'source', faultCode: 'ACCOUNT_EXPIRED' } };
 const dialog = ui => ui.find(node => node.props.className === 'account-playback-login-dialog');
 const login = ui => ui.find(node => node.props.loginOnly === true && node.props.autoLogin === true);
 const successful = payload => ({ success: true, url: `hongguo-stream://${payload.requestId}`, streamId: payload.requestId,
   diagnostics: { source: 'web', stage: 'media' } });
 
-test('anonymous empty source opens the existing QR login once per episode and dismissal remains effective', async () => {
+test('anonymous empty source does not claim that QR login repairs an empty playback response', async () => {
   const ui = mount({ props: { target }, settings, prepare: async () => empty,
     apiOverrides: { getAccountStatus: async () => anonymous } });
   try {
     await ui.flush();
-    assert(dialog(ui));
-    assert(login(ui), 'the prompt must reuse AccountManagement loginOnly');
-    ui.find(node => node.props['aria-label'] === '关闭登录窗口').props.onClick();
-    await ui.flush();
     assert.equal(dialog(ui), undefined);
+    assert.equal(login(ui), undefined);
+    assert.equal(ui.button('扫码登录后重试'), undefined);
     await ui.button('重试本集').props.onClick(); await ui.flush();
     assert.equal(ui.prepares.length, 2);
-    assert.equal(dialog(ui), undefined, 'same-episode automatic prompting must not repeat after dismissal');
+    assert.equal(dialog(ui), undefined);
   } finally { ui.unmount(); }
 });
 
@@ -40,7 +39,7 @@ test('a verified account is not prompted again for a generic empty source', asyn
     await ui.flush();
     assert(checks > 0);
     assert.equal(dialog(ui), undefined);
-    assert(ui.button('扫码登录后重试'), 'an explicit user command stays available');
+    assert.equal(ui.button('扫码登录后重试'), undefined, 'generic empty data is not evidence that reauthentication is a remedy');
   } finally { ui.unmount(); }
 });
 
@@ -54,8 +53,23 @@ for (const faultCode of ['ACCOUNT_EXPIRED', 'ACCOUNT_UNAUTHORIZED']) {
   });
 }
 
+test('dismissal of an explicitly expired account prompt remains effective for the same episode', async () => {
+  const ui = mount({ props: { target }, settings, prepare: async () => expired,
+    apiOverrides: { getAccountStatus: async () => anonymous } });
+  try {
+    await ui.flush(); assert(dialog(ui));
+    ui.find(node => node.props['aria-label'] === '关闭登录窗口').props.onClick(); await ui.flush();
+    assert.equal(dialog(ui), undefined);
+    await ui.button('重试本集').props.onClick(); await ui.flush();
+    assert.equal(ui.prepares.length, 2);
+    assert.equal(dialog(ui), undefined, 'same-episode prompting cannot repeat after dismissal');
+  } finally { ui.unmount(); }
+});
+
 for (const [faultCode, stage] of [
   ['NETWORK_TIMEOUT', 'source'], ['NETWORK_DISCONNECTED', 'source'], ['API_RATE_LIMITED', 'source'],
+  ['API_FORBIDDEN', 'source'], ['API_PARSE_ERROR', 'source'], ['API_BUSINESS_ERROR', 'source'],
+  ['SOURCE_PROVIDERS_FAILED', 'source'],
   ['WEB_EPISODE_UNAVAILABLE', 'source'], ['DRM_UNSUPPORTED', 'source'],
   ['PLAYER_DECODE_FAILED', 'decode'], ['CODEC_UNSUPPORTED', 'decode'], ['MEDIA_DECRYPT_FAILED', 'decrypt'],
 ]) {
@@ -74,7 +88,7 @@ test('a public episode refusal is distinct from account authorization and stops 
   assert.equal(playbackFaultCode({ diagnostics: { code: faultCode } }), faultCode);
   assert.equal(stopsPlaybackRecovery(faultCode), true);
   assert.equal(allowsQualityFallback({ faultCode }), false);
-  assert.match(playbackFaultMessage(faultCode), /官网.*当前环境.*不能据此判断账号授权/);
+  assert.match(playbackFaultMessage(faultCode), /官网当前播放入口未提供本集.*查看各线路诊断/);
   for (const account of [anonymous, valid]) {
     let downloads = 0;
     const ui = mount({ props: { target: { ...target, vidIndex: 6 } }, settings, episodeCount: 68,
@@ -91,7 +105,7 @@ test('a public episode refusal is distinct from account authorization and stops 
       assert.equal(downloads, 0, 'public unavailability cannot enqueue a fallback download');
       assert.equal(dialog(ui), undefined);
       assert.equal(ui.button('扫码登录后重试'), undefined, 'do not imply an account refresh unlocks a public route');
-      assert.match(ui.text(), /官网.*当前环境.*不能据此判断账号授权/);
+      assert.match(ui.text(), /官网当前播放入口未提供本集.*查看各线路诊断/);
       assert.match(ui.text(), /官网标记前 5 集可公开访问.*目录包含后续集数不代表当前环境有完整片源/);
       assert.equal(ui.find(node => node.props['aria-label'] === '第 6 集').props.disabled, false,
         'a public route refusal must not globally lock the episode');
@@ -178,7 +192,7 @@ test('a delayed account lookup cannot open a QR after leaving the player', async
 });
 
 test('leaving the player closes its displayed QR and rejects late success even after returning', async () => {
-  const ui = mount({ props: { target }, settings, prepare: async () => empty,
+  const ui = mount({ props: { target }, settings, prepare: async () => expired,
     apiOverrides: { getAccountStatus: async () => anonymous } });
   try {
     await ui.flush(); assert(dialog(ui));
@@ -211,7 +225,7 @@ test('floating playback keeps its login active while the main player page is hid
 });
 
 test('closing floating playback closes its QR when the main page is hidden', async () => {
-  const ui = mount({ props: { target }, settings, prepare: async () => empty,
+  const ui = mount({ props: { target }, settings, prepare: async () => expired,
     apiOverrides: { getAccountStatus: async () => anonymous } });
   try {
     await ui.flush(); ui.enterFloatingPlayer();

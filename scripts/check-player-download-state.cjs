@@ -92,7 +92,7 @@ function mountApp() {
     const initialPrepares = ui.prepares.length;
     app.render(); Object.assign(ui.props, app.player().props); await ui.flush();
     assert.equal(ui.prepares.length, initialPrepares, 'consuming the command must not restart the mounted player');
-    ui.episode(2); await ui.flush(); ui.metadata(); ui.media.currentTime = 28;
+    ui.episode(2); await ui.flush(); ui.metadata(); ui.presentFrame(); ui.media.currentTime = 28;
     app.render(); app.navigate('feed'); assert.equal(app.player(), undefined); ui.unmount();
     app.navigate('player'); ui = await start(f, app.player().props);
     assert.equal(ui.prepares.length, 0, 'returning to library waits for explicit playback');
@@ -101,7 +101,7 @@ function mountApp() {
     assert.equal(ui.media.currentTime, 28);
     ui.find(n => n.props.className?.includes('series-picker-btn')).props.onClick(); await ui.flush();
     ui.find(n => n.props.className?.includes('series-row') && n.props.key === 'B').props.onClick();
-    await ui.flush(); ui.episode(2); await ui.flush(); ui.metadata(); ui.media.currentTime = 41;
+    await ui.flush(); ui.episode(2); await ui.flush(); ui.metadata(); ui.presentFrame(); ui.media.currentTime = 41;
     app.render(); app.navigate('feed'); ui.unmount(); app.navigate('player');
     ui = await start(f, app.player().props);
     assert.equal(ui.prepares.length, 0);

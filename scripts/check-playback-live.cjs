@@ -23,6 +23,7 @@ let child;
 let client;
 let debuggingPort;
 let applicationExecutable;
+let onlineQualityPreference = 'auto';
 let phase = 'manifest';
 
 function check(value, message) { assert.ok(value, message); }
@@ -191,7 +192,7 @@ async function launch() {
   await client.evaluate('window.electronAPI.setAlwaysOnTop(true)');
   await client.evaluate(`(() => {
     localStorage.setItem('hongguo:playback-preferences', JSON.stringify({ rate: 1, volume: 0, muted: true }));
-    localStorage.setItem('hongguo:online-quality', 'auto');
+    localStorage.setItem('hongguo:online-quality', ${JSON.stringify(onlineQualityPreference)});
     window.__liveMedia = { frames: 0, firstFrame: false, silenceViolations: 0, errors: [], ended: 0, events: [] };
     window.__liveVideos = new WeakSet();
     const observe = () => document.querySelectorAll('video').forEach(video => {
@@ -220,6 +221,8 @@ async function launch() {
     new MutationObserver(observe).observe(document.documentElement, { subtree: true, childList: true });
     observe(); return true;
   })()`);
+  await waitFor(() => client.evaluate('!document.querySelector(".splash-screen")'),
+    'The production startup overlay did not close');
   return port;
 }
 
@@ -247,6 +250,8 @@ const videoState = `(() => {
     volume: video.volume, rate: video.playbackRate, width: video.videoWidth, height: video.videoHeight,
     readyState: video.readyState, decodedFrames: quality.totalVideoFrames,
     droppedFrames: quality.droppedVideoFrames, errorCode: video.error?.code || 0,
+    busy: video.getAttribute('aria-busy') === 'true',
+    sourceMatchesAttribute: video.currentSrc === video.getAttribute('src'),
     firstFrame: window.__liveMedia.firstFrame, frameCallbacks: window.__liveMedia.frames,
     silenceViolations: window.__liveMedia.silenceViolations };
 })()`;
@@ -360,7 +365,7 @@ async function main() {
   }
   const first = await waitFor(async () => {
     const state = await client.evaluate(videoState);
-    return state?.firstFrame && state.decodedFrames > 0 && state.width > 0 && !state.paused && state;
+    return state?.firstFrame && state.decodedFrames > 0 && state.width > 0 && !state.paused && !state.busy && state;
   }, 'The real production player did not present a decoded first frame', 30000);
   check(Math.abs(first.duration - manifest.episodes[0].duration) < 0.15, 'The player loaded an unexpected episode');
   report.checks.firstFrame = first;
@@ -511,6 +516,8 @@ async function main() {
 
 function createIsolatedPlaybackHarness(options) {
   check(!child && !client, 'The isolated playback harness is already running');
+  check(options.onlineQuality === undefined || ['auto', 'compat'].includes(options.onlineQuality), 'Unsupported acceptance quality');
+  onlineQualityPreference = options.onlineQuality || 'auto';
   const isolatedProfile = path.resolve(options.profile);
   check(path.dirname(isolatedProfile) === path.resolve(os.tmpdir())
     && path.basename(isolatedProfile).startsWith('hongguo-player-'), 'The isolated profile is outside its temporary root');

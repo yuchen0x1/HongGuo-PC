@@ -75,6 +75,28 @@ test('HTTP 200 empty body walks one official ladder and does not relabel identit
   assert.equal(f.getPlaybackIdentityStatus().state, 'ready');
 });
 
+for (const [name, body, code] of [
+  ['whitespace', '  \n\t', 'EMPTY_RESPONSE'],
+  ['HTML error page', '<html>PRIVATE_COOKIE</html>', 'INVALID_RESPONSE'],
+  ['malformed JSON', '{invalid json', 'INVALID_RESPONSE'],
+  ['JSON array', '[]', 'INVALID_RESPONSE'],
+  ['JSON primitive', 'true', 'INVALID_RESPONSE'],
+  ['business error', '{"code":403,"message":"PRIVATE_COOKIE"}', 'BUSINESS_REJECTED'],
+]) {
+  test(`HTTP 200 ${name} keeps transport evidence without returning raw content`, async () => {
+    const f = fixture(async () => ({ status: 200, headers: {}, data: body }));
+    await assert.rejects(f.fetchAppPlayUrl(vid), error => {
+      assert.equal(error.code, code);
+      assert.equal(error.status, 200);
+      assert.equal(error.httpStatus, 200);
+      assert.equal(error.stage, 'source');
+      assert.doesNotMatch(error.message + JSON.stringify(error), /PRIVATE_COOKIE|invalid json/);
+      return true;
+    });
+    assert.equal(f.calls.length, code === 'EMPTY_RESPONSE' ? 8 : 1);
+  });
+}
+
 test('source cancellation aborts the active transport and prevents retries', async () => {
   let activeSignal, started;
   const entered = new Promise(resolve => { started = resolve; });

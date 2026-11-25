@@ -50,7 +50,7 @@ const { mount } = require('./check-player-resume.cjs');
       props: { target: { seriesId: 'A', vidIndex: 1, ts: 1 } }, apiOverrides: {
         cleanupWatchedEpisode: async (...args) => { cleaned.push(args); return { success: true, count: 1, freed: 20 }; },
       } });
-    await playing.flush(); playing.metadata(); playing.media.currentTime = 100;
+    await playing.flush(); playing.metadata(); playing.presentFrame(); playing.media.currentTime = 100;
     if (!autoNext) { playing.button('连播').props.onClick(); await playing.flush(); }
     const savedBeforeEnd = playing.saves.length;
     playing.find(n => n.type === 'video').props.onEnded(); await playing.flush();
@@ -68,7 +68,7 @@ const { mount } = require('./check-player-resume.cjs');
       releaseOnlinePlay: () => new Promise(resolve => { finishRelease = resolve; }),
       cleanupWatchedEpisode: async () => { cleanupCalls++; return { success: true, count: 0 }; },
     } });
-  await releasing.flush(); releasing.metadata(); releasing.find(n => n.type === 'video').props.onEnded(); await releasing.flush();
+  await releasing.flush(); releasing.metadata(); releasing.presentFrame(); releasing.find(n => n.type === 'video').props.onEnded(); await releasing.flush();
   assert.equal(cleanupCalls, 0, 'cleanup waits for backend stream release');
   finishRelease(); await releasing.flush(); assert.equal(cleanupCalls, 1); releasing.unmount();
   const forgotten = [];

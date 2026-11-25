@@ -79,14 +79,39 @@ test('fixed locked-episode and detached NAS causes remain useful without allowin
   }).message, /token=|secret/);
 });
 
-test('website episode unavailability keeps a safe fixed download reason ahead of App empty responses', () => {
+test('website-only and combined provider failures retain distinct safe download reasons', () => {
   const code = 'WEB_EPISODE_UNAVAILABLE';
-  for (const error of [{ code }, { faultCode: code }, { code: 'SOURCE_UNAVAILABLE',
-    sources: [{ source: 'app', code: 'EMPTY_RESPONSE' }, { source: 'web', code, message: 'Cookie=secret' }] }]) {
+  for (const error of [{ code }, { faultCode: code }]) {
     const details = downloadErrorDetails({ ...error, message: 'https://signed.invalid/?token=secret' });
     assert.equal(details.faultCode, code);
     assert.match(details.message, /^官网当前播放入口不提供本集，请在官方客户端查看可用播放方式。/);
     assert.doesNotMatch(JSON.stringify(details), /登录|扫码|付费|DRM|无权|权限|Cookie|token=|secret|signed\.invalid/);
+  }
+  const error = { code: 'SOURCE_UNAVAILABLE', message: 'https://signed.invalid/?token=secret',
+    sources: [{ source: 'app', code: 'EMPTY_RESPONSE' }, { source: 'web', code, message: 'Cookie=secret' }] };
+  const details = downloadErrorDetails(error);
+  assert.equal(details.faultCode, 'SOURCE_PROVIDERS_FAILED');
+  assert.match(details.message, /^官网当前入口未提供本集，App 播放接口返回空响应；尚未取得可下载资源。/);
+  assert.deepEqual(details.sources, [{ source: 'app', code: 'EMPTY_RESPONSE' }, { source: 'web', code }]);
+  assert.doesNotMatch(JSON.stringify(details), /登录|扫码|付费|DRM|无权|权限|Cookie|token=|secret|signed\.invalid/);
+  const denied = downloadErrorDetails({ ...error, sources: [...error.sources, { source: 'app', code: 'HTTP_403' }] });
+  assert.equal(denied.faultCode, 'API_FORBIDDEN');
+  assert.match(denied.message, /^官方服务拒绝了本次请求/);
+  assert.doesNotMatch(denied.message, /当前账号没有|确认内容授权/);
+});
+
+test('download failures preserve the actual manifest or segment layer and safe Axios HTTP evidence', () => {
+  for (const [stage, faultCode, phrase] of [['manifest', 'MANIFEST_LOAD_FAILED', /媒体清单加载失败/],
+    ['segment', 'MEDIA_SEGMENT_FAILED', /媒体资源请求失败/]]) {
+    for (const status of [403, 404, 500]) {
+      const details = downloadErrorDetails({ stage, code: status < 500 ? 'ERR_BAD_REQUEST' : 'ERR_BAD_RESPONSE',
+        httpStatus: status, response: { status, data: 'Cookie=secret' }, message: 'https://signed.invalid/?token=secret' });
+      assert.equal(details.faultCode, faultCode);
+      assert.equal(details.status, status);
+      assert.match(details.message, phrase);
+      assert.match(details.message, new RegExp(`HTTP ${status}`));
+      assert.doesNotMatch(JSON.stringify(details), /Cookie|token=|secret|signed\.invalid|账号/);
+    }
   }
 });
 

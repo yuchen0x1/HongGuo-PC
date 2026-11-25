@@ -60,6 +60,85 @@ function fixture({ response = api(), bytes = movie(), metadata, fail } = {}) {
     onPlaybackEvent: event => events.push(event), userAgent: 'Official web fixture' } };
 }
 
+function legacyFixture(data = player({ protectedPlayback: false }), bytes = movie(), mediaUrl = MEDIA) {
+  const calls = [];
+  const html = `<script>window._ROUTER_DATA=${JSON.stringify({ loaderData: {
+    'player_(series_id)/(vid)/page': data,
+  } })}</script><script type="application/ld+json">${JSON.stringify({ '@type': 'VideoObject',
+    url: 'https://hongguoduanju.com/player/123/456', contentUrl: mediaUrl })}</script>`;
+  const app = native({ axios: { get: async (url, config) => {
+    if (url.includes('/player/')) { calls.push({ stage: 'page', url }); return { status: 200, data: html }; }
+    calls.push({ stage: 'media', config });
+    return { status: 206, headers: { 'content-range': `bytes 0-${bytes.length - 1}/${bytes.length + 1000}` }, data: bytes };
+  } }, './app-source': { fetchAppPlayUrl: async () => {
+    calls.push({ stage: 'app' }); throw Object.assign(new Error('fixture App unavailable'), { code: 'EMPTY_RESPONSE' });
+  } } });
+  return { app, calls };
+}
+
+test('legacy direct media needs explicit public permission and actual complete MP4 duration', async () => {
+  const f = legacyFixture();
+  const result = await f.app.fetchPlayUrlSingle('456', '123');
+  assert.equal(result.url, MEDIA);
+  assert.equal(result.format, 'mp4');
+  assert.equal(result.duration, 120);
+  assert.equal(result.expectedDuration, 120);
+  assert.equal(result.officialPublicPlayback, true);
+  assert.deepEqual(f.calls.map(call => call.stage), ['page', 'media']);
+  const request = f.calls[1].config;
+  assert.equal(request.headers.Range, `bytes=0-${OFFICIAL_WEB_PROFILE.metadataBytes - 1}`);
+  assert.equal(request.headers['User-Agent'], f.app.WEB_UA);
+  assert.equal(request.headers.Referer, f.app.WEB_REFERER);
+  assert.equal(request.maxRedirects, 0);
+});
+
+test('legacy opaque URLs are accepted as MP4 only after the actual bytes establish complete duration', async () => {
+  const mediaUrl = MEDIA.replace('.mp4', '');
+  const f = legacyFixture(undefined, undefined, mediaUrl);
+  const result = await f.app.fetchPlayUrlFromWeb('456', '123');
+  assert.equal(result.url, mediaUrl);
+  assert.equal(result.format, 'mp4');
+  assert.equal(result.duration, 120);
+  assert.deepEqual(f.calls.map(call => call.stage), ['page', 'media']);
+});
+
+test('legacy explicit login, authenticated playback and payment requirements stop every alternate route', async () => {
+  for (const flag of ['pcLoginRequired', 'pcAuthenticatedPlayback', 'payment']) {
+    const data = player({ protectedPlayback: false });
+    if (flag === 'payment') data.seriesDetail.pay_type = 1;
+    else data.req[flag] = true;
+    const f = legacyFixture(data);
+    const result = await f.app.fetchPlayUrlSingle('456', '123');
+    assert.equal(result.url, null, flag);
+    assert.equal(result.faultCode, 'ACCOUNT_UNAUTHORIZED', flag);
+    assert.deepEqual(f.calls.map(call => call.stage), ['page'], flag);
+  }
+});
+
+test('legacy unknown permission, missing duration and unavailable windows cannot advertise public media', async () => {
+  const unknown = player({ protectedPlayback: false, req: {} });
+  const noDuration = player({ protectedPlayback: false }); delete noDuration.publicVideoSeo.durationSeconds;
+  const noSeo = player({ protectedPlayback: false, publicVideoSeo: undefined });
+  const outsideWindow = player({ protectedPlayback: false }); outsideWindow.seriesDetail.accessible_episode_cnt = 0;
+  for (const data of [unknown, noDuration, noSeo, outsideWindow]) {
+    const f = legacyFixture(data);
+    const result = await f.app.fetchPlayUrlFromWeb('456', '123');
+    assert.equal(result, null);
+    assert.ok(f.calls.every(call => call.stage === 'page'));
+  }
+});
+
+test('legacy same-episode metadata cannot authorize preview bytes or a media manifest', async () => {
+  for (const bytes of [movie(15), Buffer.from('#EXTM3U\n#EXT-X-ENDLIST\n'), Buffer.from('<MPD/>')]) {
+    const f = legacyFixture(undefined, bytes);
+    let failure;
+    const result = await f.app.fetchPlayUrlFromWeb('456', '123', error => { failure = error; });
+    assert.equal(result, null);
+    assert.equal(failure.stage, 'media');
+    assert.ok(['PREVIEW_ONLY', 'UNSUPPORTED_MEDIA_FORMAT'].includes(failure.code));
+  }
+});
+
 test('the official web profile is immutable and independent from App signing', () => {
   assert.equal(OFFICIAL_WEB_PROFILE.query.aid, 8662);
   assert.equal(OFFICIAL_WEB_PROFILE.playInfoDefinition, '720p');
@@ -179,8 +258,9 @@ test('explicit account requirements stay distinct from encrypted browser capabil
 });
 
 test('empty bodies, business refusal and encrypted response shapes remain distinct', async () => {
-  for (const [response, expected] of [['', 'EMPTY_RESPONSE'], [null, 'EMPTY_RESPONSE'],
+  for (const [response, expected] of [['', 'EMPTY_RESPONSE'], ['  \n\t', 'EMPTY_RESPONSE'], [null, 'EMPTY_RESPONSE'],
     ['not-json', 'INVALID_RESPONSE'], [api({ base_resp: { StatusCode: 403 } }), 'BUSINESS_REJECTED'],
+    [{}, 'INVALID_RESPONSE'], [{ base_resp: {} }, 'INVALID_RESPONSE'],
     [api({ play_info: { manifest: 'PRIVATE_KEY' } }), 'INVALID_RESPONSE'],
     [api({ player_access_key: 'PRIVATE_KEY' }), 'INVALID_RESPONSE']]) {
     const f = fixture({ response });
@@ -190,6 +270,28 @@ test('empty bodies, business refusal and encrypted response shapes remain distin
     assert.doesNotMatch(JSON.stringify(f.events), /PRIVATE_KEY/);
   }
 });
+
+test('a valid JSON text response is parsed before public playback fields are read', async () => {
+  const f = fixture({ response: JSON.stringify(api()) });
+  const result = await resolveOfficialPublicPlayback(player(), f.options);
+  assert.equal(result.url, MEDIA);
+  assert.equal(result.format, 'mp4');
+});
+
+for (const [mime, text] of [['application/vnd.apple.mpegurl', '#EXTM3U\n'],
+  ['application/dash+xml', '<MPD></MPD>']]) {
+  test(`public MP4 validation does not mislabel an actual ${mime} response`, async () => {
+    const bytes = Buffer.from(text);
+    const f = fixture({ metadata: { status: 200, headers: { 'content-type': mime, 'content-length': String(bytes.length) }, data: bytes } });
+    await assert.rejects(resolveOfficialPublicPlayback(player(), f.options), error => {
+      assert.equal(error.code, 'UNSUPPORTED_MEDIA_FORMAT');
+      assert.equal(error.faultCode, 'MEDIA_FORMAT_UNSUPPORTED');
+      assert.equal(error.stage, 'media');
+      assert.equal(error.httpStatus, 200);
+      return true;
+    });
+  });
+}
 
 test('only observed official HTTPS media CDN hosts are accepted', () => {
   const permission = publicEpisodePermission(player(), '456', '123');
@@ -315,6 +417,81 @@ test('the web router invokes the public resolver once and refuses App fallback a
     assert.equal(result.sources[0].code, `HTTP_${status}`);
     assert.deepEqual(calls, ['page', 'public-api']);
   }
+});
+
+for (const status of [404, 410]) {
+  test(`a missing website page HTTP ${status} still permits the independent App provider`, async () => {
+    const calls = [];
+    const app = native({ axios: {
+      get: async () => { calls.push('page'); throw { response: { status } }; },
+      post: async () => assert.fail('a missing HTML page cannot request a public playback API'),
+    }, './app-source': { fetchAppPlayUrl: async vid => {
+      calls.push('app'); assert.equal(vid, '456'); return { url: MEDIA, source: 'app' };
+    } } });
+    const result = await app.fetchPlayUrlSingle('456', '123');
+    assert.equal(result.url, MEDIA);
+    assert.equal(result.routeTrace[0].code, `HTTP_${status}`);
+    assert.equal(calls.at(-1), 'app');
+  });
+}
+
+for (const status of [401, 403, 429]) {
+  test(`website HTTP ${status} remains terminal before an independent App request`, async () => {
+    const app = native({ axios: { get: async () => { throw { response: { status } }; } },
+      './app-source': { fetchAppPlayUrl: async () => assert.fail('an explicit refusal must stop') } });
+    const result = await app.fetchPlayUrlSingle('456', '123');
+    assert.equal(result.url, null);
+    assert.equal(result.sources[0].code, `HTTP_${status}`);
+  });
+}
+
+test('a missing website page and an empty App response preserve both provider outcomes', async () => {
+  const app = native({ axios: { get: async () => { throw { response: { status: 404 } }; } },
+    './app-source': { fetchAppPlayUrl: async () => { throw { code: 'EMPTY_RESPONSE', status: 200, stage: 'source' }; } } });
+  const result = await app.fetchPlayUrlSingle('456', '123');
+  assert.equal(result.faultCode, 'SOURCE_PROVIDERS_FAILED');
+  assert.deepEqual(Array.from(result.sources, item => item.code), ['HTTP_404', 'EMPTY_RESPONSE']);
+  assert.deepEqual(Array.from(result.sources, item => item.httpStatus), [404, 200]);
+});
+
+test('a thrown provider HTTP status survives the public resolver boundary without raw error details', async () => {
+  const app = native({ './xifan': { fetchPlayUrlSingle: async () => {
+    throw Object.assign(new Error('PRIVATE_URL token=PRIVATE_TOKEN'), { status: 403, stage: 'source',
+      config: { headers: { Cookie: 'PRIVATE_COOKIE' } } });
+  } } });
+  const result = await app.fetchPlayUrlSingle('xifan:456', 'xifan:123');
+  assert.equal(result.code, 'HTTP_403');
+  assert.equal(result.faultCode, 'API_FORBIDDEN');
+  assert.equal(result.status, 403);
+  assert.equal(result.httpStatus, 403);
+  assert.equal(result.stage, 'source');
+  assert.doesNotMatch(JSON.stringify(result), /PRIVATE_|token=|Cookie|config/);
+});
+
+test('a website media validation failure retains its layer and safe HTTP evidence across the resolver', async () => {
+  const html = `window._ROUTER_DATA=${JSON.stringify({ loaderData: { 'player_(series_id)/(vid)/page': player() } })}`;
+  const app = native({ axios: { get: async () => ({ status: 200, data: html }) },
+    './official-web-playback': { resolveOfficialPublicPlayback: async () => {
+      throw Object.assign(new Error('PRIVATE_URL token=PRIVATE_TOKEN'), { code: 'HTTP_403',
+        faultCode: 'CDN_UNAVAILABLE', status: 403, httpStatus: 403, stage: 'media',
+        config: { headers: { Cookie: 'PRIVATE_COOKIE' } } });
+    } }, './app-source': { fetchAppPlayUrl: async () => { throw { code: 'EMPTY_RESPONSE' }; } } });
+  const result = await app.fetchPlayUrlSingle('456', '123');
+  const failure = result.sources.find(item => item.source === 'web');
+  assert.equal(failure.faultCode, 'CDN_UNAVAILABLE');
+  assert.equal(failure.status, 403);
+  assert.equal(failure.httpStatus, 403);
+  assert.equal(failure.stage, 'media');
+  assert.doesNotMatch(JSON.stringify(result), /PRIVATE_|token=|Cookie|config/);
+});
+
+test('official media verification assigns the media stage even when parsing its MP4 bytes fails', async () => {
+  const f = fixture({ bytes: Buffer.from('not an mp4 movie') });
+  await assert.rejects(resolveOfficialPublicPlayback(player(), f.options), error => {
+    assert.equal(error.code, 'INVALID_RESPONSE');
+    assert.equal(error.stage, 'media');
+    return true;
+  });
 });
 
 test('a web-only later-episode denial still allows the independent App provider without using wrong web media', async () => {

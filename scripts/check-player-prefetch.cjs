@@ -2,7 +2,11 @@ const assert = require('node:assert/strict');
 const { mount } = require('./check-player-resume.cjs');
 
 const prepareOk = async payload => ({ success: true, url: `hongguo-stream://${payload.vidIndex}` });
-
+const presentMedia = async ui => {
+  ui.metadata();
+  await ui.flush();
+  assert.equal(ui.presentFrame(), true, 'the fixture must present a simulated video frame');
+};
 
 (async () => {
   let failures = 0;
@@ -11,6 +15,26 @@ const prepareOk = async payload => ({ success: true, url: `hongguo-stream://${pa
     catch (error) { failures++; console.error('FAIL ' + name + ': ' + (error.stack || error.message)); }
   };
 
+  await test('metadata and playing without a presented frame never start prefetch', async () => {
+    const ui = mount({
+      props: { target: { seriesId: 'A', vidIndex: 1, ts: 1 } },
+      episodeCount: 3,
+      prepare: prepareOk,
+    });
+    try {
+      await ui.flush(); ui.metadata(); await ui.flush();
+      ui.media.paused = false;
+      const update = () => ui.find(node => node.type === 'video').props.onTimeUpdate({ currentTarget: ui.media });
+      ui.find(node => node.type === 'video').props.onPlaying({ currentTarget: ui.media });
+      ui.media.currentTime = 1; update(); await ui.flush();
+      assert.equal(ui.prepares.some(item => item.prefetch === true), false,
+        'metadata, playing and advancing time do not establish presented video');
+      assert.equal(ui.presentFrame(), true);
+      update(); await ui.flush();
+      assert.deepEqual(ui.prepares.filter(item => item.prefetch === true).map(item => item.vidIndex), [2, 3]);
+    } finally { ui.unmount(); }
+  });
+
   await test('prefetch starts from timeupdate even when the played flag was not recorded', async () => {
     const ui = mount({
       settings: { cache_next_episode: false },
@@ -18,7 +42,7 @@ const prepareOk = async payload => ({ success: true, url: `hongguo-stream://${pa
       episodeCount: 3,
       prepare: prepareOk,
     });
-    await ui.flush(); ui.metadata();
+    await ui.flush(); await presentMedia(ui);
     // 模拟历史记录被移除后 media.played 被清空，但当前视频实际还在播放。
     ui.historyUpdated({ removedSeriesId: 'A' });
     ui.media.paused = false;
@@ -46,7 +70,7 @@ const prepareOk = async payload => ({ success: true, url: `hongguo-stream://${pa
       },
     });
     try {
-      await ui.flush(); ui.metadata(); ui.media.paused = false; ui.media.currentTime = 1;
+      await ui.flush(); await presentMedia(ui); ui.media.paused = false; ui.media.currentTime = 1;
       ui.find(node => node.type === 'video').props.onTimeUpdate({ currentTarget: ui.media });
       await ui.flush();
       assert.equal(failed, 1, 'first prefetch must fail once');
@@ -55,7 +79,7 @@ const prepareOk = async payload => ({ success: true, url: `hongguo-stream://${pa
       await ui.flush();
       assert.equal(failed, 2, 'failed prefetch must be retried after the retry window');
       ui.episode(2);
-      await ui.flush(); ui.metadata(); ui.media.paused = false; ui.media.currentTime = 1;
+      await ui.flush(); await presentMedia(ui); ui.media.paused = false; ui.media.currentTime = 1;
       ui.find(node => node.type === 'video').props.onTimeUpdate({ currentTarget: ui.media });
       await ui.flush();
       assert.ok(ui.prepares.some(item => item.prefetch === true && item.vidIndex === 3),
@@ -79,7 +103,7 @@ const prepareOk = async payload => ({ success: true, url: `hongguo-stream://${pa
           return prepareOk(payload);
         } });
       try {
-        await ui.flush(); ui.metadata(); ui.media.paused = false; ui.media.currentTime = 1;
+        await ui.flush(); await presentMedia(ui); ui.media.paused = false; ui.media.currentTime = 1;
         ui.find(node => node.type === 'video').props.onTimeUpdate({ currentTarget: ui.media });
         await ui.flush();
         assert.equal(failed, 1);
@@ -102,7 +126,7 @@ const prepareOk = async payload => ({ success: true, url: `hongguo-stream://${pa
         return prepareOk(payload);
       } });
     try {
-      await ui.flush(); ui.metadata(); ui.media.paused = false; ui.media.currentTime = 1;
+      await ui.flush(); await presentMedia(ui); ui.media.paused = false; ui.media.currentTime = 1;
       const update = () => ui.find(node => node.type === 'video').props.onTimeUpdate({ currentTarget: ui.media });
       update(); await ui.flush(); assert.equal(attempts, 1);
       clock += 14000; update(); await ui.flush(); assert.equal(attempts, 1);
@@ -123,7 +147,7 @@ const prepareOk = async payload => ({ success: true, url: `hongguo-stream://${pa
         return prepareOk(payload);
       } });
     try {
-      await ui.flush(); ui.metadata(); ui.media.paused = false; ui.media.currentTime = 1;
+      await ui.flush(); await presentMedia(ui); ui.media.paused = false; ui.media.currentTime = 1;
       for (let index = 0; index < 10; index++) {
         ui.find(node => node.type === 'video').props.onTimeUpdate({ currentTarget: ui.media });
         await ui.flush(); clock += 16000;
@@ -141,7 +165,7 @@ const prepareOk = async payload => ({ success: true, url: `hongguo-stream://${pa
         return prepareOk(payload);
       } });
     try {
-      await ui.flush(); ui.metadata(); ui.media.paused = false; ui.media.currentTime = 1;
+      await ui.flush(); await presentMedia(ui); ui.media.paused = false; ui.media.currentTime = 1;
       ui.find(node => node.type === 'video').props.onTimeUpdate({ currentTarget: ui.media });
       await ui.flush(); assert.equal(attempts, 1);
       clock += 91000;
@@ -161,7 +185,7 @@ const prepareOk = async payload => ({ success: true, url: `hongguo-stream://${pa
           return prepareOk(payload);
         } });
       try {
-        await ui.flush(); ui.metadata(); ui.media.paused = false; ui.media.currentTime = 1;
+        await ui.flush(); await presentMedia(ui); ui.media.paused = false; ui.media.currentTime = 1;
         const update = () => ui.find(node => node.type === 'video').props.onTimeUpdate({ currentTarget: ui.media });
         update(); await ui.flush(); assert.equal(attempts, 1);
         if (reset === 'manual retry') {
@@ -170,7 +194,7 @@ const prepareOk = async payload => ({ success: true, url: `hongguo-stream://${pa
             diagnostics: { source: 'web', stage: 'source', faultCode: 'WEB_EPISODE_UNAVAILABLE' } });
           await ui.flush();
           await ui.button('重试本集').props.onClick();
-          await ui.flush(); ui.metadata(); ui.media.paused = false; ui.media.currentTime = 1;
+          await ui.flush(); await presentMedia(ui); ui.media.paused = false; ui.media.currentTime = 1;
         } else { accountUpdated({ signedIn: true }); await ui.flush(); }
         update(); await ui.flush();
         assert.equal(attempts, 2, 'a deliberate source reset may recheck the current episode availability');
@@ -198,7 +222,7 @@ const prepareOk = async payload => ({ success: true, url: `hongguo-stream://${pa
     try {
       for (const [seriesId, ts] of [['A', 1], ['B', 2], ['A', 3]]) {
         ui.props.target = { seriesId, vidIndex: 1, ts }; ui.render();
-        await ui.flush(); ui.metadata(); ui.media.paused = false; ui.media.currentTime = 1;
+        await ui.flush(); await presentMedia(ui); ui.media.paused = false; ui.media.currentTime = 1;
         ui.find(node => node.type === 'video').props.onTimeUpdate({ currentTarget: ui.media });
         await ui.flush();
       }
@@ -216,7 +240,7 @@ const prepareOk = async payload => ({ success: true, url: `hongguo-stream://${pa
         ? new Promise(resolve => { pendingResolve = resolve; })
         : Promise.resolve(prepareOk(payload)),
     });
-    await ui.flush(); ui.metadata(); ui.media.paused = false; ui.media.currentTime = 1;
+    await ui.flush(); await presentMedia(ui); ui.media.paused = false; ui.media.currentTime = 1;
     ui.find(node => node.type === 'video').props.onTimeUpdate({ currentTarget: ui.media });
     await ui.flush();
     const prefetch = ui.prepares.find(item => item.prefetch === true && item.vidIndex === 2);
@@ -238,7 +262,7 @@ const prepareOk = async payload => ({ success: true, url: `hongguo-stream://${pa
       episodeCount: 3,
       prepare: prepareOk,
     });
-    await ui.flush(); ui.metadata(); ui.media.paused = false; ui.media.currentTime = 1;
+    await ui.flush(); await presentMedia(ui); ui.media.paused = false; ui.media.currentTime = 1;
     ui.find(node => node.type === 'video').props.onTimeUpdate({ currentTarget: ui.media });
     await ui.flush();
     assert.equal(ui.prepares.some(item => item.prefetch === true), false);

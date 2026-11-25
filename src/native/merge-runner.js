@@ -6,8 +6,8 @@ const { buildMergePlan, canUseHardwareFrames } = require('./merge-plan');
 function publishMergedOutput(source, destination) {
   try { fs.linkSync(source, destination); }
   catch (error) {
-    if (!['ENOTSUP', 'EOPNOTSUPP', 'EPERM', 'EXDEV', 'ENOSYS'].includes(error.code)) throw error;
-    // FAT/exFAT cannot hard-link. COPYFILE_EXCL refuses existing files; Node removes an incomplete destination on copy failure.
+    if (!['ENOTSUP', 'EOPNOTSUPP', 'EPERM', 'EXDEV', 'ENOSYS', 'UNKNOWN'].includes(error.code)) throw error;
+    // Cloud-backed folders may report UNKNOWN for link. Exclusive copy also covers filesystems without hard-links.
     fs.copyFileSync(source, destination, fs.constants.COPYFILE_EXCL);
   }
 }

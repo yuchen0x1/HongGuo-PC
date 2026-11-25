@@ -20,6 +20,8 @@ const { mount } = require('./check-player-resume.cjs');
     await ui.flush();
     for (let episode = 1; episode <= 4; episode++) {
       ui.metadata();
+      ui.presentFrame();
+      ui.find(node => node.type === 'video').props.onTimeUpdate({ currentTarget: ui.media });
       await ui.flush();
       assert.equal(ui.prepares.find(request => request.vidIndex === episode)?.vid, `v${episode}`);
       if (episode < 4) {

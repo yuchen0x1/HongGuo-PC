@@ -1,14 +1,20 @@
 const assert = require('node:assert/strict');
 const { mount } = require('./check-player-resume.cjs');
 
+const presentMedia = async ui => {
+  ui.metadata();
+  await ui.flush();
+  assert.equal(ui.presentFrame(), true, 'the fixture must present a simulated video frame');
+  ui.find(node => node.type === 'video').props.onTimeUpdate?.({ currentTarget: ui.media });
+  await ui.flush();
+};
 const openEpisode = async (options = {}) => {
   const ui = mount({
     ...options,
     props: { setEpisodesOpen() {}, target: { seriesId: 'A', vidIndex: 1, ts: 1 }, ...(options.props || {}) },
   });
   await ui.flush();
-  ui.metadata();
-  await ui.flush();
+  await presentMedia(ui);
   return ui;
 };
 const prefetches = ui => ui.prepares.filter(item => item.prefetch === true);
@@ -63,8 +69,7 @@ const flushWithoutBuffering = async ui => {
       assert.ok(following, 'episode three must already be preparing');
       ui.episode(2);
       await ui.flush();
-      ui.metadata();
-      await ui.flush();
+      await presentMedia(ui);
       assert.equal(ui.releases.some(item => item.requestId === following.requestId), false,
         'the next-next prefetch must survive the handoff');
       assert.equal(prefetches(ui).filter(item => item.vidIndex === 3).length, 1,
@@ -92,8 +97,9 @@ const flushWithoutBuffering = async ui => {
       assert.equal(paragraph(ui, '正在连接片源…'), undefined);
       assert.equal(ui.prepares.filter(item => item.vidIndex === 2).length, 1, 'switching must reuse the completed prefetch');
       ui.metadata();
+      assert.equal(ui.presentFrame(), true);
       await flushWithoutBuffering(ui);
-      assert.equal(ui.media.paused, false, 'the prefetched episode must start playing after metadata');
+      assert.equal(ui.media.paused, false, 'the prefetched episode must play after a simulated first frame');
     } finally { ui.unmount(); }
   });
 
@@ -118,6 +124,7 @@ const flushWithoutBuffering = async ui => {
       assert.equal(paragraph(ui, '正在连接片源…'), undefined);
       assert.equal(ui.find(node => node.type === 'video').props.src, 'hongguo-stream://prefetched-second');
       ui.metadata();
+      assert.equal(ui.presentFrame(), true);
       await flushWithoutBuffering(ui);
       assert.equal(ui.media.paused, false);
     } finally { ui.unmount(); }
@@ -136,7 +143,7 @@ const flushWithoutBuffering = async ui => {
       await ui.flush();
       assert.equal(ui.releases.some(item => queued.some(request => request.requestId === item.requestId)), false,
         'switching to a local episode must not release later prefetches');
-      ui.metadata();
+      await presentMedia(ui);
       ui.find(node => node.type === 'video').props.onPlaying?.({ currentTarget: ui.media });
       await ui.flush();
       assert.equal(prefetches(ui).filter(item => item.vidIndex === 3).length, 1);
@@ -180,7 +187,7 @@ const flushWithoutBuffering = async ui => {
         : { success: true, url: 'hongguo-stream://first' },
     });
     try {
-      await ui.flush(); ui.metadata(); await ui.flush();
+      await ui.flush(); await presentMedia(ui);
       const toggle = ui.button('缓存后续 2 集');
       toggle.props.onClick();
       await ui.flush();

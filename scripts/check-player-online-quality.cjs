@@ -21,7 +21,8 @@ if (process.argv[2] !== 'main') {
       assert.equal(ui.prepares.at(-1).quality, 'auto', 'do not request HEVC-only 1080 tier');
       ui.metadata(); await ui.flush();
       assert.equal(ui.media.currentTime, 24); assert.equal(ui.media.paused, true);
-      await ui.media.play(); await ui.flush();
+      await ui.media.play(); ui.presentFrame();
+      ui.find(n => n.type === 'video').props.onTimeUpdate({ currentTarget: ui.media }); await ui.flush();
       assert.equal(ui.prepares.filter(p => p.prefetch).at(-1).quality, 'auto');
       ui.episode(2); await ui.flush();
       assert.equal(select(ui).props.value, 'compat'); assert.equal(ui.transcodes.length, 0);
@@ -92,7 +93,8 @@ if (process.argv[2] !== 'main') {
       await ui.flush(); assert.equal(ui.prepares[0].quality, '1080p');
       assert.equal(ui.prepares[0].allowLowerQuality, true, 'automatic playback must authorize the native verified public fallback');
       assert.match(text(select(ui)), /1080[Pp]/);
-      ui.metadata(); await ui.flush();
+      ui.metadata(); ui.presentFrame();
+      ui.find(n => n.type === 'video').props.onTimeUpdate({ currentTarget: ui.media }); await ui.flush();
       assert(ui.prepares.some(p => p.prefetch && p.quality === '1080p' && p.allowLowerQuality === true));
     } finally { ui.unmount(); }
   });
@@ -280,7 +282,7 @@ if (process.argv[2] !== 'main') {
     const ui=mount({local:true}); await ui.flush(); ui.metadata(); ui.media.currentTime=24;
     assert(select(ui),'independent online quality selector required');
     select(ui).props.onChange({target:{value:'1080p'}}); await ui.flush();
-    assert.equal(ui.prepares.at(-1).quality,'1080p'); ui.metadata(); assert.equal(ui.media.currentTime,24);
+    assert.equal(ui.prepares.at(-1).quality,'1080p'); ui.metadata(); ui.presentFrame(); assert.equal(ui.media.currentTime,24);
     ui.find(n=>n.type==='video').props.onTimeUpdate({currentTarget:ui.media}); await ui.flush();
     assert(ui.prepares.some(p=>p.prefetch && p.quality==='1080p'));
     ui.error(2); await ui.flush(); assert.equal(ui.prepares.at(-1).quality,'1080p');
@@ -300,7 +302,7 @@ if (process.argv[2] !== 'main') {
     const cleaned=[];
     const ui=mount({local:true,settings:{auto_delete_watched:true},apiOverrides:{cleanupWatchedEpisode:async(...p)=>{cleaned.push(p);return {success:true,count:1,freed:20};}}});
     try {
-      await ui.flush(); select(ui).props.onChange({target:{value:'1080p'}}); await ui.flush(); ui.metadata();
+      await ui.flush(); select(ui).props.onChange({target:{value:'1080p'}}); await ui.flush(); ui.metadata(); ui.presentFrame();
       assert.equal(cleaned.length,0,'changing quality must not delete files before playback ends');
       ui.find(n=>n.type==='video').props.onEnded(); await ui.flush();
       assert.deepEqual(cleaned,[['A',1]],'cleanup must target the ended episode, never the next one');

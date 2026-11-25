@@ -13,6 +13,10 @@ const FAULT = {
   API_FORBIDDEN: '官方接口拒绝请求', NETWORK_TIMEOUT: '网络超时', NETWORK_DISCONNECTED: '网络中断',
   MEDIA_URL_EXPIRED: '媒体地址过期', CDN_UNAVAILABLE: '媒体线路不可用', MEDIA_DECRYPT_FAILED: '媒体解密失败',
   CODEC_UNSUPPORTED: '视频编码不受支持', PLAYER_DECODE_FAILED: '播放器解码失败',
+  API_BUSINESS_ERROR: '接口业务错误', API_PARSE_ERROR: '接口数据无法识别', SOURCE_EMPTY: '接口未返回播放源',
+  API_HTTP_ERROR: '接口 HTTP 错误', SOURCE_PROVIDERS_FAILED: '官网入口与 App 接口均未提供本集',
+  MEDIA_FORMAT_UNSUPPORTED: '媒体格式不支持', MANIFEST_LOAD_FAILED: '媒体清单加载失败',
+  MEDIA_SEGMENT_FAILED: '媒体资源请求失败', PLAYER_ERROR: '播放器内部错误', DRM_UNSUPPORTED: '受保护媒体需官方授权播放器',
 };
 const lookup = (map, key, fallback) => Object.hasOwn(map, key) ? map[key] : fallback;
 const safeVersion = value => typeof value === 'string' && /^\d{1,4}(?:[.-]\d{1,4}){1,4}$/.test(value) ? value : '尚未读取';
@@ -30,6 +34,10 @@ export function diagnosticRows(value = {}) {
   const duration = typeof value.requestDurationMs === 'number' && Number.isFinite(value.requestDurationMs)
     && value.requestDurationMs >= 0 && value.requestDurationMs <= 600000 ? `${Math.round(value.requestDurationMs)} ms` : '暂无';
   return [
+    ['播放诊断 ID', typeof value.currentAttempt?.diagnosticId === 'string'
+      && /^PLAY-\d{8}-[a-f0-9]{12}$/.test(value.currentAttempt.diagnosticId) ? value.currentAttempt.diagnosticId : '暂无'],
+    ['最近失败诊断 ID', typeof value.lastFailure?.diagnosticId === 'string'
+      && /^PLAY-\d{8}-[a-f0-9]{12}$/.test(value.lastFailure.diagnosticId) ? value.lastFailure.diagnosticId : '暂无'],
     ['软件版本', safeVersion(value.appVersion)], ['账号登录状态', lookup(ACCOUNT, value.accountState, '尚未检查')],
     ['账号会话有效性', lookup(SESSION, value.sessionValidity, '尚未验证')], ['播放身份状态', lookup(DEVICE, value.deviceState, '尚未检查')],
     ['账号播放鉴权', lookup(AUTHORIZATION, value.playbackAuthorization, '尚未验证')],

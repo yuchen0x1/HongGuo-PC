@@ -162,9 +162,17 @@ function load(fetchPlayUrlSingle, overrides = {}) {
     assert.equal(p.success,true,p.error); assert.equal(lookups,2);
   });
   await check('empty source stops playback preparation without another lookup',async()=>{
-    let lookups=0; const h=harness(async()=>{lookups++;return {url:null,code:'SOURCE_UNAVAILABLE',sources:[{source:'app',code:'EMPTY_RESPONSE'}],error:'empty response'};});
+    let lookups=0; const h=harness(async()=>{lookups++;return {url:null,code:'SOURCE_UNAVAILABLE',
+      sources:[{source:'app',code:'EMPTY_RESPONSE'}],
+      routeTrace:[{source:'app',attempted:true,status:'failed',code:'EMPTY_RESPONSE'}],error:'empty response'};});
     const p=await h.handlers['prepare-online-play']({}, {vid:'11',seriesId:'1'});
-    assert.equal(p.success,false); assert.equal(p.error,'当前内容暂时无法播放，请稍后重试。'); assert.equal(lookups,1);
+    assert.equal(p.success,false); assert.equal(p.error,'播放接口返回空内容，未能取得可用片源，请稍后重试。'); assert.equal(lookups,1);
+    assert.equal(p.faultCode,'API_EMPTY_RESPONSE');
+    assert.equal(p.diagnostics.stage,'source');
+    assert.equal(p.diagnostics.firstFrame,'not-tested');
+    assert.equal(p.diagnostics.mediaDecoded,'not-tested');
+    assert.equal(p.diagnostics.routes.find(route=>route.source==='app').code,'EMPTY_RESPONSE');
+    assert.doesNotMatch(p.error,/登录|扫码|签名|设备鉴权/);
   });
   await check('terminal media failure retains only the sanitized provider route',async()=>{
     const h=harness(async()=>info('/ok','app'));
@@ -518,18 +526,25 @@ function load(fetchPlayUrlSingle, overrides = {}) {
       value => h.context.prepareHlsFile(value, path.join(root, 'refused.mp4'))), /HLS refused/);
     assert.equal(lookups, 0); assert.equal(remuxes, 1);
   });
-  for (const status of [401, 403, 429]) await check(`Hongguo HLS HTTP ${status} remains a terminal media refusal`, async () => {
+  for (const stage of ['manifest', 'segment']) for (const status of [401, 403, 429]) await check(`Hongguo HLS ${stage} HTTP ${status} remains a terminal media refusal at its actual step`, async () => {
     let lookups = 0, remuxes = 0;
     const denied = { ...info('/refused.m3u8'), format: 'hls', expiresAt: Date.now() + 60000 };
     if (status === 429) denied.expiresAt = Date.now() - 1000;
     denied.candidates = [{ ...info('/backup.m3u8'), format: 'hls' }];
     const h = harness(async () => { lookups++; return denied; }, {
-      './src/native/hls-media': { remuxHls: async () => { remuxes++; throw Object.assign(new Error('HLS refused'), { response: { status } }); } },
+      './src/native/hls-media': { remuxHls: async () => { remuxes++; throw Object.assign(new Error('HLS refused token=PRIVATE_HLS_TOKEN'), {
+        stage, code: 'ERR_BAD_REQUEST', httpStatus: status, mediaStatus: status, response: { status },
+      }); } },
     });
     const result = await h.handlers['prepare-online-play']({}, { vid: '11', seriesId: '1' });
     assert.equal(result.success, false);
-    assert.equal(result.stage, 'media');
-    assert.equal(result.faultCode, status === 429 ? 'API_RATE_LIMITED' : 'API_FORBIDDEN');
+    assert.equal(result.stage, stage);
+    assert.equal(result.faultCode, status === 429 ? 'API_RATE_LIMITED' : stage === 'manifest' ? 'MANIFEST_LOAD_FAILED' : 'MEDIA_SEGMENT_FAILED');
+    assert.equal(result.httpStatus, status);
+    assert.equal(result.code, 'ERR_BAD_REQUEST');
+    assert.equal(result.diagnostics.stage, stage);
+    assert.equal(result.diagnostics.httpStatus, status);
+    assert.doesNotMatch(JSON.stringify(result), /PRIVATE_HLS_TOKEN|token=|账号.*授权/);
     assert.equal(lookups, 1, 'explicit refusal must not refresh the provider');
     assert.equal(remuxes, 1, 'explicit refusal must not try a backup');
   });

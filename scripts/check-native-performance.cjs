@@ -6,16 +6,37 @@ const { preserveLargeJsonIntegers } = require('../src/native/app-source');
 
 const sourcePath = path.join(__dirname, '../src/native/hongguo.js');
 const source = fs.readFileSync(sourcePath, 'utf8');
+// Metadata-only boxes exercise public-media validation, never playback success.
+function publicMetadata() {
+  const box = (type, body) => {
+    const bytes = Buffer.alloc(body.length + 8);
+    bytes.writeUInt32BE(bytes.length); bytes.write(type, 4); body.copy(bytes, 8); return bytes;
+  };
+  const header = Buffer.alloc(20);
+  header.writeUInt32BE(1000, 12); header.writeUInt32BE(150000, 16);
+  const data = Buffer.concat([box('ftyp', Buffer.from('isom0000')), box('moov', box('mvhd', header))]);
+  return { status: 206, headers: { 'content-type': 'video/mp4',
+    'content-range': `bytes 0-${data.length - 1}/${data.length + 1000}` }, data };
+}
 const page = `<script>window._ROUTER_DATA=${JSON.stringify({ loaderData: {
-  'player_(series_id)/(vid)/page': { vid: '11', series_id: '1', seriesDetail: { series_id: '1', vid_list: ['11', '12'], series_name: '测试剧' },
-    publicVideoSeo: { available: true, itemId: '11', seriesId: '1' } },
+  'player_(series_id)/(vid)/page': { isSuccess: true, vid: '11', series_id: '1',
+    req: { pcLoginRequired: false, pcAuthenticatedPlayback: false, encryptedBrowserAllowed: false },
+    seriesDetail: { series_id: '1', pay_type: 0, accessible_episode_cnt: 2, vid_list: ['11', '12'], series_name: '测试剧' },
+    publicVideoSeo: { available: true, itemId: '11', seriesId: '1', durationSeconds: 150 } },
 } })}</script><script type="application/ld+json">${JSON.stringify({ '@type': 'VideoObject', url: 'https://hongguoduanju.com/player/1/11', contentUrl: 'https://media.example/video.mp4' })}</script>`;
 
 function fixture({ web = true, api = false, app = false, blockedVids = [], html = page, stalledPlayer = false } = {}) {
   let now = 0;
-  const state = { web, api, app, get: 0, post: 0, appCalls: 0, waits: 0, playerCancelled: false };
+  const state = { web, api, app, get: 0, mediaGet: 0, post: 0, appCalls: 0, waits: 0, playerCancelled: false };
   const axios = {
     async get(url, options) {
+      if (options.responseType === 'arraybuffer') {
+        state.mediaGet++;
+        assert.equal(url, 'https://media.example/video.mp4');
+        assert.match(options.headers.Range, /^bytes=0-\d+$/);
+        assert.equal(options.maxRedirects, 0);
+        return publicMetadata();
+      }
       state.get++;
       if (stalledPlayer && url.endsWith('/player/1')) return new Promise((_, reject) => {
         options.signal.addEventListener('abort', () => {
@@ -36,7 +57,7 @@ function fixture({ web = true, api = false, app = false, blockedVids = [], html 
   };
   const context = {
     module: { exports: {} }, Buffer, AbortController, process: { env: {} },
-    require: name => name === 'axios' ? axios : name === './app-source' ? { preserveLargeJsonIntegers, fetchAppPlayUrl: async () => { state.appCalls++; if (!state.app) throw Error('app unavailable'); return { url: 'https://media.example/app.mp4', contentKey: '01'.repeat(16), source: 'app' }; } } : require(name.startsWith('.') ? path.join(path.dirname(sourcePath), name) : name),
+    require: name => name === 'axios' ? axios : name === './app-source' ? { preserveLargeJsonIntegers, fetchAppPlayUrl: async vid => { state.appCalls++; if (!state.app) throw Error('app unavailable'); return { url: `https://media.example/app-${vid}.mp4`, contentKey: '01'.repeat(16), source: 'app', vid: String(vid), format: 'mp4', duration: 150 }; } } : require(name.startsWith('.') ? path.join(path.dirname(sourcePath), name) : name),
     Date: class extends Date { static now() { return now; } },
     setTimeout: (fn, ms) => { if (ms === 600) return setTimeout(fn, 0); state.waits++; fn(); },
     console: { warn() {}, log() {} },
@@ -76,9 +97,13 @@ const checks = [
     const { native, state } = fixture();
     const results = await Promise.all([native.fetchPlayUrlSingle('11', '1'), native.fetchPlayUrlSingle('11', '1')]);
     assert.equal(results[0].source, 'web');
+    assert.equal(results[0].vid, '11');
+    assert.equal(results[0].duration, 150);
+    assert.equal(results[0].officialPublicPlayback, true);
     await native.fetchPlayUrlSingle('11', '1');
     assert.equal(state.post, 0, '有效网页不应等待 API');
-    assert.equal(state.get, 1, '相同播放地址只取一次');
+    assert.equal(state.get, 1, '相同播放页只取一次');
+    assert.equal(state.mediaGet, 1, '并发和短缓存复用已验证的媒体元数据');
   }],
   ['分集 60 秒、播放地址 30 秒到期刷新', async () => {
     const { native, state, advance } = fixture();
@@ -88,9 +113,11 @@ const checks = [
     await native.fetchEpisodeList('1');
     await native.fetchPlayUrlSingle('11', '1');
     assert.equal(state.get, 3, '未到期不重复访问');
+    assert.equal(state.mediaGet, 1, '未到期不重复校验媒体');
     advance(2);
     await native.fetchPlayUrlSingle('11', '1');
     assert.equal(state.get, 4, '播放地址到期后刷新');
+    assert.equal(state.mediaGet, 2, '播放地址到期后重新验证媒体');
     advance(30000);
     await native.fetchEpisodeList('1');
     assert.equal(state.get, 6, '分集到期后重新竞速两条网页路径');
@@ -118,7 +145,7 @@ const checks = [
   }],
   ['网页可用范围与后续集数错误，仍保留统一 App 回退', async () => {
     const { native, state } = fixture({
-      html: page.replace('"vid_list"', '"accessible_episode_cnt":1,"vid_list"'),
+      html: page.replace('"accessible_episode_cnt":2', '"accessible_episode_cnt":1'),
       blockedVids: ['11', '12'],
     });
     const unavailable = await native.fetchPlayUrlSingle('12', '1');

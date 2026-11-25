@@ -1,7 +1,6 @@
 // Isolated main-process checks: exercise real task/IPC code without user data.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const vm = require('node:vm');
 const { EventEmitter } = require('node:events');
@@ -11,19 +10,34 @@ const { execFileSync } = require('node:child_process');
 const source = path.resolve(__dirname, '../main.js');
 const req = createRequire(source);
 const dirs = [];
+const analysis = path.resolve(__dirname, '../.local/analysis');
+fs.mkdirSync(analysis, { recursive: true });
 let genuineMediaFixture;
 function fixture({ width = 1080, height = 1920, quality = 'auto', realMedia = false } = {}) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hongguo-quality-'));
+  const root = fs.mkdtempSync(path.join(analysis, 'hongguo-quality-'));
   dirs.push(root);
-  const handlers = {}, calls = [], events = [], app = new EventEmitter();
+  const handlers = {}, calls = [], events = [], failures = [], app = new EventEmitter();
   let settings = { root, download_quality: quality }, saved;
   Object.assign(app, { getVersion: () => 'test', getPath: () => root,
     commandLine: { appendSwitch() {} }, requestSingleInstanceLock: () => true, whenReady: () => ({ then() {} }) });
   const context = vm.createContext({ require: n => n === 'electron'
     ? { app, ipcMain: { handle: (n, f) => handlers[n] = f }, protocol: { registerSchemesAsPrivileged() {} } }
-    : n === './src/native/hongguo' ? { fetchPlayUrlSingle: async (...args) => { calls.push(args); return { url: 'https://media.example/video.mp4' }; } }
+    : n === './src/native/hongguo' ? { fetchPlayUrlSingle: async (...args) => {
+      calls.push(args); return { url: 'https://media.example/video.mp4', vid: String(args[0]) };
+    } }
     : n === './src/store' ? { getSettings: () => settings, saveSettings: s => settings = s,
-      saveTasks: tasks => { saved = JSON.parse(JSON.stringify(tasks)); } } : req(n),
+      saveTasks: tasks => { saved = JSON.parse(JSON.stringify(tasks)); } }
+    : n === './src/native/download-error' ? { downloadErrorDetails: error => {
+      failures.push({ name: error?.name, code: error?.code, faultCode: error?.faultCode, stage: error?.stage,
+        ...(Number.isInteger(error?.errno) ? { errno: error.errno } : {}),
+        ...(/^[a-z]+$/i.test(error?.syscall || '') ? { syscall: error.syscall } : {}),
+        ...(typeof error?.path === 'string' && typeof error?.dest === 'string' ? {
+          sameVolume: path.parse(error.path).root === path.parse(error.dest).root,
+          destinationExists: fs.existsSync(error.dest),
+        } : {}),
+        frames: String(error?.stack || '').split('\n').filter(line => /^\s+at /.test(line)).slice(0, 6) });
+      return req(n).downloadErrorDetails(error);
+    } } : req(n),
     __dirname: path.dirname(source), console: { log() {}, warn() {}, error() {} },
     process, Buffer, URL, Response, Request, Headers, AbortController, setTimeout, clearTimeout,
     testEvents: events, testReadStream: () => Readable.from([Buffer.alloc(200000)]), testDimensions: { w: width, h: height, duration: 12, codec: "h264" } });
@@ -36,7 +50,7 @@ function fixture({ width = 1080, height = 1920, quality = 'auto', realMedia = fa
   // Synthetic transfers mock validation; realMedia keeps the production probe, decoder and tool discovery.
   if (!realMedia) run(`resolveFfmpeg = () => '/test/ffprobe'; verifyDownloadDecode = async () => {};
     probeVideoInfo = async () => testDimensions;`);
-  return { root, context, run, handlers, calls, events, saved: () => saved,
+  return { root, context, run, handlers, calls, events, failures, saved: () => saved,
     setQuality: value => { settings.download_quality = value; } };
 }
 const payload = quality => ({ seriesId: '1', seriesTitle: '测试剧', episodes: [{vid:'11',vid_index:1}], ...(quality ? {quality} : {}) });
@@ -71,13 +85,13 @@ const checks = [
       hongguo.fetchPlayUrlSingle = async (...args) => {
         sourceCalls.push(args);
         const source = webFailed ? 'app' : 'web';
-        return { url: 'https://media.example/' + source, source, vid: '11' };
+        return { url: 'https://media.example/' + source, source, vid: String(args[0]) };
       };
       requestMedia = async info => localMedia(info);`);
     await h.handlers['hongguo-download-batch']({}, payload());
     await h.run('executeHongguoDownload(downloadTasks[0])');
     const completed = h.saved()[0];
-    assert.equal(completed.status, 'completed', completed.error);
+    assert.equal(completed.status, 'completed', JSON.stringify({ error: completed.error, failures: h.failures, attempts }));
     assert.deepEqual(attempts, ['web', 'app']);
     assert.equal(h.calls.length, 2);
     assert.ok(h.calls.every(call => call[2].quality === 'auto' && call[2].allowLowerQuality === false));
@@ -94,7 +108,7 @@ const checks = [
     };
     bad.context.sourceCalls = bad.calls;
     bad.run(`hongguo.fetchPlayUrlSingle = async (...args) => {
-        sourceCalls.push(args); return { url: 'https://media.example/broken-app', source: 'app', vid: '11' };
+        sourceCalls.push(args); return { url: 'https://media.example/broken-app', source: 'app', vid: String(args[0]) };
       };
       requestMedia = async () => localMedia();`);
     await bad.handlers['hongguo-download-batch']({}, payload());
@@ -381,10 +395,12 @@ const checks = [
 ];
 (async () => {
   let failures = 0;
-  try { for (const [name, check] of checks) {
+  const selected = checks.filter(([name]) => !process.argv[2] || name.includes(process.argv[2]));
+  assert.ok(selected.length, 'the requested check filter must match at least one test');
+  try { for (const [name, check] of selected) {
     try { await check(); console.log('PASS ' + name); }
     catch (e) { failures++; console.error('FAIL ' + name + ': ' + e.message); }
   } } finally { for (const dir of dirs) fs.rmSync(dir, {recursive:true, force:true}); }
-  console.log(`${checks.length - failures}/${checks.length} passed`);
+  console.log(`${selected.length - failures}/${selected.length} passed`);
   process.exitCode = failures ? 1 : 0;
 })();

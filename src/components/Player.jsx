@@ -14,7 +14,7 @@ import CastPanel from './CastPanel';
 import AccountManagement from './AccountManagement';
 import VideoEnhancement, { useVideoEnhancement } from './VideoEnhancement';
 import { PLAYBACK_FAULT_CODES, playbackFaultCode, playbackFaultMessage, stopsPlaybackRecovery, allowsQualityFallback,
-  PLAYBACK_RECOVERY_TIMEOUT, createPlaybackRecovery, remainingPlaybackRecovery, claimPlaybackRecovery, shouldOfferAccountLogin } from './playbackRecovery.mjs';
+  PLAYBACK_RECOVERY_TIMEOUT, createPlaybackRecovery, remainingPlaybackRecovery, claimPlaybackRecovery, shouldOfferAccountLogin, playbackFaultAdvice } from './playbackRecovery.mjs';
 import './Player.css';
 import { Play, Film, Download, Check, RefreshCw, Layers, X, Trash2, ChevronDown, Zap } from './icons';
 
@@ -28,7 +28,7 @@ const PREFETCH_AHEAD = 2;
 const AUTO_ONLINE_QUALITIES = ['1080p', '720p', 'auto'];
 const PLAYBACK_PREFERENCES_KEY = 'hongguo:playback-preferences';
 const PLAYBACK_SOURCES = new Set(['web', 'app', 'api', 'xifan', 'custom']);
-const PLAYBACK_STAGES = new Set(['source', 'media', 'decrypt', 'decode', 'first-frame']);
+const PLAYBACK_STAGES = new Set(['source', 'media', 'hls', 'manifest', 'segment', 'decrypt', 'decode', 'first-frame', 'player']);
 const PLAYBACK_ROUTE_STATUSES = new Set(['skipped', 'failed', 'address-found', 'media-failed', 'ready']);
 const PLAYBACK_CODES = new Set(['ACCOUNT_REQUIRED', 'ABORT_ERR', 'BUSINESS_REJECTED', 'DEVICE_REGISTRATION_FAILED',
   'EMPTY_RESPONSE', 'ERR_CANCELED', 'ERR_NETWORK', 'ERR_WEB_MEDIA_ADDRESS', 'INVALID_RESPONSE',
@@ -43,7 +43,14 @@ const PLAYBACK_STATUS_LABELS = {
   skipped: '未尝试', failed: '失败', 'address-found': '已取得媒体地址',
   'media-failed': '媒体读取失败', ready: '媒体可用',
 };
-const PLAYBACK_STAGE_LABELS = { source: '取源', media: '媒体读取', decrypt: '解密', decode: '解码', 'first-frame': '首帧' };
+const PLAYBACK_STAGE_LABELS = { source: '取源', media: '媒体读取', hls: 'HLS 清单', manifest: '媒体清单', segment: '媒体分片', decrypt: '解密', decode: '解码', 'first-frame': '首帧', player: '播放器' };
+const PLAYBACK_STEP_LABELS = { 'source-request': '播放源请求', response: '响应解析', 'source-validation': '播放地址检查', 'media-load': '媒体加载', decode: '视频解码', 'first-frame': '首帧呈现' };
+const PLAYBACK_STEP_STATUSES = { 'not-run': '未执行', pending: '进行中', passed: '通过', failed: '失败' };
+const PLAYBACK_EVENT_LABELS = { 'source-start': '开始取源', 'source-attempt': '接口请求', 'source-success': '取得片源', 'source-failure': '取源失败', recovery: '有限恢复', 'media-state': '媒体状态', 'playback-success': '画面播放确认', failure: '播放失败', cancelled: '已取消' };
+const PLAYBACK_ROUTE_IDS = new Set(['preload-primary', 'preload-alternate', 'video-tab', 'official-web-public-fallback',
+  'upstream-grouped-b', 'upstream-player-b', 'upstream-player-a', 'upstream-model-a', 'upstream-model-c']);
+const safeHttpStatus = value => Number.isInteger(value) && value >= 100 && value <= 599 ? value : undefined;
+const safePlaybackCode = value => PLAYBACK_CODES.has(value) || /^HTTP_[345]\d{2}$/.test(value || '') ? value : '';
 const PLAYBACK_CHECK_LABELS = { 'not-tested': '未确认', passed: '通过', failed: '失败' };
 const PLAYBACK_READ_LABELS = {
   'not-requested': '尚未读取', partial: '已读取部分媒体', complete: '媒体读取完成',
@@ -80,7 +87,23 @@ function normalizePlaybackDiagnostics(value) {
   const check = item => PLAYBACK_CHECK_LABELS[item] ? item : 'not-tested';
   const code = PLAYBACK_CODES.has(value.code) || /^HTTP_[345]\d{2}$/.test(value.code || '') ? value.code : '';
   const faultCode = playbackFaultCode(value);
-  return { stage, source, mediaRead, mediaDecoded: check(value.mediaDecoded), firstFrame: check(value.firstFrame), code, faultCode, routes };
+  const diagnosticId = typeof value.diagnosticId === 'string' && /^PLAY-\d{8}-[A-Fa-f0-9]{12}$/.test(value.diagnosticId) ? value.diagnosticId : '';
+  const events = (Array.isArray(value.events) ? value.events : []).slice(-40).flatMap(item => {
+    if (!item || !Object.hasOwn(PLAYBACK_EVENT_LABELS, item.event)) return [];
+    const at = Number.isSafeInteger(item.at) && item.at > 0 && item.at <= 8640000000000000 ? item.at : undefined;
+    const duration = Number.isFinite(item.requestDurationMs) && item.requestDurationMs >= 0 && item.requestDurationMs <= 600000
+      ? Math.round(item.requestDurationMs) : undefined;
+    return [{ at, event: item.event, stage: PLAYBACK_STAGES.has(item.stage) ? item.stage : undefined,
+      sourceRoute: PLAYBACK_SOURCES.has(item.sourceRoute) ? item.sourceRoute : undefined,
+      routeId: PLAYBACK_ROUTE_IDS.has(item.routeId) ? item.routeId : undefined,
+      code: safePlaybackCode(item.code), faultCode: playbackFaultCode(item), httpStatus: safeHttpStatus(item.httpStatus),
+      requestDurationMs: duration }];
+  });
+  const steps = (Array.isArray(value.steps) ? value.steps : []).slice(0, 8).flatMap(item =>
+    item && Object.hasOwn(PLAYBACK_STEP_LABELS, item.step) && Object.hasOwn(PLAYBACK_STEP_STATUSES, item.status)
+      ? [{ step: item.step, status: item.status, code: safePlaybackCode(item.code), httpStatus: safeHttpStatus(item.httpStatus) }] : []);
+  return { stage, source, mediaRead, mediaDecoded: check(value.mediaDecoded), firstFrame: check(value.firstFrame), code, faultCode,
+    diagnosticId, httpStatus: safeHttpStatus(value.httpStatus), events, steps, routes };
 }
 function updateRendererPlaybackDiagnostics(value, fields = {}, routeFields = {}) {
   const current = normalizePlaybackDiagnostics(value);
@@ -94,27 +117,57 @@ function updateRendererPlaybackDiagnostics(value, fields = {}, routeFields = {})
     }
   }
   if (index >= 0) routes[index] = { ...routes[index], ...routeFields };
-  return normalizePlaybackDiagnostics({ ...current, ...fields, routes });
+  const steps = current.steps.map(step => {
+    if (step.step === 'media-load' && ['partial', 'complete'].includes(fields.mediaRead)
+      || step.step === 'decode' && fields.mediaDecoded === 'passed'
+      || step.step === 'first-frame' && fields.firstFrame === 'passed') return { ...step, status: 'passed' };
+    if (step.step === 'decode' && fields.mediaDecoded === 'failed'
+      || step.step === 'media-load' && fields.mediaRead === 'failed') return { ...step, status: 'failed', code: fields.code || step.code };
+    return step;
+  });
+  return normalizePlaybackDiagnostics({ ...current, ...fields, routes, steps });
 }
-function playbackDiagnosticDetails(diagnostics) {
+function playbackDiagnosticDetails(diagnostics, actions = {}) {
   const value = normalizePlaybackDiagnostics(diagnostics);
   if (!value) return null;
   return <details className="player-diagnostics">
     <summary>诊断详情</summary>
+    {value.diagnosticId && <div>播放诊断 ID：{value.diagnosticId}</div>}
     <div>阶段：{PLAYBACK_STAGE_LABELS[value.stage] || '取源'}</div>
     {value.source && <div>当前来源：{PLAYBACK_SOURCE_LABELS[value.source] || PLAYBACK_SOURCE_LABELS.unknown}</div>}
     <div>媒体读取：{PLAYBACK_READ_LABELS[value.mediaRead] || '未知'}</div>
     <div>解码：{PLAYBACK_CHECK_LABELS[value.mediaDecoded] || '未确认'} · 首帧：{PLAYBACK_CHECK_LABELS[value.firstFrame] || '未确认'}</div>
     {value.code && <div>状态码：{value.code}</div>}
     {value.faultCode && value.faultCode !== value.code && <div>故障类型：{value.faultCode}</div>}
+    {value.httpStatus && <div>HTTP 状态：{value.httpStatus}</div>}
+    {value.steps.length > 0 && <ol>{value.steps.map((step, index) => <li key={`${step.step}-${index}`}>
+      {PLAYBACK_STEP_LABELS[step.step]}：{PLAYBACK_STEP_STATUSES[step.status]}
+      {step.code && <> · {step.code}</>}{step.httpStatus && <> · HTTP {step.httpStatus}</>}
+    </li>)}</ol>}
+    {value.faultCode && <div>建议：{playbackFaultAdvice(value.faultCode)}</div>}
     {value.routes.length > 0 && <ul>
       {value.routes.map((route, index) => <li key={`${route.source}-${index}`}>
         {PLAYBACK_SOURCE_LABELS[route.source] || PLAYBACK_SOURCE_LABELS.unknown}：{PLAYBACK_STATUS_LABELS[route.status] || '未知'}
         {' · 初始化：'}{PLAYBACK_INITIALIZATION_LABELS[route.initialization] || '未知'}
         {' · 访客：'}{PLAYBACK_ANONYMOUS_LABELS[route.anonymousAccess] || '未确认'}
         {' · 媒体地址：'}{route.mediaAddress ? '已取得' : '未取得'}
+        {route.code && <>{' · 状态码：'}{route.code}</>}
       </li>)}
     </ul>}
+    {value.events.length > 0 && <details><summary>本次播放过程（{value.events.length} 条）</summary><ol>
+      {value.events.map((event, index) => <li key={index}>
+        {event.at && <>{new Date(event.at).toLocaleTimeString()} · </>}{PLAYBACK_EVENT_LABELS[event.event]}
+        {event.stage && <> · {PLAYBACK_STAGE_LABELS[event.stage]}</>}
+        {event.sourceRoute && <> · {PLAYBACK_SOURCE_LABELS[event.sourceRoute]}</>}
+        {event.routeId && <> · {event.routeId}</>}{event.code && <> · {event.code}</>}
+        {event.httpStatus && <> · HTTP {event.httpStatus}</>}
+        {event.requestDurationMs != null && <> · {event.requestDurationMs} ms</>}
+      </li>)}
+    </ol></details>}
+    <div className="player-placeholder-actions">
+      {actions.copy && <button type="button" className="btn btn-outline btn-sm" onClick={actions.copy}>复制脱敏诊断</button>}
+      {actions.export && <button type="button" className="btn btn-outline btn-sm" onClick={actions.export}>导出播放诊断报告</button>}
+    </div>
   </details>;
 }
 const readPlaybackPreferences = () => {
@@ -294,6 +347,23 @@ function Player({ target, onNavigate, onSeriesSelected, onFloatingChange, active
   const updatePlaybackDiagnostics = useCallback((fields = {}, routeFields = {}) => {
     setPlaybackDiagnostics(previous => updateRendererPlaybackDiagnostics(previous, fields, routeFields));
   }, []);
+  const diagnosticActions = {
+    copy: async () => {
+      const report = normalizePlaybackDiagnostics(playbackDiagnostics);
+      if (!report) return;
+      try {
+        await navigator.clipboard.writeText(JSON.stringify(report, null, 2));
+        showToast('已复制脱敏播放诊断');
+      } catch { showToast('无法复制诊断，请使用导出报告', 'error'); }
+    },
+    export: async () => {
+      try {
+        const result = await window.electronAPI.exportPlaybackDiagnostics();
+        if (result?.cancelled) return;
+        showToast(result?.success ? '播放诊断报告已导出' : '播放诊断报告导出失败', result?.success ? undefined : 'error');
+      } catch { showToast('播放诊断报告导出失败', 'error'); }
+    },
+  };
 
   const holdVideoFrame = useCallback(() => {
     const media = loadedMediaRef.current;
@@ -434,9 +504,19 @@ function Player({ target, onNavigate, onSeriesSelected, onFloatingChange, active
     lastSavedRef.current = 0;
   }, [persistPosition, holdVideoFrame, releaseOnline, cancelCompat, releasePrefetch]);
 
+  const clearStoppedMedia = useCallback(() => {
+    const video = videoRef.current;
+    video?.removeAttribute('src');
+    video?.load();
+    lastVideoSrcRef.current = '';
+    setCommittedVideoSrc('');
+    setHoldingFrame(false);
+  }, []);
+
   const stopPlayback = (message = '播放已停止，可重试本集继续观看') => {
     const seekTo = currentPosition();
     resetPlayback();
+    clearStoppedMedia();
     pendingSeekRef.current = seekTo;
     setWaitingFor(null);
     setPlaybackError(message);
@@ -449,11 +529,12 @@ function Player({ target, onNavigate, onSeriesSelected, onFloatingChange, active
     reportPlaybackState({ event: 'failure', stage: diagnostics?.stage || 'media',
       mediaStatus: 'failed', faultCode });
     resetPlayback(false);
+    clearStoppedMedia();
     pendingSeekRef.current = seekTo;
     setWaitingFor(null);
     setPlaybackError(playbackFaultMessage(faultCode, message));
     setPlaybackDiagnostics(normalizePlaybackDiagnostics({ ...(diagnostics || {}), faultCode }));
-  }, [currentPosition, resetPlayback, reportPlaybackState]);
+  }, [currentPosition, resetPlayback, clearStoppedMedia, reportPlaybackState]);
 
   useEffect(() => {
     if (!playbackError || !playbackActive || !activeSeriesId || waitingFor != null || onlineProgress) return;
@@ -906,6 +987,32 @@ function Player({ target, onNavigate, onSeriesSelected, onFloatingChange, active
     v.playbackRate = playbackRateRef.current;
   }, [loading, canPlay, videoSrc, playbackVersion]);
 
+  const confirmPlaybackStarted = useCallback((video) => {
+    const media = loadedMediaRef.current;
+    if (!activeRef.current || !media?.presented || media.version !== mediaVersion.current
+      || media.element !== video || video !== videoRef.current || video.paused
+      || video.currentSrc !== media.source) return false;
+    if (!media.played) {
+      media.played = true;
+      media.stableFrom = video.currentTime;
+      persistPosition(true);
+    }
+    if (!media.playingReported) {
+      media.playingReported = true;
+      reportPlaybackState({ event: 'media-state', stage: 'first-frame', mediaStatus: 'playing',
+        decoderStatus: media.compat ? 'compat' : 'native' }, media.request);
+    }
+    const request = media.request;
+    if (request?.prepared && !request.firstFrameReported) {
+      request.firstFrameReported = true;
+      reportPlaybackState({ event: 'playback-success', stage: 'first-frame', mediaStatus: 'playing',
+        decoderStatus: media.compat ? 'compat' : 'native' }, request);
+    }
+    if (media.compat && request?.prepared && onlineRequestRef.current === request) releaseOnline();
+    setAutoAdvancing(false);
+    return true;
+  }, [persistPosition, reportPlaybackState, releaseOnline]);
+
   useEffect(() => {
     const video = videoRef.current;
     if (!holdingFrame || !video || loading || !canPlay) return;
@@ -939,26 +1046,33 @@ function Player({ target, onNavigate, onSeriesSelected, onFloatingChange, active
     if (loading || !video || !canPlay
       || playbackVersion !== mediaVersion.current || !video.requestVideoFrameCallback) return undefined;
     const version = playbackVersion;
-    const frame = video.requestVideoFrameCallback(() => {
-      if (version !== mediaVersion.current || videoRef.current !== video || video.currentSrc !== videoSrc) return;
-      if (request?.prepared && onlineRequestRef.current !== request) return;
-      // Healthy playback ends the initial load deadline; actual recovery keeps its shared budget.
-      if (recoveryBudgetRef.current?.attempts === 0) recoveryBudgetRef.current = null;
-      if (!request?.prepared) return;
-      updatePlaybackDiagnostics({ stage: 'first-frame', firstFrame: 'passed' }, { status: 'ready', firstFrame: 'passed' });
-      if (!request.firstFrameReported) {
-        request.firstFrameReported = true;
-        reportPlaybackState({ event: 'playback-success', stage: 'first-frame', mediaStatus: video.paused ? 'ready' : 'playing',
-          decoderStatus: compatUrl ? 'compat' : 'native' }, request);
+    let cancelled = false;
+    let frame;
+    const observeFrame = () => {
+      if (cancelled || version !== mediaVersion.current || videoRef.current !== video) return;
+      // Presentation can precede metadata association; keep observing until the current source is bound.
+      frame = video.requestVideoFrameCallback(observeFrame);
+      const media = loadedMediaRef.current;
+      if (!media || media.version !== version || media.element !== video || media.source !== videoSrc
+        || video.currentSrc !== videoSrc || request?.prepared && media.request !== request || video.readyState < 2
+        || !video.videoWidth || !video.videoHeight) return;
+      if (!media.presented) {
+        media.presented = true;
+        // Healthy playback ends the initial load deadline; actual recovery keeps its shared budget.
+        if (recoveryBudgetRef.current?.attempts === 0) recoveryBudgetRef.current = null;
+        updatePlaybackDiagnostics({ stage: 'first-frame', mediaDecoded: 'passed', firstFrame: 'passed' },
+          { status: 'ready', mediaDecoded: 'passed', firstFrame: 'passed' });
       }
-      if (compatUrl) {
-        reportPlaybackState({ event: 'media-state', stage: 'decode', mediaStatus: video.paused ? 'ready' : 'playing', decoderStatus: 'compat' }, request);
-        releaseOnline();
-      }
-    });
-    return () => video.cancelVideoFrameCallback?.(frame);
+      // A real new frame also ends buffering after a stalled event without requiring another playing event.
+      setMediaBuffering(false);
+      setDecodeFailed(false);
+      setHoldingFrame(false);
+      if (!media.played || !media.playingReported) confirmPlaybackStarted(video);
+    };
+    frame = video.requestVideoFrameCallback(observeFrame);
+    return () => { cancelled = true; video.cancelVideoFrameCallback?.(frame); };
   }, [loading, canPlay, isOnlinePlaying, onlineUrl, videoSrc, playbackVersion, compatUrl,
-    updatePlaybackDiagnostics, reportPlaybackState, releaseOnline]);
+    updatePlaybackDiagnostics, reportPlaybackState, releaseOnline, confirmPlaybackStarted]);
 
   // 缓冲遮罩只在 canplay/playing 时清除；长时间无响应时提示并给出重试入口，避免用户只能取消。
   useEffect(() => {
@@ -1131,22 +1245,11 @@ function Player({ target, onNavigate, onSeriesSelected, onFloatingChange, active
     const media = loadedMediaRef.current;
     const element = event.currentTarget;
     if (!activeRef.current || element.paused || media?.version !== mediaVersion.current || media.element !== element) return;
-    // 先记录“这一集真的播起来了”，不要因为 canPlay/playbackVersion 的 React 状态晚一拍
-    // 就永久跳过预取和断点保存；下面的解码判定仍要求状态已经对齐。
-    if (!media.played) {
-      media.played = true;
-      media.stableFrom = element.currentTime;
-      persistPosition(true);
-      reportPlaybackState({ event: 'media-state', stage: 'media', mediaStatus: 'playing',
-        decoderStatus: compatMap[currentIndex] ? 'compat' : element.videoWidth > 0 ? 'native' : 'pending' });
-    }
     if (playbackVersion !== mediaVersion.current || !canPlay) return;
     if (element.currentSrc && videoSrc && element.currentSrc !== videoSrc) return;
-    if (!element.requestVideoFrameCallback && element.videoWidth > 0 && element.videoHeight > 0
-      && recoveryBudgetRef.current?.attempts === 0) recoveryBudgetRef.current = null;
-    setAutoAdvancing(false);
+    confirmPlaybackStarted(element);
     setDecodeFailed(false);
-    setMediaBuffering(false);
+    setMediaBuffering(!media.presented);
     const idx = currentIndex;
     const version = mediaVersion.current;
     clearTimeout(decodeTimer.current);
@@ -1163,7 +1266,7 @@ function Player({ target, onNavigate, onSeriesSelected, onFloatingChange, active
       }
     }, 2600);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentIndex, tryAutoCompat, playbackVersion, canPlay, videoSrc, persistPosition, reportPlaybackState, updatePlaybackDiagnostics]);
+  }, [currentIndex, tryAutoCompat, playbackVersion, canPlay, videoSrc, confirmPlaybackStarted, reportPlaybackState, updatePlaybackDiagnostics]);
 
   /**
    * 在线播放：明文片源按需加载，加密片源准备后返回播放地址。
@@ -1225,7 +1328,7 @@ function Player({ target, onNavigate, onSeriesSelected, onFloatingChange, active
               quality: qualities[index], allowLowerQuality: quality === 'auto', force,
               recoveryCount: recoveryBudgetRef.current?.attempts || 0,
             }), request);
-          } catch (error) { res = { success: false, code: error.code, faultCode: error.faultCode, error: error.message }; }
+          } catch (error) { res = { success: false, code: error.code, faultCode: error.faultCode, error: error.message, diagnostics: error.diagnostics }; }
           if (onlineRequestRef.current !== request) break;
           if (!res?.success && !allowsQualityFallback(res)) break;
           if (!res?.success && index + 1 < qualities.length) {
@@ -1263,7 +1366,7 @@ function Player({ target, onNavigate, onSeriesSelected, onFloatingChange, active
         refreshOnlineCacheInfo();
       } catch (e) {
         if (onlineRequestRef.current !== request) return;
-        await recoverOnlineFailure(ep, '当前内容暂时无法播放，请稍后重试。', null, e);
+        await recoverOnlineFailure(ep, '当前内容暂时无法播放，请稍后重试。', e?.diagnostics, e);
       }
     },
     [episodes, activeSeriesId, showToast, refreshOnlineCacheInfo, resetPlayback, releaseOnline, currentPosition,
@@ -1430,9 +1533,8 @@ function Player({ target, onNavigate, onSeriesSelected, onFloatingChange, active
   const prepareNextEpisode = (event) => {
     const video = event.currentTarget;
     const media = loadedMediaRef.current;
-    // 这里只依赖当前元素和版本；media.played 可能因 playing 事件的 React 状态晚一拍而
-    // 还没置位，不能让它永久挡住后续分集预取。
-    if (cacheNext === false || canPlay === false || video.paused || media?.version !== mediaVersion.current || media.element !== video) return;
+    if (cacheNext === false || canPlay === false || video.paused || !media?.presented
+      || media.version !== mediaVersion.current || media.element !== video || video.currentSrc !== media.source) return;
     const targets = prefetchCandidates(currentIndex);
     const desired = new Set(targets.map(episode => prefetchKey(activeSeriesId, episode.vid, onlineQuality)));
     const kept = [];
@@ -1574,7 +1676,9 @@ function Player({ target, onNavigate, onSeriesSelected, onFloatingChange, active
     const v = event.currentTarget;
     if (!canPlay || playbackVersion !== mediaVersion.current || v !== videoRef.current || !current || current.locked) return;
     if (v.currentSrc && v.currentSrc !== videoSrc) return;
-    loadedMediaRef.current = { element: v, seriesId: activeSeriesId, vidIndex: currentIndex, version: mediaVersion.current, played: false };
+    loadedMediaRef.current = { element: v, seriesId: activeSeriesId, vidIndex: currentIndex,
+      version: mediaVersion.current, source: videoSrc, request: onlineRequestRef.current,
+      compat: !!compatMap[currentIndex], presented: false, played: false };
     v.defaultPlaybackRate = playbackRateRef.current;
     v.playbackRate = playbackRateRef.current;
     const seekTo = Math.max(0, Number(pendingSeekRef.current) || 0);
@@ -1585,8 +1689,14 @@ function Player({ target, onNavigate, onSeriesSelected, onFloatingChange, active
       showToast(`从 ${Math.floor(resumeTime / 60)}:${String(Math.floor(resumeTime % 60)).padStart(2, '0')} 继续播放`);
     }
     pendingSeekRef.current = 0;
-    if (compatMap[currentIndex] && !v.requestVideoFrameCallback) releaseOnline();
     if (activeRef.current && pendingAutoplayRef.current) v.play().catch(() => { if (playbackVersion === mediaVersion.current) setAutoAdvancing(false); });
+  };
+
+  const isCurrentMediaEvent = (video, requireMetadata = true) => {
+    const media = loadedMediaRef.current;
+    return !!video && canPlay && playbackVersion === mediaVersion.current && video === videoRef.current
+      && !!videoSrc && (!video.currentSrc || video.currentSrc === videoSrc)
+      && (!requireMetadata || media?.version === mediaVersion.current && media.element === video && media.source === videoSrc);
   };
 
   const restoreFullscreenScroll = useCallback(() => {
@@ -2231,16 +2341,21 @@ function Player({ target, onNavigate, onSeriesSelected, onFloatingChange, active
               }, 300);
             }}
             onLoadedMetadata={handleMetadata}
+            onLoadStart={(event) => {
+              if (!isCurrentMediaEvent(event.currentTarget, false)) return;
+              setMediaBuffering(true);
+              reportPlaybackState({ event: 'media-state', stage: 'media', mediaStatus: 'loading', decoderStatus: 'pending' });
+            }}
             onProgress={(event) => {
               const v = event.currentTarget;
-              if (!canPlay || playbackVersion !== mediaVersion.current || (v.currentSrc && v.currentSrc !== videoSrc)) return;
+              if (!isCurrentMediaEvent(v)) return;
               if (v.buffered?.length && v.buffered.end(v.buffered.length - 1) > 0) {
                 updatePlaybackDiagnostics({ stage: 'media', mediaRead: 'partial' }, { status: 'ready', mediaRead: 'partial' });
               }
             }}
             onLoadedData={(event) => {
               const v = event.currentTarget;
-              if (!canPlay || playbackVersion !== mediaVersion.current || (v.currentSrc && v.currentSrc !== videoSrc)) return;
+              if (!isCurrentMediaEvent(v)) return;
               updatePlaybackDiagnostics({
                 stage: 'decode', mediaRead: 'partial',
                 ...(v.videoWidth > 0 && v.videoHeight > 0 ? { mediaDecoded: 'passed' } : {}),
@@ -2248,6 +2363,14 @@ function Player({ target, onNavigate, onSeriesSelected, onFloatingChange, active
                 status: 'ready', mediaRead: 'partial',
                 ...(v.videoWidth > 0 && v.videoHeight > 0 ? { mediaDecoded: 'passed' } : {}),
               });
+              if (!v.requestVideoFrameCallback && isCurrentMediaEvent(v)
+                && v.readyState >= 2 && v.videoWidth > 0 && v.videoHeight > 0
+                && ((v.getVideoPlaybackQuality?.()?.totalVideoFrames || v.webkitDecodedFrameCount || 0) > 0)) {
+                loadedMediaRef.current.presented = true;
+                updatePlaybackDiagnostics({ stage: 'first-frame', firstFrame: 'passed' }, { firstFrame: 'passed' });
+                setMediaBuffering(false);
+                confirmPlaybackStarted(v);
+              }
             }}
             onTimeUpdate={event => {
               const media = loadedMediaRef.current;
@@ -2281,11 +2404,30 @@ function Player({ target, onNavigate, onSeriesSelected, onFloatingChange, active
               mutedRef.current = v.muted;
               savePlaybackPreferences();
             }}
-            onEnded={() => { if (activeRef.current && canPlay && playbackVersion === mediaVersion.current && (!videoRef.current || loadedMediaRef.current?.version === mediaVersion.current)) handleEnded(); }}
-            onPause={() => persistPosition(true)}
+            onEnded={(event) => { if (activeRef.current && isCurrentMediaEvent(event?.currentTarget || videoRef.current)
+              && loadedMediaRef.current?.presented) handleEnded(); }}
+            onPause={(event) => {
+              persistPosition(true);
+              const media = loadedMediaRef.current;
+              if (!isCurrentMediaEvent(event?.currentTarget || videoRef.current) || !media?.presented) return;
+              media.playingReported = false;
+              reportPlaybackState({ event: 'media-state', stage: 'media', mediaStatus: 'paused',
+                decoderStatus: media.compat ? 'compat' : 'native' }, media.request);
+            }}
             onPlaying={(event) => { handlePlaying(event); prepareNextEpisode(event); }}
-            onWaiting={() => { if (canPlay && playbackVersion === mediaVersion.current) setMediaBuffering(true); }}
-            onCanPlay={() => { if (canPlay && playbackVersion === mediaVersion.current) setMediaBuffering(false); }}
+            onWaiting={(event) => {
+              if (!isCurrentMediaEvent(event?.currentTarget || videoRef.current)) return;
+              setMediaBuffering(true);
+              reportPlaybackState({ event: 'media-state', stage: 'media', mediaStatus: 'buffering', decoderStatus: 'pending' });
+            }}
+            onStalled={(event) => {
+              if (!isCurrentMediaEvent(event?.currentTarget || videoRef.current)) return;
+              setMediaBuffering(true);
+              reportPlaybackState({ event: 'media-state', stage: 'media', mediaStatus: 'buffering', decoderStatus: 'pending' });
+            }}
+            onCanPlay={(event) => {
+              if (isCurrentMediaEvent(event?.currentTarget || videoRef.current) && loadedMediaRef.current?.presented) setMediaBuffering(false);
+            }}
             onError={(event) => {
               if (!canPlay || compatRequestRef.current || playbackVersion !== mediaVersion.current) return;
               if (videoRef.current && event.currentTarget !== videoRef.current) return;
@@ -2313,8 +2455,7 @@ function Player({ target, onNavigate, onSeriesSelected, onFloatingChange, active
                 return;
               }
               if (!failedDecode) {
-                const seekTo = currentPosition(); resetPlayback(); pendingSeekRef.current = seekTo;
-                setPlaybackError('视频加载失败，请重试本集或检查网络');
+                stopPlayback('视频加载失败，请重试本集或检查网络');
               }
               if (isOnlinePlaying) {
                 const code = failedDecode ? 'MEDIA_DECODE_ERROR' : errorCode === 2 ? 'NETWORK_ERROR' : 'MEDIA_TRANSFER_ERROR';
@@ -2363,13 +2504,13 @@ function Player({ target, onNavigate, onSeriesSelected, onFloatingChange, active
                 <button className="btn btn-primary" onClick={retryPlayback}>{current?.status === 'completed' ? '重试本集' : '重试本集（在线播放）'}</button>
                 {current?.vid && <button className="btn btn-outline" onClick={() => startOnlinePlay(currentIndex, undefined, true)}>重新连接片源</button>}
                 {supportsOnlineQuality && playbackDiagnostics?.stage === 'source'
-                  && playbackFaultCode(playbackDiagnostics) !== 'WEB_EPISODE_UNAVAILABLE' && <button className="btn btn-outline" onClick={() => setAccountLoginPrompt({
+                  && ['ACCOUNT_EXPIRED', 'ACCOUNT_UNAUTHORIZED'].includes(playbackFaultCode(playbackDiagnostics)) && <button className="btn btn-outline" onClick={() => setAccountLoginPrompt({
                   seriesId: activeSeriesId, vidIndex: currentIndex, version: mediaVersion.current, navigation: navigationVersion.current,
                   ...(accountResumeRef.current || { seekTo: currentPosition(), autoplay: false }),
                 })}>扫码登录后重试</button>}
                 {current?.vid && !current.locked && (decodeFailed || current?.status === 'completed') && !fallbackRef.current?.submitting && <button className="btn btn-outline" onClick={() => startCompatPlay(currentIndex, true)}>转码后播放</button>}
               </div>
-              {playbackDiagnosticDetails(playbackDiagnostics)}
+              {playbackDiagnosticDetails(playbackDiagnostics, diagnosticActions)}
               </>
             ) : onlineProgress && onlineProgress.vid && (!current || current.vid === onlineProgress.vid) ? (
               <>
@@ -2474,7 +2615,7 @@ function Player({ target, onNavigate, onSeriesSelected, onFloatingChange, active
             <span className="compat-overlay-sub" role={compatError ? 'alert' : undefined}>
               {compatError || '请先重新连接片源；若仍有画面或格式问题，可尝试转码为 H.264 兼容格式。'}
             </span>
-            {playbackDiagnosticDetails(playbackDiagnostics)}
+            {playbackDiagnosticDetails(playbackDiagnostics, diagnosticActions)}
             <div className="player-placeholder-actions">
               <button className="btn btn-primary" onClick={retryPlayback}>重试本集</button>
               <button className="btn btn-outline" onClick={() => startOnlinePlay(currentIndex, undefined, true)}>重新连接片源</button>

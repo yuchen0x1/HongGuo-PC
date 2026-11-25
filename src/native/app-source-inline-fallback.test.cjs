@@ -3,6 +3,7 @@ const { test } = require('node:test');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const crypto = require('node:crypto');
+const { MODEL_PROFILE } = require('./playback-profiles');
 
 const vid = '7701643128951802904';
 const fallbackUrl = 'https://api5-normal-sinfonlineb.fqnovel.com/fallback';
@@ -16,19 +17,23 @@ const model = (overrides = {}) => ({
     video_list: [row()], fallback_api: fallbackUrl, ...overrides,
 });
 
-function fixture(inline, fallback, { status = 200, code = 0, stringModel = false, empty = false } = {}) {
+function fixture(inline, fallback, { status = 200, code = 0, stringModel = false, empty = false, modelElapsedMs = 0 } = {}) {
     const calls = [];
     const module = { exports: {} };
+    const startedAt = 1795616400000;
+    let clock = startedAt;
     vm.runInNewContext(fs.readFileSync(require.resolve('./app-source'), 'utf8'), {
         module, Buffer, URL, AbortSignal, setTimeout, clearTimeout,
+        Date: class extends Date { static now() { return clock; } },
         require(name) {
             if (name === './playback-device') return {
                 createPlaybackIdentityManager: require('./playback-device').createPlaybackIdentityManager,
                 registerPlaybackDevice: async () => ({ device_id: '1000000000000001', iid: '1000000000000002', cdid: 'fixture' }),
             };
             if (name === 'axios') return async config => {
-                calls.push(config);
+                calls.push({ ...config, requestedAt: clock });
                 const isFallback = config.url === fallbackUrl;
+                if (!isFallback) clock += modelElapsedMs;
                 return { status: isFallback ? status : 200, headers: {}, data: isFallback && empty ? '' : JSON.stringify(isFallback
                     ? { code, video_info: { data: fallback } }
                     : { code: 0, data: { [vid]: { video_model: stringModel ? JSON.stringify(inline) : inline } } }) };
@@ -36,7 +41,15 @@ function fixture(inline, fallback, { status = 200, code = 0, stringModel = false
             return require(name);
         },
     }, { filename: require.resolve('./app-source') });
-    return { calls, fetch: options => module.exports.fetchAppPlayUrl(vid, options) };
+    return { calls, startedAt, fetch: options => module.exports.fetchAppPlayUrl(vid, options) };
+}
+
+function assertRequestBudgets(f, deadline = f.startedAt + MODEL_PROFILE.timeout.modelTotalMs) {
+    for (const call of f.calls) {
+        assert.ok(call.timeout > 0, 'an expired request is never dispatched');
+        assert.ok(call.timeout <= MODEL_PROFILE.timeout.requestMs, 'each request keeps its independent cap');
+        assert.ok(call.requestedAt + call.timeout <= deadline, 'fallback cannot extend the original total deadline');
+    }
 }
 
 test('missing inline encryption metadata recovers through one verified fallback', async () => {
@@ -48,7 +61,40 @@ test('missing inline encryption metadata recovers through one verified fallback'
     assert.equal(f.calls.length, 2);
     assert.equal(f.calls[1].url, fallbackUrl);
     assert.equal(f.calls[1].signal, f.calls[0].signal);
-    assert.ok(f.calls[1].timeout <= f.calls[0].timeout);
+    assert.equal(f.calls[0].timeout, MODEL_PROFILE.timeout.requestMs);
+    assert.equal(f.calls[1].timeout, MODEL_PROFILE.timeout.requestMs);
+    assertRequestBudgets(f);
+});
+
+test('a slow inline model leaves a new fallback cap inside the original model budget', async () => {
+    const f = fixture(model(), model({ video_list: [row(1080, { encrypt: false })] }), { modelElapsedMs: 11000 });
+    await f.fetch();
+    assert.equal(f.calls.length, 2);
+    assert.equal(f.calls[0].requestedAt, f.startedAt);
+    assert.equal(f.calls[0].timeout, 12000);
+    assert.equal(f.calls[1].requestedAt, f.startedAt + 11000);
+    assert.equal(f.calls[1].timeout, 9000);
+    assertRequestBudgets(f);
+});
+
+test('the inline fallback cap preserves a shorter caller deadline', async () => {
+    const f = fixture(model(), model({ video_list: [row(1080, { encrypt: false })] }), { modelElapsedMs: 11000 });
+    const deadline = f.startedAt + 14000;
+    await f.fetch({ deadline });
+    assert.equal(f.calls.length, 2);
+    assert.equal(f.calls[0].timeout, 12000);
+    assert.equal(f.calls[1].requestedAt, f.startedAt + 11000);
+    assert.equal(f.calls[1].timeout, 3000);
+    assertRequestBudgets(f, deadline);
+});
+
+test('an exhausted caller deadline prevents inline fallback dispatch', async () => {
+    const f = fixture(model(), model({ video_list: [row(1080, { encrypt: false })] }), { modelElapsedMs: 11000 });
+    const deadline = f.startedAt + 11000;
+    await assert.rejects(f.fetch({ deadline }), { code: 'ETIMEDOUT' });
+    assert.equal(f.calls.length, 1);
+    assert.equal(f.calls[0].timeout, 11000);
+    assertRequestBudgets(f, deadline);
 });
 
 test('complete inline metadata does not request fallback', async () => {

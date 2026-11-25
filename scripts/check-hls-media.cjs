@@ -1,11 +1,12 @@
 // Real normal-video HLS, routed through in-memory public-URL fixtures. No Internet or user data writes.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { Readable } = require('node:stream');
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hongguo-hls-'));
+const analysis = path.resolve(__dirname, '../.local/analysis');
+fs.mkdirSync(analysis, { recursive: true });
+const root = fs.mkdtempSync(path.join(analysis, 'hongguo-hls-'));
 const helper = path.join(__dirname, '../src/native/hls-media.js');
 assert.ok(fs.existsSync(helper), 'HLS needs a guarded disk remux helper');
 const { remuxHls } = require(helper);
@@ -55,11 +56,13 @@ assert.ok(ffmpeg && video, 'Set HONGGUO_FFMPEG and HONGGUO_VIDEO_FIXTURE');
   await assert.rejects(remuxHls({...options,output:output('privatekey'),request:async(url,args)=>url.endsWith('media.m3u8')
     ? {status:200,headers:{},data:Readable.from(['#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXT-X-KEY:METHOD=AES-128,URI="http://192.168.1.1/key"\n#EXTINF:2,\npart0.ts\n#EXT-X-ENDLIST\n']),url}:request(url,args)}),/公网|地址/);
   assert.equal(fs.existsSync(output('privatekey')),false);
-  for (const status of [401, 403, 429, 503]) for (const stage of ['manifest', 'segment']) {
+  for (const status of [401, 403, 404, 429, 500, 503]) for (const stage of ['manifest', 'segment']) {
     await assert.rejects(remuxHls({ ...options, output:output(`status-${stage}-${status}`),
       request:async(url,args) => (stage === 'manifest' || url.includes('/part'))
         ? { status, headers:{}, data:Readable.from([]), url } : request(url,args) }),
-    error => error.mediaStatus === status, `preserve ${stage} HTTP ${status} for refusal/retry policy`);
+    error => error.mediaStatus === status && error.httpStatus === status && error.stage === stage
+      && error.code === (stage === 'manifest' ? 'HLS_MANIFEST_FAILED' : 'HLS_SEGMENT_FAILED'),
+    `preserve ${stage} HTTP ${status} for refusal/retry policy`);
   }
   await assert.rejects(remuxHls({ ...options, ffmpeg:null, output:output('no-tool') }),
     error => error.code === 'LOCAL_MEDIA_TOOL_ERROR', 'missing tools must not trigger repeated provider refresh');

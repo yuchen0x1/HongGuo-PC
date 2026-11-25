@@ -20,6 +20,20 @@ function failure(code, status) {
   return Object.assign(new Error('Official public playback is unavailable'), { code, ...(status ? { status } : {}) });
 }
 
+function publicApiBody(value) {
+  if (value == null || typeof value === 'string' && !value.trim()) throw failure('EMPTY_RESPONSE');
+  let data = value;
+  if (typeof data === 'string') {
+    try { data = JSON.parse(data); } catch { throw failure('INVALID_RESPONSE'); }
+  }
+  if (!data || typeof data !== 'object' || Array.isArray(data)
+      || typeof data.base_resp?.StatusCode !== 'number' || !Number.isSafeInteger(data.base_resp.StatusCode)) {
+    throw failure('INVALID_RESPONSE');
+  }
+  if (data.base_resp.StatusCode !== 0) throw failure('BUSINESS_REJECTED');
+  return data;
+}
+
 function publicEpisodePermission(data, vid, seriesId) {
   const id = String(vid || ''), sid = String(seriesId || data?.series_id || '');
   const detail = data?.seriesDetail, seo = data?.publicVideoSeo, req = data?.req;
@@ -54,9 +68,7 @@ function publicEpisodePermission(data, vid, seriesId) {
 }
 
 function officialDuration(data, permission) {
-  if (data === '' || data == null) throw failure('EMPTY_RESPONSE');
-  if (typeof data !== 'object' || Array.isArray(data)) throw failure('INVALID_RESPONSE');
-  if (data.base_resp?.StatusCode !== 0) throw failure('BUSINESS_REJECTED');
+  data = publicApiBody(data);
   const info = data.legacy_play_info || data.play_info;
   if (!info || typeof info !== 'object' || Array.isArray(info) || data.legacy_play_info && data.play_info
       || data.item_id != null && String(data.item_id) !== permission.vid
@@ -71,9 +83,7 @@ function officialDuration(data, permission) {
 }
 
 function fallbackMedia(data, permission, now = Date.now()) {
-  if (data === '' || data == null) throw failure('EMPTY_RESPONSE');
-  if (typeof data !== 'object' || Array.isArray(data)) throw failure('INVALID_RESPONSE');
-  if (data?.base_resp?.StatusCode !== 0) throw failure('BUSINESS_REJECTED');
+  data = publicApiBody(data);
   if (data.play_info || data.legacy_play_info || data.player_access_key || data.kid) throw failure('INVALID_RESPONSE');
   let url;
   try { url = new URL(data.main_url); } catch { throw failure('INVALID_RESPONSE'); }
@@ -133,12 +143,33 @@ function movieDuration(bytes, parseBoxes) {
   }
 }
 
+function publicMovieDuration(metadata, expectedDuration, parseBoxes) {
+  if (![200, 206].includes(metadata?.status)) throw failure(`HTTP_${metadata?.status}`, metadata?.status);
+  const bytes = Buffer.from(metadata.data || []);
+  if (!bytes.length || bytes.length > OFFICIAL_WEB_PROFILE.metadataBytes) throw failure('INVALID_RESPONSE');
+  const mediaType = String(metadata.headers?.['content-type'] || '').split(';')[0].trim().toLowerCase();
+  const prefix = bytes.subarray(0, 1024).toString('utf8').trimStart();
+  if (/mpegurl|dash\+xml/.test(mediaType) || prefix.startsWith('#EXTM3U')
+      || /^(?:<\?xml[^>]*>\s*)?<MPD(?:\s|\/?>)/i.test(prefix)) {
+    throw Object.assign(failure('UNSUPPORTED_MEDIA_FORMAT'), { faultCode: 'MEDIA_FORMAT_UNSUPPORTED' });
+  }
+  if (metadata.status === 206) {
+    const range = /^bytes 0-(\d+)\/(\d+)$/.exec(metadata.headers?.['content-range'] || '');
+    if (!range || Number(range[1]) + 1 !== bytes.length || !Number.isSafeInteger(Number(range[2]))
+        || Number(range[2]) <= Number(range[1])) throw failure('INVALID_RESPONSE');
+  } else if (Number(metadata.headers?.['content-length']) !== bytes.length) throw failure('INVALID_RESPONSE');
+  const duration = movieDuration(bytes, parseBoxes);
+  if (!Number.isFinite(expectedDuration) || expectedDuration <= 0
+      || Math.abs(duration - expectedDuration) > 0.5) throw failure('PREVIEW_ONLY');
+  return duration;
+}
+
 async function resolveOfficialPublicPlayback(data, options = {}) {
   const { signal, request = axios, parseBoxes, now = Date.now } = options;
   const permission = publicEpisodePermission(data, options.vid, options.seriesId);
   const bounded = boundedSignal(signal, OFFICIAL_WEB_PROFILE.timeouts.totalMs);
   const started = now();
-  let status = 0, code = '', modelValid = false;
+  let status = 0, code = '', modelValid = false, stage = 'source';
   const profile = { profileId: OFFICIAL_WEB_PROFILE.id, profileVersion: OFFICIAL_WEB_PROFILE.version,
     routeId: OFFICIAL_WEB_PROFILE.routeId };
   const call = async config => {
@@ -184,6 +215,7 @@ async function resolveOfficialPublicPlayback(data, options = {}) {
     if (response.status !== 200) throw failure('INVALID_RESPONSE');
     const media = fallbackMedia(response.data, permission, now());
     const limit = OFFICIAL_WEB_PROFILE.metadataBytes;
+    stage = 'media';
     let metadata;
     try {
       metadata = await call({ url: media.url, method: 'GET', ...webMediaRequestOptions(media.url),
@@ -197,23 +229,18 @@ async function resolveOfficialPublicPlayback(data, options = {}) {
       if (faultCode) error.faultCode = faultCode;
       throw error;
     }
-    const bytes = Buffer.from(metadata.data || []);
-    if (!bytes.length || bytes.length > limit) throw failure('INVALID_RESPONSE');
-    if (metadata.status === 206) {
-      const range = /^bytes 0-(\d+)\/(\d+)$/.exec(metadata.headers?.['content-range'] || '');
-      if (!range || Number(range[1]) + 1 !== bytes.length || !Number.isSafeInteger(Number(range[2]))
-          || Number(range[2]) <= Number(range[1])) throw failure('INVALID_RESPONSE');
-    } else if (Number(metadata.headers?.['content-length']) !== bytes.length) throw failure('INVALID_RESPONSE');
-    const duration = movieDuration(bytes, parseBoxes);
-    if (Math.abs(duration - permission.duration) > 0.5) throw failure('PREVIEW_ONLY');
+    status = metadata.status;
+    const duration = publicMovieDuration(metadata, permission.duration, parseBoxes);
     throwIfAborted(bounded.signal);
     modelValid = true;
     return { ...media, duration, source: 'web', format: 'mp4', vid: permission.vid,
       spadeA: null, contentKey: null, codec: '', userAgent: options.userAgent || '', referer: page,
       officialPublicPlayback: true, ...profile, requestElapsedMs: now() - started };
   } catch (error) {
+    error.stage = stage;
     code = error.faultCode || error.code || 'INVALID_RESPONSE';
     status = Number(error.status) || status;
+    if (status) { error.status = status; error.httpStatus = status; }
     throw error;
   } finally {
     bounded.dispose();
@@ -222,4 +249,5 @@ async function resolveOfficialPublicPlayback(data, options = {}) {
   }
 }
 
-module.exports = { OFFICIAL_WEB_PROFILE, publicEpisodePermission, officialDuration, fallbackMedia, movieDuration, resolveOfficialPublicPlayback };
+module.exports = { OFFICIAL_WEB_PROFILE, publicEpisodePermission, officialDuration, fallbackMedia, movieDuration,
+  publicMovieDuration, resolveOfficialPublicPlayback };

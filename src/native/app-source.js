@@ -400,6 +400,16 @@ function checkedUrl(value, domains) {
     return url.href;
 }
 
+function appMediaFormat(value) {
+    const pathname = new URL(value).pathname.toLowerCase();
+    if (/\.m3u8$/.test(pathname)) return 'hls';
+    if (/\.mp4$/.test(pathname)) return 'mp4';
+    if (/\.mpd$/.test(pathname)) throw Object.assign(new Error('当前播放器不支持 DASH 媒体清单'), {
+        code: 'UNSUPPORTED_MEDIA_FORMAT', faultCode: 'MEDIA_FORMAT_UNSUPPORTED', stage: 'source',
+    });
+    return 'unknown';
+}
+
 async function requestJson(url, options, deadline, signal) {
     const axios = require('axios');
     const preserveFields = Array.isArray(options?.preserveLargeIntegerFields)
@@ -437,17 +447,22 @@ async function requestJson(url, options, deadline, signal) {
             url = checkedUrl(new URL(response.headers.location, url).href, ['fqnovel.com', 'snssdk.com']);
             continue;
         }
-        if (response.status !== 200) throw Object.assign(new Error(`App 片源请求失败（HTTP ${response.status}）`), { status: response.status });
+        if (response.status !== 200) throw Object.assign(new Error(`App 片源请求失败（HTTP ${response.status}）`), {
+            code: `HTTP_${response.status}`, status: response.status, httpStatus: response.status, stage: 'source',
+        });
         const raw = typeof response.data === 'string' ? response.data : '';
         if (!raw.trim()) {
             throw Object.assign(new Error('App 接口返回空响应（HTTP 200），原因尚未确认'), {
                 code: 'EMPTY_RESPONSE',
                 status: response.status,
+                httpStatus: response.status, stage: 'source',
             });
         }
         const normalized = preserveFields?.length ? preserveLargeJsonIntegers(raw, preserveFields) : raw;
         const parsed = typeof response.data === 'string' ? jsonBody(normalized) : response.data;
-        if (!parsed || typeof parsed !== 'object') throw Object.assign(new Error('App 接口未返回有效数据'), { code: 'INVALID_RESPONSE' });
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw Object.assign(new Error('App 接口未返回有效 JSON 对象'), {
+            code: 'INVALID_RESPONSE', status: response.status, httpStatus: response.status, stage: 'source',
+        });
         return parsed;
     }
     throw Object.assign(new Error('App 片源跳转次数过多'), { code: 'SECURITY_BLOCKED' });
@@ -493,15 +508,37 @@ async function fetchAppPlayUrl(vid, options = {}) {
     } finally { options.signal.removeEventListener('abort', cancel); operation.dispose(); }
 }
 
-function playbackModel(response, vid, requireKeyedEntry = false) {
+function validateAppModelIdentity(model, options = {}, requireMetadata = false) {
+    const duration = Number(model?.video_duration);
+    const validId = typeof model?.video_id === 'string' && !!model.video_id.trim();
+    if (requireMetadata && (!validId || !Number.isFinite(duration) || duration <= 0)
+        || options.expectedVideoId !== undefined && (!validId || typeof options.expectedVideoId !== 'string'
+            || !options.expectedVideoId.trim() || model.video_id !== options.expectedVideoId)
+        || options.expectedDuration !== undefined && (!Number.isFinite(duration) || duration <= 0
+            || !Number.isFinite(Number(options.expectedDuration)) || Number(options.expectedDuration) <= 0
+            || Math.abs(Number(options.expectedDuration) - duration) > 0.5)) {
+        throw Object.assign(new Error('App 片源编号或完整时长无法确认，已停止取址'), { code: 'INVALID_RESPONSE' });
+    }
+}
+
+function playbackModel(response, vid, requireKeyedEntry = false, options = {}) {
     if (Number(response.Code || response.code || 0) !== 0) throw Object.assign(new Error('App 接口暂未提供本集播放信息'), { code: 'BUSINESS_REJECTED' });
     const data = response.data;
-    const entry = [data?.['1004']?.[vid], data?.[vid], data?.video_model_data?.[vid],
-        data?.['1004']?.video_model_data?.[vid], !requireKeyedEntry && data?.video_model ? data : null]
+    const keyedEntry = [data?.['1004']?.[vid], data?.[vid], data?.video_model_data?.[vid],
+        data?.['1004']?.video_model_data?.[vid]]
         .find(candidate => candidate && typeof candidate === 'object');
+    const entry = keyedEntry || (!requireKeyedEntry && data?.video_model ? data : null);
     const model = typeof entry?.video_model === 'string' ? jsonBody(entry.video_model) : entry?.video_model;
     if (!model || typeof model !== 'object' || Array.isArray(model)) {
         throw Object.assign(new Error('App 接口未返回所选分集，已停止取址'), { code: entry?.video_model ? 'INVALID_RESPONSE' : 'MISSING_MODEL' });
+    }
+    if (!requireKeyedEntry) {
+        // A media asset ID is not an episode ID. An unkeyed response needs an
+        // independent asset and full-duration expectation before it can bind.
+        if (!keyedEntry && (options.expectedVideoId === undefined || options.expectedDuration === undefined)) {
+            throw Object.assign(new Error('App 接口未确认所选分集身份，已停止取址'), { code: 'INVALID_RESPONSE' });
+        }
+        validateAppModelIdentity(model, options, !keyedEntry);
     }
     return model;
 }
@@ -569,9 +606,11 @@ async function fetchAppPlayUrlFresh(vid, options) {
                     // model budget; an earlier empty response must not starve it.
                     deadline = Math.min(started + profile.timeout.requestMs, overallDeadline);
                     requestCount++;
+                    let responseReceived = false;
                     try {
                         const response = await requestJson(signed.url, { method: signed.method, headers: signed.headers, data: signed.body }, deadline, signal);
-                        model = playbackModel(response, vid, upstream);
+                        responseReceived = true;
+                        model = playbackModel(response, vid, upstream, options);
                         routeId = route.id;
                         selectedProfile = getPlaybackRouteProfile(routeId);
                         if (upstream) clearResult = parseClearUpstreamModel(model, vid, options);
@@ -579,6 +618,8 @@ async function fetchAppPlayUrlFresh(vid, options) {
                         observe({ routeId, elapsedMs: requestElapsedMs, status: 200, code: '', attempt: requestCount, modelValid: true });
                         break;
                     } catch (error) {
+                        error.stage ||= 'source';
+                        if (responseReceived && !error.status) { error.status = 200; error.httpStatus = 200; }
                         requestElapsedMs = Date.now() - started;
                         const code = Number(error.status) >= 300 ? `HTTP_${Number(error.status)}` : String(error.code || 'INVALID_RESPONSE');
                         observe({ routeId: route.id, elapsedMs: requestElapsedMs, status: Number(error.status) || 0,
@@ -619,17 +660,22 @@ async function fetchAppPlayUrlFresh(vid, options) {
         const readFallback = async () => {
             const fallback = parseFallback(model.fallback_api);
             if (!fallback) throw Object.assign(new Error('App 接口未返回本集片源地址'), { code: 'MISSING_MODEL' });
-            const outer = await requestJson(fallback, { headers: { 'User-Agent': VIDEO_UA } }, deadline, signal);
+            validateAppModelIdentity(model, {}, true);
+            const fallbackDeadline = Math.min(Date.now() + profile.timeout.requestMs, overallDeadline);
+            const outer = await requestJson(fallback, { headers: { 'User-Agent': VIDEO_UA } }, fallbackDeadline, signal);
             throwIfAborted(signal);
             if ([outer, outer.video_info].some(value => Number(value?.Code || value?.code || 0) !== 0)) {
                 throw Object.assign(new Error('App 接口暂未提供本集播放信息'), { code: 'BUSINESS_REJECTED' });
             }
-            return outer?.video_info?.data;
+            const info = outer?.video_info?.data;
+            validateAppModelIdentity(info, { expectedVideoId: model.video_id,
+                expectedDuration: model.video_duration }, true);
+            return info;
         };
         if (!inline) {
             const info = await readFallback();
             throwIfAborted(signal);
-            return ready(parseAppPlayModel(info, vid, options, false));
+            return ready(parseAppPlayModel(info, vid, options, false, true));
         }
         try {
             return ready(parseAppPlayModel(model, vid, options, true));
@@ -641,11 +687,6 @@ async function fetchAppPlayUrlFresh(vid, options) {
                 || !error.minimumPixels || !model.fallback_api) throw error;
             const info = await readFallback();
             throwIfAborted(signal);
-            const fallbackDuration = Number(info?.video_duration);
-            if (info?.video_id !== model.video_id || !Number.isFinite(fallbackDuration) || fallbackDuration <= 0
-                || Math.abs(fallbackDuration - duration) > 0.5) {
-                throw Object.assign(new Error('备用片源编号或完整时长无法确认，已停止取址'), { code: 'INVALID_RESPONSE' });
-            }
             return ready(parseAppPlayModel(info, vid, options, false, true, error.minimumPixels));
         }
     } finally {
@@ -751,11 +792,12 @@ function parseAppPlayModel(info, vid, options, inline, requireEncryptionMetadata
                         ? decryptSpadeUrl(candidate, Buffer.from(info.key_seed, 'base64'))
                         : cleanUrl(candidate);
                     const url = checkedUrl(media, ['qznovelvod.com', 'fqnovelvod.com', 'douyinvod.com']);
+                    const format = appMediaFormat(url);
                     const contentKey = key ? key.toString('hex') : null;
                     const identity = `${url}:${contentKey || ''}`;
                     if (seen.has(identity)) continue;
                     seen.add(identity);
-                    variants.push({ url, contentKey, codec: selected.codec === 'bytevc1' ? 'hevc' : selected.codec, source: 'app', vid,
+                    variants.push({ url, format, contentKey, codec: selected.codec === 'bytevc1' ? 'hevc' : selected.codec, source: 'app', vid,
                         userAgent: inline ? PLAYBACK_UA : VIDEO_UA, quality: allowLowerQuality ? (selected.width && selected.height ? `${Math.min(selected.width, selected.height)}p` : '') : requestedQuality === 'auto' ? selected.quality : requestedQuality,
                         ...(requestedQuality === 'auto' ? {} : { width: selected.width, height: selected.height }) });
                     if (selected.codec === 'bytevc2') Object.assign(variants[variants.length - 1], {
@@ -766,7 +808,7 @@ function parseAppPlayModel(info, vid, options, inline, requireEncryptionMetadata
         } catch (error) { lastError = error; }
     }
     if (variants.length) return { ...variants[0], variants };
-    throw lastError?.code === 'SECURITY_BLOCKED' ? lastError
+    throw ['SECURITY_BLOCKED', 'UNSUPPORTED_MEDIA_FORMAT'].includes(lastError?.code) ? lastError
         : Object.assign(new Error('本集片源地址或密钥无法解析'), {
             code: 'INVALID_RESPONSE',
             ...(incompleteEncryptionMetadata ? {

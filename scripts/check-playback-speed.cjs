@@ -3,7 +3,7 @@ const { mount } = require('./check-player-resume.cjs');
 
 (async () => {
   const ui = mount({ local: true });
-  await ui.flush(); ui.metadata();
+  await ui.flush(); ui.metadata(); ui.presentFrame();
   const controls = () => ui.find(n => n.props.videoRef && typeof n.props.onRateChange === 'function');
   const video = () => ui.find(n => n.type === 'video');
   const key = (value, extra = {}) => ui.events.get('keydown')({ key: value, target: { closest: () => null }, preventDefault() {}, ...extra });
@@ -47,6 +47,8 @@ const { mount } = require('./check-player-resume.cjs');
   const history = mount({ saved: { vid_index: 2, currentTime: 37 }, props: { target: { seriesId: 'A', vidIndex: 2, resume: true, ts: 1 } } });
   await history.flush(); assert.equal(history.saves.length, 0, 'preparing a stream must not create a watched entry');
   history.metadata(); assert.equal(history.media.currentTime, 37, 'history resume must preserve saved second');
+  assert.equal(history.saves.length, 0, 'metadata and playing without a presented frame must not create watched history');
+  history.presentFrame();
   assert.ok(history.saves.some(row => row[1] === 2 && row[2] === 37), 'real play must save the watched entry');
   history.unmount();
   const buffering = mount({ local: true });

@@ -22,11 +22,51 @@ test('playback classification uses HTTP/layer evidence and never guesses empty-b
     [{ code: 'SIGNATURE_REJECTED' }, {}, 'SIGNATURE_INVALID'],
     [{ code: 'ACCOUNT_SESSION_EXPIRED' }, {}, 'ACCOUNT_EXPIRED'],
     [{ code: 'ACCOUNT_ACCESS_DENIED' }, {}, 'ACCOUNT_UNAUTHORIZED'],
+    [{ code: 'BUSINESS_REJECTED' }, {}, 'API_BUSINESS_ERROR'],
+    [{ code: 'INVALID_RESPONSE' }, {}, 'API_PARSE_ERROR'],
+    [{ code: 'INVALID_JSON' }, {}, 'API_PARSE_ERROR'],
+    [{ code: 'MISSING_MODEL' }, {}, 'SOURCE_EMPTY'],
+    [{ code: 'NO_PLAYABLE_SOURCE' }, {}, 'SOURCE_EMPTY'],
+    [{ status: 404 }, {}, 'API_HTTP_ERROR'],
+    [{ code: 'HTTP_500' }, {}, 'API_HTTP_ERROR'],
+    [{ code: 'HTTP_403', stage: 'media' }, {}, 'CDN_UNAVAILABLE'],
+    [{ code: 'HTTP_404', stage: 'segment' }, {}, 'MEDIA_SEGMENT_FAILED'],
+    [{ code: 'ERR_BAD_RESPONSE', response: { status: 500 } }, {}, 'API_HTTP_ERROR'],
+    [{ code: 'HLS_MANIFEST_FAILED', status: 403, stage: 'manifest' }, {}, 'MANIFEST_LOAD_FAILED'],
+    [{ code: 'DASH_MANIFEST_FAILED' }, {}, 'MANIFEST_LOAD_FAILED'],
+    [{ code: 'HLS_SEGMENT_FAILED', status: 404, stage: 'segment' }, {}, 'MEDIA_SEGMENT_FAILED'],
+    [{ code: 'DASH_SEGMENT_FAILED' }, {}, 'MEDIA_SEGMENT_FAILED'],
+    [{ code: 'UNSUPPORTED_MEDIA_FORMAT' }, {}, 'MEDIA_FORMAT_UNSUPPORTED'],
+    [{ code: 'MEDIA_ERR_SRC_NOT_SUPPORTED' }, {}, 'MEDIA_FORMAT_UNSUPPORTED'],
+    [{ code: 'PLAYER_INTERNAL_ERROR', stage: 'player' }, {}, 'PLAYER_ERROR'],
+    [{ code: 'MEDIA_ERR_ABORTED' }, {}, 'PLAYER_ERROR'],
   ]) assert.equal(classifyPlaybackError(error, context), expected);
-  for (const error of [null, 'signed-cookie', { code: 'BUSINESS_REJECTED' }, { code: 'DEVICE_REGISTRATION_FAILED' },
-    { code: 'INVALID_RESPONSE' }, { code: 'MEDIA_ERR_SRC_NOT_SUPPORTED' }, { name: 'AbortError' }, { code: 'ERR_CANCELED' }]) {
+  for (const error of [null, 'signed-cookie', { code: 'DEVICE_REGISTRATION_FAILED' },
+    { name: 'AbortError' }, { code: 'ERR_CANCELED' }]) {
     assert.equal(classifyPlaybackError(error), '');
   }
+});
+
+test('Axios HTTP and transport failures keep their actual manifest or segment layer', () => {
+  for (const [stage, expected] of [['manifest', 'MANIFEST_LOAD_FAILED'], ['segment', 'MEDIA_SEGMENT_FAILED']]) {
+    for (const status of [403, 404, 500]) {
+      const error = { name: 'AxiosError', stage, code: status < 500 ? 'ERR_BAD_REQUEST' : 'ERR_BAD_RESPONSE',
+        response: { status, data: 'private response' } };
+      assert.equal(classifyPlaybackError(error), expected, `${stage} HTTP ${status}`);
+      assert.equal(classifyPlaybackError({ ...error, stage: undefined }, { stage }), expected);
+    }
+    for (const code of ['ETIMEDOUT', 'ECONNRESET', 'ERR_NETWORK', 'ERR_STREAM_PREMATURE_CLOSE']) {
+      assert.equal(classifyPlaybackError({ code, stage }), expected, `${stage} ${code}`);
+    }
+    assert.equal(classifyPlaybackError({ code: 'ERR_BAD_REQUEST', stage, status: 403 }, { stage, now: 100, expiresAt: 99 }),
+      'MEDIA_URL_EXPIRED', 'confirmed expiry requires a fresh address rather than replaying the same resource');
+    assert.equal(classifyPlaybackError({ code: 'ACCOUNT_ACCESS_DENIED', stage, status: 403 }), 'ACCOUNT_UNAUTHORIZED');
+    assert.equal(classifyPlaybackError({ code: 'ACCOUNT_SESSION_EXPIRED', stage, status: 403 }), 'ACCOUNT_EXPIRED');
+    assert.equal(classifyPlaybackError({ code: 'ERR_BAD_REQUEST', stage, status: 429 }), 'API_RATE_LIMITED');
+    assert.equal(classifyPlaybackError({ code: 'DRM_UNSUPPORTED', stage, status: 403 }), '');
+  }
+  assert.equal(classifyPlaybackError({ code: 'ERR_BAD_REQUEST', stage: 'media', response: { status: 403 } }), 'CDN_UNAVAILABLE');
+  assert.equal(classifyPlaybackError({ code: 'ERR_BAD_REQUEST', stage: 'source', response: { status: 403 } }), 'API_FORBIDDEN');
 });
 
 test('explicit authorization and rate-limit faults stop automatic retry and every defined fault has a bounded policy', () => {
@@ -49,7 +89,7 @@ test('provider aggregate keeps explicit rejections ahead of retryable network fa
   assert.equal(classifyPlaybackError({ sources: [{ code: 'EMPTY_RESPONSE' }, { code: 'HTTP_403' }] }), 'API_FORBIDDEN');
 });
 
-test('website episode unavailability is a bounded stop fault and takes precedence over an App empty response', () => {
+test('website episode unavailability and App empty response retain their combined evidence as a bounded stop fault', () => {
   const code = 'WEB_EPISODE_UNAVAILABLE';
   const policy = playbackRecoveryPolicy(code);
   assert.ok(FAULT_CODES.includes(code));
@@ -61,11 +101,29 @@ test('website episode unavailability is a bounded stop fault and takes precedenc
   assert.doesNotMatch(policy.message, /登录|扫码|付费|DRM|无权|权限/);
   const app = { source: 'app', code: 'EMPTY_RESPONSE' }, web = { source: 'web', code };
   for (const sources of [[app, web], [web, app], [app, { source: 'web', sources: [web] }]]) {
-    assert.equal(classifyPlaybackError({ code: 'SOURCE_UNAVAILABLE', sources }), code);
-    assert.equal(classifyPlaybackError({ sources }, { stage: 'media' }), code);
+    assert.equal(classifyPlaybackError({ code: 'SOURCE_UNAVAILABLE', sources }), 'SOURCE_PROVIDERS_FAILED');
+    assert.equal(classifyPlaybackError({ sources }, { stage: 'media' }), 'SOURCE_PROVIDERS_FAILED');
   }
+  assert.equal(classifyPlaybackError({ sources: [{ sources: [web, app] }] }), 'SOURCE_PROVIDERS_FAILED');
+  assert.equal(classifyPlaybackError({ sources: [{ source: 'web', code: 'HTTP_404' }, app] }), 'SOURCE_PROVIDERS_FAILED');
   assert.equal(classifyPlaybackError({ sources: [web, { code: 'HTTP_429' }] }), 'API_RATE_LIMITED');
   assert.equal(classifyPlaybackError({ sources: [web, { code: 'ACCOUNT_SESSION_EXPIRED' }] }), 'ACCOUNT_EXPIRED');
+  assert.equal(classifyPlaybackError({ sources: [web, app, { code: 'ACCOUNT_ACCESS_DENIED' }] }), 'ACCOUNT_UNAUTHORIZED');
+  const cycle = { sources: [] };
+  cycle.sources.push(cycle, app, web);
+  assert.equal(classifyPlaybackError(cycle), 'SOURCE_PROVIDERS_FAILED');
+});
+
+test('changed response and unsupported format faults cannot be retried as network or decoder problems', () => {
+  for (const fault of ['API_BUSINESS_ERROR', 'API_PARSE_ERROR', 'SOURCE_EMPTY', 'API_HTTP_ERROR',
+    'SOURCE_PROVIDERS_FAILED', 'MEDIA_FORMAT_UNSUPPORTED', 'PLAYER_ERROR']) {
+    assert.deepEqual({ ...playbackRecoveryPolicy(fault), message: '' },
+      { action: 'stop', maxRetries: 0, retryable: false, message: '' });
+  }
+  for (const fault of ['MANIFEST_LOAD_FAILED', 'MEDIA_SEGMENT_FAILED']) {
+    assert.equal(playbackRecoveryPolicy(fault).action, 'refresh-source');
+    assert.equal(playbackRecoveryPolicy(fault).maxRetries, 1);
+  }
 });
 
 test('explicit protected media stops without inventing an account, codec or transport fault', () => {

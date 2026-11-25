@@ -2,10 +2,23 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+const { gunzipSync } = require('node:zlib');
 const nativeDir = path.join(__dirname, '../src/native');
 const playbackDevice = Object.freeze({ device_id: '7000000000000000001', iid: '7000000000000000002', cdid: '00000000-0000-4000-8000-000000000003' });
 const mediaUrl = name => `https://v3-reading.qznovelvod.com/${name}.mp4`;
 const stream = (name, width, height, codec_type = 'h264') => ({ main_url: mediaUrl(name), width, height, codec_type, definition: '1080p' });
+// Metadata-only boxes for resolver/cache checks; these are never used as a playable video fixture.
+function publicMetadata() {
+  const box = (type, body) => {
+    const bytes = Buffer.alloc(body.length + 8);
+    bytes.writeUInt32BE(bytes.length); bytes.write(type, 4); body.copy(bytes, 8); return bytes;
+  };
+  const header = Buffer.alloc(20);
+  header.writeUInt32BE(1000, 12); header.writeUInt32BE(150000, 16);
+  const data = Buffer.concat([box('ftyp', Buffer.from('isom0000')), box('moov', box('mvhd', header))]);
+  return { status: 206, headers: { 'content-type': 'video/mp4',
+    'content-range': `bytes 0-${data.length - 1}/${data.length + 1000}` }, data };
+}
 function load(name, dependencies) {
   dependencies = { './playback-device': { createPlaybackIdentityManager: require('../src/native/playback-device').createPlaybackIdentityManager,
     registerPlaybackDevice: async () => playbackDevice }, ...dependencies };
@@ -18,17 +31,35 @@ function appFixture(videoList) {
   const calls = [];
   const app = load('app-source.js', { axios: async config => {
     calls.push(config);
+    const requestedVid = config.method === 'POST'
+      ? JSON.parse(gunzipSync(config.data).toString('utf8')).mixed_video_id_map['1004'][0]
+      : new URL(config.url).searchParams.get('fixture_vid');
+    assert.match(requestedVid, /^\d+$/);
+    const identity = { video_id: `fixture-asset-${requestedVid}`, video_duration: 150 };
+    const rows = Object.fromEntries(Object.entries(videoList).map(([id, row]) => [id,
+      row.encrypt_info === undefined ? { ...row, encrypt_info: { encrypt: false } } : row]));
     return { status: 200, headers: {}, data: JSON.stringify(config.method === 'POST'
-      ? { data: { '11': { video_model: { fallback_api: 'https://vod.snssdk.com/info' } } } }
-      : { video_info: { data: { video_list: videoList } } }) };
+      ? { data: { [requestedVid]: { video_model: { ...identity,
+        fallback_api: `https://vod.snssdk.com/info?fixture_vid=${requestedVid}` } } } }
+      : { video_info: { data: { ...identity, video_list: rows } } }) };
   } });
   return { ...app, calls };
 }
 function routeFixture(appError = false) {
   const calls = [];
   const native = load('hongguo.js', {
-    axios: { get: async () => { calls.push('web'); return { data: `<script>window._ROUTER_DATA=${JSON.stringify({ loaderData: {
-      'player_(series_id)/(vid)/page': { vid: '11', series_id: '1', seriesDetail: { series_id: '1' }, publicVideoSeo: { available: true, itemId: '11', seriesId: '1' } },
+    axios: { get: async (url, options) => {
+      if (options.responseType === 'arraybuffer') {
+        calls.push('web-metadata');
+        assert.equal(url, mediaUrl('web'));
+        assert.match(options.headers.Range, /^bytes=0-\d+$/);
+        return publicMetadata();
+      }
+      calls.push('web'); return { status: 200, data: `<script>window._ROUTER_DATA=${JSON.stringify({ loaderData: {
+      'player_(series_id)/(vid)/page': { isSuccess: true, vid: '11', series_id: '1',
+        req: { pcLoginRequired: false, pcAuthenticatedPlayback: false, encryptedBrowserAllowed: false },
+        seriesDetail: { series_id: '1', pay_type: 0, vid_list: ['11'], accessible_episode_cnt: 1 },
+        publicVideoSeo: { available: true, itemId: '11', seriesId: '1', durationSeconds: 150 } },
     } })}</script><script type="application/ld+json">${JSON.stringify({ '@type': 'VideoObject', url: 'https://hongguoduanju.com/player/1/11', contentUrl: mediaUrl('web') })}</script>` }; } },
     './app-source': { fetchAppPlayUrl: async (_vid, options) => {
       calls.push(options.allowLowerQuality ? options.quality + ':fallback' : options.quality);
@@ -75,7 +106,7 @@ const checks = [
     for (const [rows, code] of [
       [{}, 'NO_COMPATIBLE_SOURCE'],
       [{ unknown: stream('unknown', 0, 0) }, 'QUALITY_UNAVAILABLE'],
-      [{ unsupported: stream('bad', 1080, 1920, 'bytevc2') }, 'NO_COMPATIBLE_SOURCE'],
+      [{ unsupported: stream('bad', 1080, 1920, 'unsupported-codec') }, 'NO_COMPATIBLE_SOURCE'],
     ]) {
       await assert.rejects(appFixture(rows).fetchAppPlayUrl('11', { quality: '1080p' }), { code });
     }
@@ -127,13 +158,14 @@ const checks = [
     assert.notEqual(fresh.url, hd.url);
     assert.equal((await f.fetchPlayUrlSingle('11', '1', { quality: 'auto' })).url, auto.url);
     assert.equal((await f.fetchPlayUrlSingle('11', '1', { quality: '720p' })).url, sd.url);
-    assert.deepEqual(f.calls, ['web', '1080p', '720p', '1080p']);
+    assert.deepEqual(f.calls, ['web', 'web-metadata', '1080p', '720p', '1080p']);
   }],
   ['explicit App failure returns no URL and never silently falls back to web', async () => {
     const f = routeFixture(true);
     const result = await f.fetchPlayUrlSingle('11', '1', { quality: '1080p' });
     assert.equal(result.url, null);
-    assert.equal(result.error, '当前内容暂时无法播放，请稍后重试。');
+    assert.equal(result.faultCode, 'SOURCE_EMPTY');
+    assert.equal(result.code, 'SOURCE_UNAVAILABLE');
     assert.deepEqual(f.calls, ['1080p']);
   }],
   ['third-party source keeps its authorized URL for later local resolution check', async () => {

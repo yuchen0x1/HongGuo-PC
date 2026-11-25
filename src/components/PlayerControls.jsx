@@ -163,8 +163,9 @@ export default function PlayerControls({ danmaku, enhancement, shortcuts = DEFAU
     setSelectionPanel(null);
     const video = videoRef.current;
     if (!video) return;
-    const sync = () => setMedia({ paused: video.paused, ended: video.ended, time: Number.isFinite(video.currentTime) ? video.currentTime : 0,
-      duration: Number.isFinite(video.duration) && video.duration > 0 ? video.duration : 0, muted: video.muted, volume: video.volume,
+    const sync = () => setMedia({ paused: !available || video.paused, ended: available && video.ended,
+      time: available && Number.isFinite(video.currentTime) ? video.currentTime : 0,
+      duration: available && Number.isFinite(video.duration) && video.duration > 0 ? video.duration : 0, muted: video.muted, volume: video.volume,
       width: available ? video.videoWidth : 0, height: available ? video.videoHeight : 0 });
     const events = ['play', 'pause', 'ended', 'timeupdate', 'loadedmetadata', 'durationchange', 'volumechange', 'emptied', 'resize'];
     events.forEach(name => video.addEventListener(name, sync));

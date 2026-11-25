@@ -5,14 +5,24 @@ const tick = (ui, time) => {
   ui.media.currentTime = time;
   ui.find(n => n.type === 'video').props.onTimeUpdate?.({ currentTarget: ui.media });
 };
+const presentMedia = async ui => {
+  ui.metadata();
+  await ui.flush();
+  assert.equal(ui.presentFrame(), true, 'the fixture must present a simulated video frame');
+  tick(ui, ui.media.currentTime);
+  await ui.flush();
+};
 (async () => {
   let finish;
   const ui = mount({ prepare: p => p.prefetch ? new Promise(r => { finish = r; }) : { success: true, url: 'hongguo-stream://one' } });
-  await ui.flush(); ui.metadata();
+  await ui.flush(); ui.metadata(); await ui.flush();
   assert.equal(ui.button('缓存后续 2 集').props['aria-pressed'], true, 'restored playback shortcut reflects the cache preference');
   assert.equal(ui.button('缓存后续 2 集').props.style.whiteSpace, 'nowrap', 'two-ahead cache label must stay on one line');
   assert.equal(ui.media.currentTime, 0);
-  assert.equal(ui.prepares.length, 2, 'opening episode one must immediately prefetch episode two');
+  tick(ui, 1); await ui.flush();
+  assert.equal(ui.prepares.length, 1, 'metadata and playing without a first frame must not start prefetch');
+  assert.equal(ui.presentFrame(), true); tick(ui, 0); await ui.flush();
+  assert.equal(ui.prepares.length, 2, 'presenting episode one first frame must allow prefetching episode two');
   tick(ui, 1); tick(ui, 2); await ui.flush();
   assert.equal(ui.prepares.length, 2, 'repeated playback events must not duplicate prefetch');
   assert.equal(ui.prepares[1].prefetch, true);
@@ -22,28 +32,28 @@ const tick = (ui, time) => {
   finish({ success: true, url: 'hongguo-stream://next', streamId: 'next' }); await ui.flush();
   assert.equal(ui.find(n => n.type === 'video').props.src, 'hongguo-stream://next'); ui.unmount();
   for (const options of [{ local: true }, { settings: { cache_next_episode: false } }, { lockedIndexes: [2] }]) {
-    const disabled = mount(options); await disabled.flush(); disabled.metadata();
+    const disabled = mount(options); await disabled.flush(); await presentMedia(disabled);
     tick(disabled, 90); await disabled.flush();
     assert.ok(!disabled.prepares.some(p => p.prefetch)); disabled.unmount();
   }
   const changedSettings = { cache_next_episode: true };
   const cancel = mount({ apiOverrides: { getSettings: async () => changedSettings }, prepare: p => p.prefetch ? new Promise(() => {}) : { success: true, url: 'hongguo-stream://one' } });
-  await cancel.flush(); cancel.metadata(); tick(cancel, 90); await cancel.flush();
+  await cancel.flush(); await presentMedia(cancel); tick(cancel, 90); await cancel.flush();
   cancel.props.active = false; await cancel.flush();
   changedSettings.cache_next_episode = false; cancel.props.active = true; await cancel.flush();
   assert.ok(cancel.releases.some(r => r.requestId === cancel.prepares[1].requestId)); cancel.unmount();
   const failed = mount({ prepare: p => p.prefetch ? { success: false, error: 'offline' } : { success: true, url: 'hongguo-stream://normal' } });
-  await failed.flush(); failed.metadata(); tick(failed, 90); await failed.flush(); tick(failed, 91); await failed.flush();
+  await failed.flush(); await presentMedia(failed); tick(failed, 90); await failed.flush(); tick(failed, 91); await failed.flush();
   assert.equal(failed.prepares.length, 2, 'failed prefetch must not loop');
   failed.episode(2); await failed.flush();
   assert.equal(failed.prepares.length, 3, 'playback retries normally after prefetch failure'); failed.unmount();
   const chain = mount({ episodeCount: 3 });
-  await chain.flush(); chain.metadata(); await chain.flush();
+  await chain.flush(); await presentMedia(chain);
   assert.deepEqual(chain.prepares.filter(p => p.prefetch).map(p => p.vidIndex), [2, 3],
-    'opening one episode must prefetch both following playable episodes');
-  chain.episode(2); await chain.flush(); chain.metadata(); await chain.flush();
+    'presenting one episode first frame must allow prefetching both following playable episodes');
+  chain.episode(2); await chain.flush(); await presentMedia(chain);
   assert.deepEqual(chain.prepares.filter(p => p.prefetch && p.vidIndex === 3).length, 1,
     'switching to episode two must reuse episode three preparation without duplicating it');
   chain.unmount();
-  console.log('PASS next-cache: immediate trigger, reuse, skip, settings refresh, cancellation, failure fallback, next-episode chain');
+  console.log('PASS next-cache: simulated first-frame trigger, reuse, skip, settings refresh, cancellation, failure fallback, next-episode chain');
 })().catch(error => { console.error(error); process.exitCode = 1; });

@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
-const { routeDiagnostic, safeCode, sanitizePlaybackDiagnostics, updatePlaybackRoute, playbackFailureMessage, createPlaybackDiagnostics } = require('./playback-diagnostics');
+const { routeDiagnostic, safeCode, sanitizePlaybackDiagnostics, sanitizePlaybackTrace,
+  updatePlaybackRoute, playbackFailureMessage, createPlaybackDiagnostics } = require('./playback-diagnostics');
 const { getPlaybackProfile, UPSTREAM_PLAYBACK_PROFILE } = require('./playback-profiles');
 const { OFFICIAL_WEB_PROFILE } = require('./official-web-playback');
 
@@ -31,15 +32,16 @@ test('route diagnostics preserve only known source and playback-stage fields', (
 });
 
 test('playback errors use evidence-based user text without guessing auth or signature causes', () => {
-  for (const error of [
-    { code: 'EMPTY_RESPONSE' },
-    { code: 'DEVICE_REGISTRATION_FAILED' },
-    { code: 'BUSINESS_REJECTED' },
-    { code: 'SOURCE_UNAVAILABLE', sources: [{ source: 'app', code: 'EMPTY_RESPONSE', message: '签名失败 https://secret.invalid' }] },
+  for (const [error, expected] of [
+    [{ code: 'EMPTY_RESPONSE' }, '播放接口返回空内容，未能取得可用片源，请稍后重试。'],
+    [{ code: 'DEVICE_REGISTRATION_FAILED' }, '当前内容暂时无法播放，请稍后重试。'],
+    [{ code: 'BUSINESS_REJECTED' }, '播放接口返回业务错误，本次已停止重复请求；请查看诊断详情。'],
+    [{ code: 'SOURCE_UNAVAILABLE', sources: [{ source: 'app', code: 'EMPTY_RESPONSE', message: '签名失败 https://secret.invalid' }] },
+      '播放接口返回空内容，未能取得可用片源，请稍后重试。'],
   ]) {
     const message = playbackFailureMessage(error);
-    assert.equal(message, '当前内容暂时无法播放，请稍后重试。');
-    assert.doesNotMatch(message, /签名|设备鉴权|空响应|secret\.invalid/);
+    assert.equal(message, expected);
+    assert.doesNotMatch(message, /签名|设备鉴权|登录|扫码|secret\.invalid/);
   }
 
   assert.equal(playbackFailureMessage({ code: 'ACCOUNT_REQUIRED' }), '当前内容需要红果官方账号授权。');
@@ -112,12 +114,14 @@ test('website episode unavailability crosses diagnostics as a fixed stop reason 
   assert.equal(diagnostic.code, code);
   assert.equal(diagnostic.faultCode, code);
   assert.equal(diagnostic.routes[0].code, code);
-  for (const error of [{ code }, { faultCode: code }, { code: 'SOURCE_UNAVAILABLE',
-    sources: [{ source: 'app', code: 'EMPTY_RESPONSE' }, { source: 'web', code, message: 'Cookie=secret' }] }]) {
+  for (const error of [{ code }, { faultCode: code }]) {
     const message = playbackFailureMessage(error);
     assert.equal(message, '官网当前播放入口不提供本集，请在官方客户端查看可用播放方式。');
     assert.doesNotMatch(message, /登录|扫码|付费|DRM|无权|权限|Cookie|secret/);
   }
+  assert.equal(playbackFailureMessage({ code: 'SOURCE_UNAVAILABLE', sources: [
+    { source: 'app', code: 'EMPTY_RESPONSE' }, { source: 'web', code, message: 'Cookie=secret' },
+  ] }), '官网当前入口未提供本集，App 播放接口返回空响应；尚未取得本集播放源。');
   const collector = createPlaybackDiagnostics();
   collector.record({ event: 'source-failure', sourceRoute: 'web', faultCode: code, message: 'token=secret' });
   const snapshot = collector.snapshot();
@@ -362,4 +366,122 @@ test('background source work retains aggregate history without overwriting foreg
   assert.equal(after.requestRoutes.find(route => route.routeId === 'preload-primary').failures, 1);
   assert(after.events.some(event => event.faultCode === 'API_EMPTY_RESPONSE'));
   assert.doesNotMatch(JSON.stringify(after), /foreground-private-request|background-private-request|requestId/);
+});
+
+test('each foreground play has a private independent diagnostic ID with bounded detached traces', () => {
+  const collector = createPlaybackDiagnostics({ now: () => Date.UTC(2026, 10, 26, 4) });
+  const requestId = 'private-episode-22-request';
+  collector.setForeground(requestId);
+  const first = collector.attempt(requestId);
+  assert.match(first.diagnosticId, /^PLAY-20261126-[a-f0-9]{12}$/);
+  assert.equal(collector.attempt(requestId).diagnosticId, first.diagnosticId);
+  assert.deepEqual(first.steps.map(step => step.status), Array(6).fill('not-run'));
+  collector.setForeground('other-private-episode-request');
+  assert.notEqual(collector.attempt('other-private-episode-request').diagnosticId, first.diagnosticId);
+  for (let i = 0; i < 90; i++) collector.record({ requestId, event: 'media-state', stage: 'media' });
+  const trace = collector.attempt(requestId);
+  assert.equal(trace.events.length, 40);
+  trace.events[0].event = 'private'; trace.steps[0].status = 'private';
+  assert.equal(collector.attempt(requestId).events[0].event, 'media-state');
+  assert.equal(collector.attempt(requestId).steps[0].status, 'not-run');
+  assert.doesNotMatch(JSON.stringify(collector.snapshot()), /private-episode|private-episode-request|requestId/);
+  for (let i = 0; i < 32; i++) collector.setForeground(`bounded-${i}`);
+  assert.deepEqual(collector.attempt(requestId), {}, 'old attempt lookup cannot grow the internal history without bound');
+});
+
+test('HTTP 200 empty response proves transport but cannot pass parsing, source validation or playback', () => {
+  const collector = createPlaybackDiagnostics({ now: () => 1000 });
+  const requestId = 'empty-episode';
+  collector.setForeground(requestId);
+  collector.record({ requestId, event: 'source-start' });
+  collector.record({ requestId, type: 'source-request', sourceRoute: 'app', routeId: 'preload-primary',
+    status: 200, code: 'EMPTY_RESPONSE', modelValid: false, elapsedMs: 123 });
+  collector.record({ requestId, event: 'source-failure', stage: 'source', faultCode: 'API_EMPTY_RESPONSE', httpStatus: 200 });
+  const trace = collector.attempt(requestId);
+  assert.deepEqual(trace.steps.map(({ step, status }) => [step, status]), [
+    ['source-request', 'passed'], ['response', 'failed'], ['source-validation', 'not-run'],
+    ['media-load', 'not-run'], ['decode', 'not-run'], ['first-frame', 'not-run'],
+  ]);
+  assert.equal(trace.httpStatus, 200);
+  assert.equal(trace.events[1].code, 'EMPTY_RESPONSE');
+  assert.equal(trace.events[1].faultCode, 'API_EMPTY_RESPONSE');
+  assert.equal(trace.events[1].requestDurationMs, 123);
+  const snapshot = collector.snapshot();
+  assert.equal(snapshot.counts.playbackSuccesses, 0);
+  assert.equal(snapshot.lastSuccessAt, null);
+  assert.equal(snapshot.lastFailure.diagnosticId, trace.diagnosticId);
+});
+
+test('source acceptance, media load, decode and rendered first frame remain distinct evidence', () => {
+  const collector = createPlaybackDiagnostics({ now: () => 1000 });
+  const requestId = 'media-evidence';
+  const stages = () => Object.fromEntries(collector.attempt(requestId).steps.map(step => [step.step, step.status]));
+  collector.setForeground(requestId);
+  collector.record({ requestId, event: 'source-success', sourceRoute: 'web' });
+  assert.deepEqual(stages(), { 'source-request': 'passed', response: 'passed', 'source-validation': 'passed',
+    'media-load': 'pending', decode: 'not-run', 'first-frame': 'not-run' });
+  collector.record({ requestId, event: 'media-state', stage: 'decode', mediaStatus: 'loading' });
+  assert.equal(stages().decode, 'pending');
+  assert.equal(stages()['first-frame'], 'not-run');
+  collector.record({ requestId, event: 'media-state', stage: 'first-frame', mediaStatus: 'buffering' });
+  assert.equal(stages()['first-frame'], 'pending');
+  assert.equal(collector.snapshot().lastSuccessAt, null);
+  collector.record({ requestId, event: 'playback-success', stage: 'first-frame', decoderStatus: 'native' });
+  assert(Object.values(stages()).every(status => status === 'passed'));
+  collector.record({ requestId, event: 'media-state', stage: 'decode', mediaStatus: 'paused' });
+  collector.record({ requestId, event: 'media-state', stage: 'first-frame', mediaStatus: 'playing' });
+  assert(Object.values(stages()).every(status => status === 'passed'), 'later state reports cannot undo rendered evidence');
+  collector.record({ requestId, event: 'source-start' });
+  assert.deepEqual(stages(), { 'source-request': 'pending', response: 'not-run', 'source-validation': 'not-run',
+    'media-load': 'not-run', decode: 'not-run', 'first-frame': 'not-run' });
+});
+
+test('failure trace preserves actual HTTP status and only foreground failure replaces the recent failure', () => {
+  const collector = createPlaybackDiagnostics({ now: () => 1000 });
+  collector.setForeground('older');
+  collector.setForeground('current');
+  collector.record({ requestId: 'current', event: 'failure', stage: 'manifest', code: 'HLS_MANIFEST_FAILED',
+    faultCode: 'MANIFEST_LOAD_FAILED', httpStatus: 403 });
+  const first = collector.snapshot().lastFailure;
+  assert.equal(first.httpStatus, 403);
+  assert.deepEqual(first.steps.find(step => step.step === 'media-load'),
+    { step: 'media-load', status: 'failed', code: 'HLS_MANIFEST_FAILED', httpStatus: 403 });
+  collector.record({ requestId: 'older', event: 'source-failure', faultCode: 'API_EMPTY_RESPONSE', httpStatus: 200 });
+  assert.deepEqual(collector.snapshot().lastFailure, first, 'a late prefetch failure cannot replace the current episode failure');
+  first.steps[3].code = 'private';
+  assert.equal(collector.snapshot().lastFailure.steps[3].code, 'HLS_MANIFEST_FAILED');
+});
+
+test('trace sanitization rejects untrusted IDs, arbitrary fields and invalid HTTP statuses', () => {
+  const secret = 'Cookie private-token https://signed.invalid';
+  const diagnosticId = 'PLAY-20261126-0123456789ab';
+  for (const value of [null, false, secret, { diagnosticId: secret }]) assert.deepEqual(sanitizePlaybackTrace(value), {});
+  const value = sanitizePlaybackDiagnostics({ diagnosticId, httpStatus: 999, cookie: secret,
+    routes: [null, { source: 'app', code: secret, message: secret, httpStatus: 403 }],
+    steps: [{ step: 'response', status: 'failed', code: 'INVALID_RESPONSE', httpStatus: 200, message: secret },
+      { step: secret, status: 'failed' }],
+    events: [{ at: 1000, event: 'source-attempt', sourceRoute: 'app', routeId: 'preload-primary',
+      stage: 'source', code: 'INVALID_RESPONSE', httpStatus: 200, message: secret, cookie: secret },
+    { at: 1000, event: secret }, { at: -1, event: 'failure' }],
+  });
+  assert.equal(value.diagnosticId, diagnosticId);
+  assert.equal(value.httpStatus, undefined);
+  assert.equal(value.routes[1].httpStatus, 403);
+  assert.equal(value.events.length, 1);
+  assert.equal(value.events[0].code, 'INVALID_RESPONSE');
+  assert.deepEqual(value.steps, [{ step: 'response', status: 'failed', code: 'INVALID_RESPONSE', httpStatus: 200 }]);
+  assert.doesNotMatch(JSON.stringify(value), /Cookie|private-token|signed\.invalid/);
+  assert.doesNotThrow(() => sanitizePlaybackDiagnostics(null));
+});
+
+test('media trace keeps safe Axios transport codes alongside manifest and segment faults', () => {
+  const collector = createPlaybackDiagnostics({ now: () => 1000 });
+  collector.setForeground('manifest-http');
+  collector.record({ requestId: 'manifest-http', event: 'failure', stage: 'manifest', code: 'ERR_BAD_REQUEST',
+    faultCode: 'MANIFEST_LOAD_FAILED', httpStatus: 403, message: 'Cookie=private-token' });
+  const event = collector.attempt('manifest-http').events.at(-1);
+  assert.equal(event.code, 'ERR_BAD_REQUEST');
+  assert.equal(event.faultCode, 'MANIFEST_LOAD_FAILED');
+  assert.equal(event.httpStatus, 403);
+  assert.doesNotMatch(JSON.stringify(collector.snapshot()), /Cookie|private-token/);
 });

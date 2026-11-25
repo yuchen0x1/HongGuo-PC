@@ -37,12 +37,19 @@ const MESSAGES = Object.freeze({
   DEVICE_IDENTITY_EXPIRED: '播放设备状态已失效，请重新建立播放会话。',
   SIGNATURE_INVALID: '播放请求未通过官方校验，请重新连接片源。',
   API_EMPTY_RESPONSE: '播放接口返回空内容，未取得可下载资源。', API_RATE_LIMITED: '官方请求过于频繁，请稍后手动重试。',
-  API_FORBIDDEN: '官方服务拒绝了请求，请确认内容授权。', NETWORK_TIMEOUT: '视频请求超时，请检查网络后重试。',
+  API_FORBIDDEN: '官方服务拒绝了本次请求，请查看诊断中的 HTTP 状态码。', NETWORK_TIMEOUT: '视频请求超时，请检查网络后重试。',
   WEB_EPISODE_UNAVAILABLE: '官网当前播放入口不提供本集，请在官方客户端查看可用播放方式。',
+  SOURCE_PROVIDERS_FAILED: '官网当前入口未提供本集，App 播放接口返回空响应；尚未取得可下载资源。',
+  API_BUSINESS_ERROR: '播放接口返回业务错误，已停止重复请求；请查看播放诊断。',
+  API_PARSE_ERROR: '无法识别播放接口返回的数据，已停止下载；请导出播放诊断。',
+  SOURCE_EMPTY: '当前接口没有返回本集可用下载地址。', API_HTTP_ERROR: '播放接口返回 HTTP 错误，请查看状态码。',
   NETWORK_DISCONNECTED: '视频网络连接已中断，请恢复网络后重试。',
   MEDIA_URL_EXPIRED: '视频地址已过期，请重新获取片源。', CDN_UNAVAILABLE: '视频线路暂时不可用，请重新连接。',
   MEDIA_DECRYPT_FAILED: '视频准备失败，未发布为完整下载。',
   CODEC_UNSUPPORTED: '本机暂不支持当前视频编码。', PLAYER_DECODE_FAILED: '视频解码校验失败，请重新下载。',
+  MEDIA_FORMAT_UNSUPPORTED: '当前媒体格式不受支持，未作为完整分集下载。',
+  MANIFEST_LOAD_FAILED: 'HLS/DASH 媒体清单加载失败，未完成下载。',
+  MEDIA_SEGMENT_FAILED: '视频媒体资源请求失败，未完成下载。', PLAYER_ERROR: '媒体处理发生错误，未完成下载。',
 });
 const SOURCE_NAMES = Object.freeze({ web: '网页', app: 'App', api: '旧接口', custom: '自定义源', xifan: '喜番' });
 const checkedCode = value => typeof value === 'string' ? safeCode(value) || (networkFailure(value) ? value : '') : '';
@@ -61,17 +68,20 @@ function localMessage(value) {
 function downloadErrorDetails(error = {}) {
   // Build from allowlisted primitives; Axios errors and causes retain signed URLs and request headers.
   const code = checkedCode(error?.code);
-  const status = checkedStatus(error?.mediaStatus) || checkedStatus(error?.status) || checkedStatus(error?.response?.status);
+  const status = checkedStatus(error?.mediaStatus) || checkedStatus(error?.httpStatus)
+    || checkedStatus(error?.status) || checkedStatus(error?.response?.status);
   const sources = (Array.isArray(error?.sources) ? error.sources : []).slice(0, 8)
     .map(row => {
       const source = row?.source, sourceCode = checkedCode(row?.code);
       return typeof source === 'string' && Object.hasOwn(SOURCE_NAMES, source) && sourceCode ? { source, code: sourceCode } : null;
     }).filter(Boolean);
+  const suppliedStage = error?.stage;
   const faultCode = classifyPlaybackError({ code, status, faultCode: checkedCode(error?.faultCode), sources }, {
-    stage: code === 'SOURCE_UNAVAILABLE' ? 'source' : 'media',
+    stage: ['source', 'media', 'hls', 'manifest', 'segment', 'decrypt', 'decode', 'player', 'first-frame'].includes(suppliedStage)
+      ? suppliedStage : code === 'SOURCE_UNAVAILABLE' ? 'source' : 'media',
   });
   const transportMessage = networkFailure(code) === 'TLS' ? '视频服务的 TLS 证书或握手校验失败，已停止下载。' : '';
-  const message = (faultCode === 'WEB_EPISODE_UNAVAILABLE' ? MESSAGES[faultCode] : '')
+  const message = (faultCode === 'WEB_EPISODE_UNAVAILABLE' || code === 'SOURCE_UNAVAILABLE' ? MESSAGES[faultCode] : '')
     || localMessage(error?.message) || MESSAGES[code] || transportMessage || MESSAGES[faultCode]
     || (status ? '视频服务请求失败，请稍后重试。' : '下载任务执行失败，请重试或检查诊断信息。');
   const labels = [code, status ? `HTTP ${status}` : '', ...sources.map(row => `${SOURCE_NAMES[row.source]}：${row.code}`)].filter(Boolean);

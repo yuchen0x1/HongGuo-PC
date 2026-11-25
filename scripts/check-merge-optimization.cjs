@@ -2,40 +2,80 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const analysisRoot = path.resolve(__dirname, '../.local/analysis');
+const temporaryDirectory = prefix => {
+  fs.mkdirSync(analysisRoot, { recursive: true });
+  return fs.mkdtempSync(path.join(analysisRoot, prefix));
+};
 function checkPublish() {
   const { publishMergedOutput } = require('../src/native/merge-runner');
-  const root = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'merge-publish-'));
+  const root = temporaryDirectory('merge-publish-');
   const source = path.join(root, 'source.mp4'), target = path.join(root, 'output.mp4');
   const link = fs.linkSync, copy = fs.copyFileSync;
-  let copies = 0;
+  let copies = 0, nativeLinkUnavailable = false;
   fs.writeFileSync(source, 'verified video');
   try {
-    fs.copyFileSync = (...args) => { copies++; return copy(...args); };
+    fs.linkSync = (...args) => {
+      try { return link(...args); }
+      catch (error) { nativeLinkUnavailable = true; throw error; }
+    };
+    fs.copyFileSync = (...args) => {
+      copies++;
+      assert.equal(args[2], fs.constants.COPYFILE_EXCL, 'every fallback must atomically refuse an existing destination');
+      return copy(...args);
+    };
     publishMergedOutput(source, target);
     assert.equal(fs.readFileSync(target, 'utf8'), 'verified video');
-    assert.equal(copies, 0, 'supported hard-link must not duplicate bytes');
+    assert.equal(copies, nativeLinkUnavailable ? 1 : 0, 'only an unavailable hard-link may use exclusive copy');
+    const copiesAfterPublish = copies;
+    fs.linkSync = () => { throw Object.assign(new Error('destination exists'), { code: 'EEXIST' }); };
     assert.throws(() => publishMergedOutput(source, target), { code: 'EEXIST' });
-    assert.equal(copies, 0, 'EEXIST must never fall back to copying');
+    assert.equal(copies, copiesAfterPublish, 'EEXIST must never fall back to copying');
     fs.unlinkSync(target);
-    for (const code of ['ENOTSUP', 'EOPNOTSUPP', 'EPERM', 'EXDEV', 'ENOSYS']) {
-      fs.linkSync = () => { throw Object.assign(new Error(code), { code }); };
+    for (const code of ['ENOTSUP', 'EOPNOTSUPP', 'EPERM', 'EXDEV', 'ENOSYS', 'UNKNOWN']) {
+      fs.linkSync = () => { throw Object.assign(new Error(code), { code,
+        ...(code === 'UNKNOWN' ? { errno: -4094, syscall: 'link' } : {}) }); };
+      const before = copies;
       publishMergedOutput(source, target);
+      assert.equal(copies, before + 1, `${code} must use one exclusive copy`);
       assert.equal(fs.readFileSync(target, 'utf8'), 'verified video');
+      fs.writeFileSync(target, 'existing user output');
       assert.throws(() => publishMergedOutput(source, target), { code: 'EEXIST' });
-      assert.equal(fs.readFileSync(target, 'utf8'), 'verified video', 'fallback must preserve existing output');
+      assert.equal(fs.readFileSync(target, 'utf8'), 'existing user output', 'fallback must preserve existing output');
+      assert.equal(fs.readFileSync(source, 'utf8'), 'verified video', 'fallback must preserve its source');
       fs.unlinkSync(target);
     }
+    fs.linkSync = (_source, destination) => {
+      fs.writeFileSync(destination, 'concurrent user output', { flag: 'wx' });
+      throw Object.assign(new Error('cloud filesystem cannot link'), { code: 'UNKNOWN', errno: -4094, syscall: 'link' });
+    };
+    assert.throws(() => publishMergedOutput(source, target), { code: 'EEXIST' });
+    assert.equal(fs.readFileSync(target, 'utf8'), 'concurrent user output', 'fallback must refuse an output created during publication');
+    assert.equal(fs.readFileSync(source, 'utf8'), 'verified video', 'a competing output must preserve the validated source');
+    fs.unlinkSync(target);
+    fs.linkSync = () => { throw Object.assign(new Error('cloud filesystem cannot link'), { code: 'UNKNOWN', errno: -4094, syscall: 'link' }); };
     const missingDestination = path.join(root, 'missing-directory', 'output.mp4');
     assert.throws(() => publishMergedOutput(source, missingDestination), { code: 'ENOENT' });
     assert.equal(fs.existsSync(missingDestination), false, 'failed fallback must not publish a partial result');
     assert.equal(fs.readFileSync(source, 'utf8'), 'verified video', 'publishing must not modify source');
-    console.log('PASS publish: hard-link, unsupported-filesystem fallback, no overwrite, failed-copy/source preservation');
+    fs.copyFileSync = (_source, _destination, flags) => {
+      copies++; assert.equal(flags, fs.constants.COPYFILE_EXCL);
+      throw Object.assign(new Error('copy capacity exhausted'), { code: 'ENOSPC' });
+    };
+    assert.throws(() => publishMergedOutput(source, target), { code: 'ENOSPC' });
+    assert.equal(fs.existsSync(target), false, 'a failed copy must not claim a published output');
+    assert.equal(fs.readFileSync(source, 'utf8'), 'verified video', 'copy failure must not delete the validated source');
+    const beforeDenied = copies;
+    fs.linkSync = () => { throw Object.assign(new Error('access denied'), { code: 'EACCES' }); };
+    assert.throws(() => publishMergedOutput(source, target), { code: 'EACCES' });
+    assert.equal(copies, beforeDenied, 'unrecognized hard-link failures must still propagate');
+    console.log('PASS publish: hard-link, unsupported/UNKNOWN filesystem fallback, no overwrite, failed-copy/source preservation');
   } finally { fs.linkSync = link; fs.copyFileSync = copy; fs.rmSync(root, { recursive: true, force: true }); }
 }
 async function checkSpacePreflight() {
   const childProcess = require('node:child_process');
   const runnerPath = require.resolve('../src/native/merge-runner');
-  const root = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'merge-space-'));
+  const root = temporaryDirectory('merge-space-');
   const statfs = fs.statfsSync, spawn = childProcess.spawn;
   let bavail = 0, statfsCalls = 0, spawnCalls = 0;
   try {

@@ -18,7 +18,8 @@ function mount({ local = false, localIndexes = [], localQuality, saved = null, t
   const slots = [], effects = [], cleanups = [], saves = [], prepares = [], transcodes = [], cancelled = [];
   const releases = [], settingsSaved = [], historyListeners = new Set();
   const playbackDiagnosticListeners = new Set();
-  const reports = [], navigator = { onLine: networkOnline };
+  const reports = [], clipboardWrites = [], navigator = { onLine: networkOnline,
+    clipboard: { writeText: async value => { clipboardWrites.push(value); } } };
   const events = new Map(), mediaEvents = new Map(), timers = new Map();
   const listenerOptions = new Map(), mediaCalls = { play: 0, pause: 0 };
   const documentEvents = new Map();
@@ -132,13 +133,16 @@ function mount({ local = false, localIndexes = [], localQuality, saved = null, t
   };
   render();
   return { props, render, flush, find, media, metadata, saves, prepares, transcodes, cancelled, events, timers, listenerOptions, mediaCalls, document, dispatchKey,
-    releases, reports, navigator, settingsSaved, stage, scrollArea, mediaEvents,
+    releases, reports, clipboardWrites, navigator, settingsSaved, stage, scrollArea, mediaEvents,
     text: () => text(tree),
     presentFrame: () => {
-      const first = frameCallbacks.entries().next().value;
-      if (!first) return false;
-      frameCallbacks.delete(first[0]);
-      first[1](0, { presentedFrames: 1 });
+      const callbacks = [...frameCallbacks];
+      if (!callbacks.length) return false;
+      media.readyState = Math.max(2, media.readyState);
+      for (const [id, callback] of callbacks) {
+        frameCallbacks.delete(id);
+        callback(0, { presentedFrames: 1 });
+      }
       render();
       return true;
     },
@@ -200,7 +204,7 @@ if (require.main === module) (async () => {
   });
   await test('removed history stays removed through hidden player unload and new playback can record again', async () => {
     for (const resume of [false, true]) {
-      const ui = mount({ local: true }); await ui.flush(); ui.metadata();
+      const ui = mount({ local: true }); await ui.flush(); ui.metadata(); ui.presentFrame();
       ui.media.currentTime = 42; ui.props.active = false; ui.render();
       ui.historyUpdated({ removedSeriesIds: ['A'] }); await ui.flush();
       const afterRemoval = ui.saves.length;
@@ -217,7 +221,7 @@ if (require.main === module) (async () => {
     }
   });
   await test('history completion forwards valid media duration and the ended event without auto-delete', async () => {
-    const ui = mount({ local: true, episodeCount: 1 }); await ui.flush(); ui.metadata();
+    const ui = mount({ local: true, episodeCount: 1 }); await ui.flush(); ui.metadata(); ui.presentFrame();
     ui.media.currentTime = 100;
     ui.find(n => n.type === 'video').props.onEnded(); await ui.flush();
     assert.ok(ui.saves.some(args => args[1] === 1 && args[2] === 100 && args[3]?.duration === 100 && args[3]?.ended === true));
@@ -263,10 +267,10 @@ if (require.main === module) (async () => {
     ui.metadata(); assert.equal(ui.media.currentTime, 34); ui.unmount();
   });
   await test('local episode saves exact position before switching and on hide', async () => {
-    const ui = mount({ local: true, saved: { vid_index: 1, currentTime: 21 } }); await ui.flush(); ui.metadata();
+    const ui = mount({ local: true, saved: { vid_index: 1, currentTime: 21 } }); await ui.flush(); ui.metadata(); ui.presentFrame();
     assert.equal(ui.media.currentTime, 21); ui.media.currentTime = 22.2; ui.episode(2);
     assert.ok(ui.saves.some(p => p[1] === 1 && p[2] === 22.2), 'switch must save latest second');
-    await ui.flush(); ui.metadata(); ui.media.currentTime = 1.2; ui.props.active = false; ui.render();
+    await ui.flush(); ui.metadata(); ui.presentFrame(); ui.media.currentTime = 1.2; ui.props.active = false; ui.render();
     assert.ok(ui.saves.some(p => p[1] === 2 && p[2] === 1.2), 'hide must bypass periodic save threshold');
     assert.equal(ui.events.has('keydown'), false, 'hidden player must not capture keys');
     assert.equal([...ui.timers.values()].some(t => t.delay === 2000), false, 'hidden idle detail polling must stop'); ui.unmount();
@@ -427,7 +431,7 @@ if (require.main === module) (async () => {
     ui.unmount(); assert.equal(ui.cancelled[1].requestId, second.requestId, 'unmount cancels only the current request');
   });
   await test('fullscreen playback keeps the video key across local auto-next and compatibility changes', async () => {
-    const ui = mount({ local: true }); await ui.flush(); ui.metadata();
+    const ui = mount({ local: true }); await ui.flush(); ui.metadata(); ui.presentFrame();
     const key = ui.find(n => n.type === 'video').props.key;
     ui.find(n => n.type === 'video').props.onEnded(); await ui.flush();
     assert.equal(ui.find(n => n.type === 'video').props.key, key, 'auto-next must not replace the fullscreen video element');
@@ -439,7 +443,7 @@ if (require.main === module) (async () => {
   await test('fullscreen playback retains video and last source while the next online episode prepares', async () => {
     let finishNext;
     const ui = mount({ props: { target: { seriesId: 'A', vidIndex: 1, ts: 1 } }, prepare: p => p.vidIndex === 1 ? { success: true, url: 'hongguo-stream://one' } : new Promise(r => { finishNext = r; }) });
-    await ui.flush(); ui.metadata();
+    await ui.flush(); ui.metadata(); ui.presentFrame();
     const first = ui.find(n => n.type === 'video'); first.props.onEnded(); await ui.flush();
     const preparing = ui.find(n => n.type === 'video');
     assert.ok(preparing, 'preparing the next episode must not unmount the fullscreen video');

@@ -148,7 +148,8 @@ function createRequestProfileManager({ profiles = [MODEL_PROFILE], activeId = MO
   if (!compatibleProfile(baseline)) throw new TypeError('A compatible, previously verified bundled profile is required');
   let active = baseline, lastVerified = baseline, fallbackCount = 0;
   let lastShapeFailureAt = 0, lastModelSuccessAt = 0;
-  const stats = new Map(MODEL_PROFILE.routes.map(route => [route.id, { requests: 0, succeeded: 0, failed: 0, lastError: '', lastElapsedMs: 0 }]));
+  const stats = new Map([...MODEL_PROFILE.routes, ...UPSTREAM_PLAYBACK_PROFILE.routes]
+    .map(route => [route.id, { requests: 0, succeeded: 0, failed: 0, lastError: '', lastElapsedMs: 0 }]));
   const select = id => {
     const candidate = registry.get(id);
     if (compatibleProfile(candidate)) active = candidate;
@@ -165,13 +166,16 @@ function createRequestProfileManager({ profiles = [MODEL_PROFILE], activeId = MO
       row.requests++;
       row.lastElapsedMs = Math.min(30000, Math.max(0, Number(elapsedMs) || 0));
       row.lastError = ['EMPTY_RESPONSE', 'INVALID_RESPONSE', 'MISSING_MODEL', 'BUSINESS_REJECTED', 'ERR_CANCELED', 'ERR_NETWORK',
+        'DRM_UNSUPPORTED', 'NO_COMPATIBLE_SOURCE', 'QUALITY_UNAVAILABLE',
         'ETIMEDOUT', 'ECONNABORTED', 'ENOTFOUND', 'EAI_AGAIN', 'ECONNRESET', 'ECONNREFUSED', 'ENETUNREACH', 'EPIPE',
         'DEVICE_IDENTITY_EXPIRED', 'SIGNATURE_INVALID', 'SECURITY_BLOCKED'].includes(code) || /^HTTP_[345]\d{2}$/.test(code) ? code : code ? 'UNKNOWN' : '';
+      const activeRoute = active.routes.some(route => route.id === routeId);
       if (modelValid) {
-        row.succeeded++; lastModelSuccessAt = at; lastVerified = active;
+        row.succeeded++;
+        if (activeRoute) { lastModelSuccessAt = at; lastVerified = active; }
       } else {
         row.failed++;
-        if (['INVALID_RESPONSE', 'MISSING_MODEL'].includes(code)) {
+        if (activeRoute && ['INVALID_RESPONSE', 'MISSING_MODEL'].includes(code)) {
           lastShapeFailureAt = at;
           if (active !== lastVerified) { active = lastVerified; fallbackCount++; }
         }

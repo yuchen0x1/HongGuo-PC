@@ -400,7 +400,10 @@ const source = transformSync(fs.readFileSync(path.join(__dirname, '../src/compon
   media.pause(); render();
 
   media.duration = NaN; listeners.get('durationchange')(); render(); assert.equal(find('播放进度').props.disabled, true);
+  media.currentTime = 4; media.duration = 151;
   props.available = false; render(); assert.equal(find('播放').props.disabled, true);
+  assert.equal(find('播放进度').props['aria-valuetext'], '0:00 / 0:00', 'failed source must not display old media time as current episode progress');
+  assert.equal(find('播放进度').props.max, 0);
   assert.equal(find('画中画').props.disabled, true);
   cleanups.forEach(fn => fn?.()); assert.equal(listeners.size, 0); assert.equal(documentListeners.size, 0); assert.equal(stageListeners.size, 0); assert.equal(windowListeners.size, 0); assert.equal(popupDocumentListeners.size, 0); assert.equal(popupWindowListeners.size, 0); assert.equal(timers.size, 0);
   const { mount } = require('./check-player-resume.cjs');
@@ -420,7 +423,7 @@ const source = transformSync(fs.readFileSync(path.join(__dirname, '../src/compon
   for (const local of [true, false]) {
     let finishNext;
     const ui = mount({ local, props: { setEpisodesOpen() {}, target: { seriesId: 'A', vidIndex: 1, ts: 1 } }, prepare: p => p.vidIndex === 1 ? { success: true, url: 'mock:first' } : new Promise(resolve => { finishNext = resolve; }) });
-    await ui.flush(); ui.metadata(); await ui.flush();
+    await ui.flush(); ui.metadata(); ui.presentFrame(); await ui.flush();
     assert.equal(typeof controls(ui).props.onToggleFullscreen, 'function', 'parent supplies the shared fullscreen action');
     assert.equal(controls(ui).props.shortcuts.play, 'space', 'parent supplies effective shortcut preferences');
     assert.equal(controls(ui).props.autoContinue, true, 'parent marks whether an unlocked next episode can follow');
@@ -430,7 +433,9 @@ const source = transformSync(fs.readFileSync(path.join(__dirname, '../src/compon
     if (!local) { finishNext({ success: true, url: 'mock:second' }); await ui.flush(); }
     assert.equal(controls(ui).props.continuing, true, 'auto-next intent remains until playback actually starts');
     ui.metadata(); await ui.flush();
-    assert.equal(controls(ui).props.continuing, false, 'playing clears the transition so later manual pause is visible');
+    assert.equal(controls(ui).props.continuing, true, 'playing without a presented frame retains transition protection');
+    ui.presentFrame(); await ui.flush();
+    assert.equal(controls(ui).props.continuing, false, 'a presented playing frame clears the transition so later manual pause is visible');
     ui.unmount();
   }
   for (const local of [true, false]) {
@@ -442,7 +447,7 @@ const source = transformSync(fs.readFileSync(path.join(__dirname, '../src/compon
         const ui = mount({ local, storage, episodeCount: 3, settings: { cache_next_episode: false },
           props: { setEpisodesOpen() {}, target: { seriesId: 'A', vidIndex: 2, ts: 1 } },
           prepare: p => p.vidIndex === 2 ? { success: true, url: 'mock:middle' } : new Promise(resolve => { finish = resolve; }) });
-        await ui.flush(); ui.metadata(); await ui.flush();
+        await ui.flush(); ui.metadata(); ui.presentFrame(); await ui.flush();
         const key = custom ? (direction === 'previous' ? 'j' : 'k') : (direction === 'previous' ? 'ArrowUp' : 'ArrowDown');
         const init = { key, code: custom ? `Key${key.toUpperCase()}` : key, shiftKey: custom, target: keyTarget };
         // Input/menu events must never be redirected to an episode.
@@ -462,13 +467,15 @@ const source = transformSync(fs.readFileSync(path.join(__dirname, '../src/compon
         ui.metadata(); await ui.flush();
         assert.equal(controls(ui).props.continuing, true, 'metadata and an accepted play request do not end the transition before playing');
         ui.media.play = play; await play(); await ui.flush();
-        assert.equal(controls(ui).props.continuing, false, 'actual playing releases shortcut transition state');
+        assert.equal(controls(ui).props.continuing, true, 'playing alone does not confirm a decoded frame');
+        ui.presentFrame(); await ui.flush();
+        assert.equal(controls(ui).props.continuing, false, 'a presented playing frame releases shortcut transition state');
         assert.equal(ui.find(node => node.type === 'video').props.src, local ? `file:///mock-${direction === 'previous' ? 1 : 3}.mp4` : `mock:${direction}`);
         if (direction === 'previous') {
           ui.find(node => node.type === 'video').props.onEnded(); await ui.flush();
           assert.equal(controls(ui).props.continuing, true, 'automatic next after previous renews transition protection');
           assert.equal(ui.find(node => node.type === 'video').props.src, local ? 'file:///mock-2.mp4' : 'mock:middle');
-          ui.metadata(); await ui.flush();
+          ui.metadata(); ui.presentFrame(); await ui.flush();
           assert.equal(controls(ui).props.continuing, false, 'second handoff ends only when automatic next plays');
         }
         ui.unmount();
@@ -477,14 +484,14 @@ const source = transformSync(fs.readFileSync(path.join(__dirname, '../src/compon
   }
   for (const trigger of ['ended', 'shortcut']) {
     const failed = mount({ props: { setEpisodesOpen() {}, target: { seriesId: 'A', vidIndex: 1, ts: 1 } }, prepare: p => p.vidIndex === 1 ? { success: true, url: 'mock:first' } : { success: false, error: 'test preparation failure' } });
-    await failed.flush(); failed.metadata(); await failed.flush();
+    await failed.flush(); failed.metadata(); failed.presentFrame(); await failed.flush();
     if (trigger === 'ended') failed.find(node => node.type === 'video').props.onEnded();
     else failed.dispatchKey('keydown', { key: 'ArrowDown', code: 'ArrowDown', target: keyTarget });
     await failed.flush();
     assert.equal(controls(failed).props.continuing, false, 'failed online preparation must restore ordinary pause behavior');
     failed.unmount();
     const blocked = mount({ local: true, props: { setEpisodesOpen() {} } });
-    await blocked.flush(); blocked.metadata(); await blocked.flush();
+    await blocked.flush(); blocked.metadata(); blocked.presentFrame(); await blocked.flush();
     if (trigger === 'ended') blocked.find(node => node.type === 'video').props.onEnded();
     else blocked.dispatchKey('keydown', { key: 'ArrowDown', code: 'ArrowDown', target: keyTarget });
     await blocked.flush();

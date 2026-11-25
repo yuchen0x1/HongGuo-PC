@@ -86,3 +86,17 @@ test('account checks distinguish absent, valid and expired sessions and cancelle
     } finally { ui.unmount(); }
   }
 });
+
+test('diagnostic IDs are separately visible for current play and last failure without accepting arbitrary remote text', () => {
+  const current = 'PLAY-20261126-0123456789ab', failed = 'PLAY-20261126-abcdef123456';
+  const rows = display.diagnosticRows({ currentAttempt: { diagnosticId: current }, lastFailure: { diagnosticId: failed } });
+  assert.deepEqual(rows.find(row => row[0] === '播放诊断 ID'), ['播放诊断 ID', current]);
+  assert.deepEqual(rows.find(row => row[0] === '最近失败诊断 ID'), ['最近失败诊断 ID', failed]);
+  for (const diagnosticId of ['Cookie=private-token', 'PLAY-20261126-private-token', '<script>secret</script>', current + 'token']) {
+    const rejected = display.diagnosticRows({ currentAttempt: { diagnosticId }, lastFailure: { diagnosticId } });
+    assert.deepEqual(rejected.slice(0, 2), [['播放诊断 ID', '暂无'], ['最近失败诊断 ID', '暂无']]);
+  }
+  assert.equal(display.diagnosticFaultLabel('MANIFEST_LOAD_FAILED'), '媒体清单加载失败');
+  assert.equal(display.diagnosticFaultLabel('MEDIA_SEGMENT_FAILED'), '媒体资源请求失败');
+  assert.equal(display.diagnosticFaultLabel('DRM_UNSUPPORTED'), '受保护媒体需官方授权播放器');
+});

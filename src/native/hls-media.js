@@ -18,6 +18,7 @@ async function remuxHls({ url, output, ffmpeg, signal, cancelToken, request = re
   if (!ffmpeg) throw Object.assign(new Error('未找到 FFmpeg，无法准备 HLS 视频'), { code:'LOCAL_MEDIA_TOOL_ERROR' });
   webMediaRequestOptions(url);
   const controller = new AbortController(), files = new Map();
+  const localFailures = new WeakSet();
   let temporary, child, failure, killed, killTimer, spaceTimer, diskJob, writer;
   let received = 0, lastProgress = 0, stagedBytes = 0, committedBytes = 0, remuxing = false;
   const capacityBytes = Number.isFinite(tempCapacityBytes) && tempCapacityBytes >= 0 ? tempCapacityBytes : Infinity;
@@ -30,32 +31,55 @@ async function remuxHls({ url, output, ffmpeg, signal, cancelToken, request = re
   const check = () => {
     if (signal?.aborted || cancelToken?.reason) abort();
     if (failure) throw failure;
-    checkAccess();
+    try { checkAccess(); }
+    catch (error) { if (error && typeof error === 'object') localFailures.add(error); throw error; }
   };
   const ensureCapacity = extra => {
-    if (stagedBytes + extra > capacityBytes) throw new Error('HLS 暂存空间不足，已停止');
-    const stat = fs.statfsSync(temporary), free = Number(stat.bsize) * Number(stat.bavail);
-    const needed = [...diskJobs].filter(job => job.device === diskJob.device)
-      .reduce((sum, job) => sum + job.remaining(job === diskJob ? extra : 0), DISK_RESERVE);
-    if (!Number.isFinite(free) || free < needed) throw new Error('HLS 暂存或输出空间不足，已停止');
+    try {
+      if (stagedBytes + extra > capacityBytes) throw new Error('HLS 暂存空间不足，已停止');
+      const stat = fs.statfsSync(temporary), free = Number(stat.bsize) * Number(stat.bavail);
+      const needed = [...diskJobs].filter(job => job.device === diskJob.device)
+        .reduce((sum, job) => sum + job.remaining(job === diskJob ? extra : 0), DISK_RESERVE);
+      if (!Number.isFinite(free) || free < needed) throw new Error('HLS 暂存或输出空间不足，已停止');
+    } catch (error) { if (error && typeof error === 'object') localFailures.add(error); throw error; }
+  };
+  const withStage = (error, stage) => {
+    if (!error || typeof error !== 'object') error = new Error(String(error));
+    const code = String(error.code || '');
+    if (signal?.aborted || cancelToken?.reason || localFailures.has(error) || error.name === 'AbortError'
+      || ['ABORT_ERR','ERR_CANCELED','ERR_WEB_MEDIA_ADDRESS','SECURITY_BLOCKED',
+        'ENOSPC','EACCES','EPERM','ENOENT','ENOTDIR','EMFILE','ENFILE','EBUSY','EROFS','EIO','EEXIST','EISDIR','EFBIG','ENAMETOOLONG'].includes(code)
+      || code.startsWith('LOCAL_')) return error;
+    // A child resource has the most specific stage; never relabel it as its parent manifest.
+    error.stage ||= stage;
+    if (!error.code && ['manifest','segment'].includes(error.stage)) {
+      error.code = error.stage === 'manifest' ? 'HLS_MANIFEST_FAILED' : 'HLS_SEGMENT_FAILED';
+    }
+    const status = Number(error.httpStatus || error.status || error.mediaStatus || error.response?.status);
+    if (Number.isInteger(status) && status >= 100 && status <= 599) {
+      error.httpStatus ||= status;
+      error.mediaStatus ||= status;
+    }
+    return error;
   };
   signal?.addEventListener('abort', abort, { once:true }); cancelToken?.subscribe(abort);
   const deadline = setTimeout(() => fail(new Error('HLS 准备超时，请重试')), 10 * 60 * 1000);
   const stage = async (remote, playlist = false, ancestors = new Set()) => {
-    check(); webMediaRequestOptions(remote);
-    if (ancestors.has(remote)) throw new Error('HLS 清单循环引用');
-    if (files.has(remote)) return files.get(remote);
-    if (files.size >= 10000) throw new Error('HLS 清单过大');
-    const extension = playlist ? 'm3u8' : /\.(ts|m4s|mp4|aac|m4a|vtt)$/i.exec(new URL(remote).pathname)?.[1] || 'ts';
-    const local = path.join(temporary, `${files.size}.${extension}`);
-    files.set(remote,local);
-    let upstream;
+    let upstream, currentStage = playlist ? 'manifest' : 'segment';
     try {
+      check(); webMediaRequestOptions(remote);
+      if (ancestors.has(remote)) throw Object.assign(new Error('HLS 清单循环引用'), { stage:'manifest' });
+      if (files.has(remote)) return files.get(remote);
+      if (files.size >= 10000) throw Object.assign(new Error('HLS 清单过大'), { stage:'manifest' });
+      const extension = playlist ? 'm3u8' : /\.(ts|m4s|mp4|aac|m4a|vtt)$/i.exec(new URL(remote).pathname)?.[1] || 'ts';
+      const local = path.join(temporary, `${files.size}.${extension}`);
+      files.set(remote,local);
       upstream = await request(remote, { signal:controller.signal, headers:{...headers,'Accept-Encoding':'identity'} });
       check();
       if (upstream.status !== 200) throw Object.assign(new Error('HLS 媒体请求失败或内容不完整'), { mediaStatus:upstream.status });
       const type = String(upstream.headers['content-type'] || '');
       if (playlist || /mpegurl/i.test(type)) {
+        currentStage = 'manifest';
         const parts = [];
         let bytes = 0;
         for await (const chunk of upstream.data) {
@@ -93,7 +117,9 @@ async function remuxHls({ url, output, ffmpeg, signal, cancelToken, request = re
           if ((line.match(/\bURI\s*=/g) || []).length !== matches.length) throw new Error('HLS 地址格式无效');
           for (const match of matches) {
             const file = await stage(new URL(match[1],base).href,/^#EXT-X-(?:MEDIA|I-FRAME-STREAM-INF):/.test(value),chain);
-            if (/^#EXT-X-(?:SESSION-)?KEY:/.test(value) && fs.statSync(file).size !== 16) throw new Error('HLS 密钥长度无效');
+            if (/^#EXT-X-(?:SESSION-)?KEY:/.test(value) && fs.statSync(file).size !== 16) {
+              throw Object.assign(new Error('HLS 密钥长度无效'), { stage:'segment' });
+            }
             // All staged resources share this directory. Relative names avoid Windows
             // backslashes being consumed as escapes by FFmpeg's HLS attribute parser.
             result = result.replace(match[0],`URI="${path.basename(file)}"`);
@@ -120,6 +146,8 @@ async function remuxHls({ url, output, ffmpeg, signal, cancelToken, request = re
         onProgress?.(received);
       }
       check(); return local;
+    } catch (error) {
+      throw withStage(error,currentStage);
     } finally { upstream?.data?.destroy(); }
   };
   try {

@@ -8,6 +8,29 @@ const { OFFICIAL_WEB_PROFILE } = require('./official-web-playback');
 const delay = ms => new Promise(done => setTimeout(done, ms));
 const source = { url: 'https://v3-reading.qznovelvod.com/episode.mp4', source: 'app', userAgent: 'bound-agent' };
 
+test('thrown HTTP failures retain only safe status and the actual failing layer', async () => {
+  for (const [failure, fault] of [
+    [{ status: 403 }, 'API_FORBIDDEN'],
+    [{ response: { status: 500, headers: { Cookie: 'PRIVATE' } } }, 'API_HTTP_ERROR'],
+    [{ status: 404, stage: 'media' }, 'CDN_UNAVAILABLE'],
+    [{ status: 410, stage: 'media', faultCode: 'MEDIA_URL_EXPIRED' }, 'MEDIA_URL_EXPIRED'],
+  ]) {
+    let calls = 0;
+    const diagnostics = createPlaybackDiagnostics();
+    const manager = createPlaybackManager({ diagnostics, budgetMs: 100,
+      resolve: async () => { calls++; throw { ...failure, message: 'https://private.invalid/?token=PRIVATE',
+        headers: { Authorization: 'PRIVATE' } }; } });
+    const result = await manager.resolve('11', '1');
+    assert.equal(result.faultCode, fault);
+    assert.equal(result.status, failure.status || failure.response.status);
+    assert.equal(result.httpStatus, result.status);
+    assert.equal(result.stage, failure.stage || 'source');
+    assert.equal(calls, 1);
+    assert.doesNotMatch(JSON.stringify(result), /PRIVATE|private\.invalid|Authorization|Cookie/);
+    assert.equal(diagnostics.snapshot().events.at(-1).faultCode, fault);
+  }
+});
+
 test('playback checks account separately and never forwards account credentials to source', async () => {
   for (const sessionValidity of ['anonymous', 'valid', 'expired']) {
     let checked = 0;
