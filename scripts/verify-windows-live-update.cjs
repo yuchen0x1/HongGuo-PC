@@ -44,7 +44,7 @@ async function json(url) {
   return response.json();
 }
 
-async function launch(expected) {
+async function launch(expected, expectUpdateNotice = false) {
   port = await reservePort();
   fs.mkdirSync(path.join(root, 'downloads'), { recursive: true });
   fs.mkdirSync(path.join(root, 'temp'), { recursive: true });
@@ -80,6 +80,20 @@ async function launch(expected) {
   const info = await runJs('window.electronAPI.getAppInfo()');
   assert.equal(info.version, expected);
   assert(path.resolve(info.dataDir).toLowerCase().startsWith(root.toLowerCase() + path.sep), 'App profile escaped the isolated test directory');
+  if (expectUpdateNotice) {
+    receipt.steps.push('Baseline installer matched public SHA-256 and launched');
+    const targetVersion = JSON.stringify('v' + to.slice(1));
+    const notice = await waitFor('visible startup update notice', 45000, () => runJs(`(() => {
+      const element = document.querySelector('[role="dialog"][aria-label="软件更新"]');
+      const title = element?.querySelector('h2')?.textContent || '';
+      const style = element && getComputedStyle(element);
+      const visible = Boolean(element?.getClientRects().length && style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity) > 0);
+      return visible && title.includes(${targetVersion}) ? { title, label: element.getAttribute('aria-label') } : null;
+    })()`));
+    assert.equal(notice.label, '软件更新');
+    assert(notice.title.includes('v' + to.slice(1)));
+    receipt.steps.push(`Previous version visibly displayed the startup update notice for ${to}`);
+  }
 }
 
 async function reservePort() {
@@ -226,10 +240,9 @@ function automaticAppProcess(previousPid) {
   const installer = path.join(root, oldName);
   fs.writeFileSync(installer, bytes);
   execFileSync(installer, ['/S', '/currentuser', '/D=' + installDir], { timeout: 120000, windowsHide: true });
-  await launch(from.slice(1) + '.0');
+  await launch(from.slice(1) + '.0', true);
   assert.equal(await runJs('window.electronAPI.saveSettings({ root: ' + JSON.stringify(path.join(root, 'downloads')) + ', app_updates_enabled: true }).then(x => x.success)'), true);
   await runJs('localStorage.setItem(' + JSON.stringify(storageKey) + ', ' + JSON.stringify(marker) + ')');
-  receipt.steps.push('Baseline installer matched public SHA-256 and launched');
 
   const found = await runJs('window.electronAPI.checkAppUpdate()', 30000);
   assert.equal(found.enabled, true);
