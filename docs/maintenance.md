@@ -14,7 +14,11 @@
 
 ## 6.33 依赖整合
 
-正在处理 #27–#33 七个 Dependabot 升级提案，统一源码目标为 6.33。React／ReactDOM 和 Vite／React 插件按兼容组合升级，Electron 使用 45.5.0。独立候选与最终统一组合的本地安装、构建、完整回归、依赖审计、静音实界面和真实更新下载均通过；标签候选、正式发布、旧版应用内更新及分支处置仍按 [6.33 发行记录](release-6.33.md) 登记实际结果。
+#27–#33 七个 Dependabot 升级提案已由整合 [PR #46](https://github.com/yuchen0x1/HongGuo-PC/pull/46) 合入主线，源码冻结于 `v6.33` 的 `b52a6943e135f8a6bacf2250fdbe9f145019e6e5`。React／ReactDOM 和 Vite／React 插件按兼容组合升级，Electron 使用 45.5.0。最终统一组合的本地安装、构建、完整回归、审计、静音实界面和真实更新下载均通过；PR 全部 CI、标签源码 Test、Windows 候选、正式发布和 README 同步均通过。6.33 已于北京时间 2026-11-25 14:48:22 正式发布且不可变，正式资产仅为安装 EXE 与配对 `latest.yml`，摘要及完整证据见 [6.33 发行记录](release-6.33.md)。
+
+真实 v6.32 → v6.33 应用内更新 [45563376352](https://github.com/yuchen0x1/HongGuo-PC/actions/runs/45563376352) 已通过：旧版启动可见提示、真实下载接受、NSIS 安装及原路径自动启动新版，PE 版本确认为 `6.33.0.0`；显式重开同一隔离 profile 后设置与 localStorage 保留。安装器自动 shell 重启不继承测试 `--user-data-dir`，两项分别验收；未验证安装中途故障自动回滚。
+
+原七条 PR 已逐条回复处置原因后关闭，各远程依赖分支及整合分支均已删除；GitHub API 确认开放 PR 为 `[]`、远程分支仅剩 `main`。本地原有含未提交成果的工作树未动，不强制清理本地历史分支。
 
 2026-11-25 本轮 GitHub API 再次核对：开放非 PR Issues、Dependabot 告警、Code scanning 告警和 Secret scanning 告警各为 0。待处理依赖 PR 与安全告警分别统计；当前本地完整锁文件审计各级告警总数也为 0。
 
