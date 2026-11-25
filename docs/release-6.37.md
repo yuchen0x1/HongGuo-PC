@@ -1,6 +1,6 @@
 # 红果短剧 6.37 发行与独立客户端验收
 
-当前为源码目标 `6.37.0`，公开标签目标 `v6.37`，仅支持 Windows x64。正式发布状态由本文件的发行回执记录，未完成的验收不得推定为通过。
+`6.37.0` 已于 2026-11-25 21:34:47（北京时间）正式发布，标签 `v6.37`，冻结源码 `79ebd3bc8484b093cbfcb2d8b729f5fdc1b8a21c`，仅支持 Windows x64。正式发行、安装及旧版更新回执见下文；后续集播放未通过的结论不因发行而改变。
 
 **后续集独立播放尚未全部修复。** 以下第 1、2 集完整媒体及基础播放器回归不能代表整部剧；第 5、6、34、68 集及 5→6 边界另行实测，拒绝结果不能计作播放通过。
 
@@ -109,7 +109,44 @@ node scripts/verify-playback-later.cjs --manifest dist/independent-audit/manifes
 
 ## 发行门禁
 
-本轮本地测试与后段矩阵执行完毕时（后段播放未通过），公开最新版本仍为 v6.35；开放 Issues、PR、Dependabot、CodeQL、Secret Scanning 告警均为 0。v6.37 仍须以同一冻结提交通过标签 Test、Windows 候选、隔离安装与发布工作流，再单独执行 v6.35 → v6.37 真实应用内更新。正式回执在完成后登记，不能由本地构建推定通过。
+本轮本地测试与后段矩阵执行完毕时（后段播放未通过），公开最新版本仍为 v6.35。以下为此后实际完成的发行回执，不改写前述本地包的测试时间、哈希或播放结论。
+
+### 正式源码、CI 与安装
+
+冻结源码为 `79ebd3bc8484b093cbfcb2d8b729f5fdc1b8a21c`，`v6.37` 保持不可变；后续 README 和回执提交不移动该标签。
+
+| 工作流 | 运行 ID | 实际结果 |
+| --- | --- | --- |
+| 标签 Test | `45622180514` | `push / v6.37`，冻结 SHA 一致，成功；567 项主单元测试及 116 组平台检查通过。 |
+| 标签 Windows x64 候选 | `45622180497` | `push / v6.37`，同一冻结 SHA，成功；随包 FFmpeg/x264 对应源码与二进制摘要校验、首次启动主题、实际 NSIS 安装验收通过。 |
+| Publish validated Windows release | `45624944774` | 校验上述两个成功标签运行、受测安装包和清单后发布；公开入口及清单探测成功。 |
+| README 同步 | `45625053367` | 成功；生成已验证签名的直接后继 `60edf1f8739723b7fb249dca3307ecbe09540671`，本地按精确 Git 对象摘要快进同步。 |
+| 真实旧版应用内更新 | `45625103055` | v6.35 → v6.37 成功，运行的是 README 同步后的 `main`；具体范围见下节。 |
+
+候选 `installer-result.json` 的 `passed`、`crossVersionUpgradeTested`、`sameVersionAccountRetentionTested`、`accountUpgradeRetentionTested`、`accountUninstallTested` 五个标志均为 `true`，16 条检查包含：全新安装、x64 应用负载、ASAR 入口、正常启动、实际同版重装、真实 SHA-256 锁定的 1.80 安装器升级至 6.37，以及两次实际 NSIS 卸载清理。账号保留使用隔离的合成账号文件和 Cookie，只证明资料生命周期，不证明真实官方账号授权或后段内容可播。没有覆盖本机正式安装或正式资料。
+
+### 公开正式资产
+
+Release 于 `2026-11-25T13:34:47Z` 公开，`draft=false`、`prerelease=false`、`immutable=true`，只附下列两个文件。**正式 EXE 与上述本地播放测试 EXE 的哈希不同，不能混称为同一文件的 GUI 验收。** 二者来自相同冻结产品源码；正式文件另有 CI 实际安装回执。
+
+| 正式资产 | 字节数 | SHA-256 |
+| --- | ---: | --- |
+| `hongguo-downloader-6.37-win-x64-setup.exe` | 157161151 | `57e8ff7d1f52f364acd5f46be51271e381896c2bf2046cd84a40be199a5e80ef` |
+| `latest.yml` | 455 | `db303b40badb78a81d6b53f075bd4340a0250096cbd9c78e59cf5a724f111b06` |
+
+公开 EXE 摘要、大小与候选实际受测安装器完全一致；清单为 `6.37.0`，路径、大小、SHA-256 和 SHA-512 与正式文件对应。安装器 Authenticode 为 `NotSigned`。发布页为 <https://github.com/yuchen0x1/HongGuo-PC/releases/tag/v6.37>。
+
+### 真实 v6.35 → v6.37 更新
+
+`45625103055` 于北京时间 21:35:13–21:36:32 执行成功。脚本在一次性 GitHub Windows runner 下载并校验公开 v6.35 安装器，实际安装后看到包含 v6.37 的启动更新对话框；已安装客户端发现正式目标，由原有更新器下载并接受包，执行 NSIS 更新向导，旧进程退出，原安装路径的新 EXE 自动启动。随后显式重开同一隔离 profile，实际版本为 `6.37.0`、Windows 文件版本 `6.37.0.0`，设置及 localStorage 保留。`windows-live-update.json` 的 `passed=true`；这不代表所有历史版本、所有网络或安装中断自动回滚都已验证。
+
+候选、发布、README 同步和旧版更新的原始日志、元数据及回执在本地忽略目录 `dist/independent-audit/ci-verification/<运行 ID>/`；完整素材和带机器路径的原始回执未上传为公共 Release 资产。旧 Release、安装 EXE 与必要更新清单继续保留。
+
+### 仓库与 Android 研究边界
+
+北京时间 21:33:37 的只读全分页快照：开放 Issues、PR、Dependabot、CodeQL、Secret Scanning 均为 0，远端仅 `main`；没有需要回复或关闭的开放 Issue。回执为 `security-release-final.json`。这是当前账号可见告警快照，结合本轮成功 CodeQL 与本地依赖审计，不等于不存在任何潜在漏洞。
+
+`android-research-20261125.json` 记录在 PATH、常见 SDK、Android Studio、包管理器及相邻 APK 启动器目录中未找到 ADB。没有执行设备枚举，不能判断手机是否连接；未读取账号、设备日志或流量，也未取得 Android 成功请求对照。Windows 测试没有使用手机传输，但手机电源和 USB 实际物理状态仍未观测。不能将此写成已完成 Android 官方 App 的完整协议研究或已实际拔掉 USB。
 
 ## 已知限制
 
