@@ -114,27 +114,79 @@ const pwsh = (script, moreEnv = {}) => execFileSync('powershell.exe', ['-NoProfi
   encoding: 'utf8', timeout: 10000, windowsHide: true, env: { ...process.env, ...moreEnv },
 }).trim();
 
-let lastInstallerFinishAttempt = 0;
-function finishInstaller() {
-  if (Date.now() - lastInstallerFinishAttempt < 1500) return;
-  lastInstallerFinishAttempt = Date.now();
-  // Assisted NSIS may wait on its Finish page before honoring "Run app".
-  // This only invokes an enabled Finish button in the exact target installer process.
+let lastInstallerActionAt = 0;
+function advanceInstaller() {
+  if (Date.now() - lastInstallerActionAt < 1000) return;
+  lastInstallerActionAt = Date.now();
   try {
-    pwsh([
+    const output = pwsh([
       'Add-Type -AssemblyName UIAutomationClient,UIAutomationTypes',
       '$process = Get-Process -Name $env:HONGGUO_TEST_INSTALLER -ErrorAction SilentlyContinue',
+      '$result = @()',
       'foreach ($p in $process) {',
       '  if (-not $p.MainWindowHandle) { continue }',
       '  $win = [Windows.Automation.AutomationElement]::FromHandle($p.MainWindowHandle)',
-      '  $condition = [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::NameProperty, "Finish")',
-      '  $button = $win.FindFirst([Windows.Automation.TreeScope]::Descendants, $condition)',
-      '  if ($button -and $button.Current.IsEnabled) {',
+      '  $all = $win.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition)',
+      '  $buttons = @()',
+      '  $runCheckboxes = @()',
+      '  $checkboxes = @()',
+      '  foreach ($element in $all) {',
+      "    if ($element.Current.ControlType.ProgrammaticName -eq 'ControlType.Button' -and -not $element.Current.IsOffscreen) {",
+      '      $buttons += $element',
+      '    }',
+      "    if ($element.Current.ControlType.ProgrammaticName -eq 'ControlType.CheckBox' -and -not $element.Current.IsOffscreen) {",
+      '      $runCheckboxes += $element',
+      '    }',
+      '  }',
+      '  $labels = @($buttons | ForEach-Object { $_.Current.Name })',
+      '  foreach ($checkbox in $runCheckboxes) {',
+      '    $pattern = $checkbox.GetCurrentPattern([Windows.Automation.TogglePattern]::Pattern)',
+      '    $checkboxes += [PSCustomObject]@{ name = $checkbox.Current.Name; checked = ($pattern.Current.ToggleState -eq [Windows.Automation.ToggleState]::On) }',
+      '  }',
+      '  $button = $buttons | Where-Object {',
+      "    $_.Current.IsEnabled -and $_.Current.Name.Trim().TrimStart('&') -match '^(Next(?:\\s*>.*)?|Install|Finish|下一步|下一页|安装|完成|完成安装)$'",
+      '  } | Select-Object -First 1',
+      '  $clicked = $null',
+      '  if ($button) {',
+      '    $clicked = $button.Current.Name',
+      "    if ($clicked.Trim().TrimStart('&') -match '^(Finish|完成|完成安装)$') {",
+      "      $runCheckbox = $runCheckboxes | Where-Object { $_.Current.Name -match '(?i)(run|launch|start|open|运行|启动)' } | Select-Object -First 1",
+      '      if ($runCheckbox) {',
+      '        $pattern = $runCheckbox.GetCurrentPattern([Windows.Automation.TogglePattern]::Pattern)',
+      '        if ($pattern.Current.ToggleState -ne [Windows.Automation.ToggleState]::On) { $pattern.Toggle() }',
+      '        $recordedCheckbox = $checkboxes | Where-Object { $_.name -eq $runCheckbox.Current.Name } | Select-Object -First 1',
+      '        if ($recordedCheckbox) { $recordedCheckbox.checked = ($pattern.Current.ToggleState -eq [Windows.Automation.ToggleState]::On) }',
+      '      }',
+      '    }',
       '    $button.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern).Invoke()',
       '  }',
+      '  $result += [PSCustomObject]@{ processId = $p.Id; title = $win.Current.Name; buttons = $labels; checkboxes = $checkboxes; clicked = $clicked }',
       '}',
+      'ConvertTo-Json -InputObject @($result) -Compress -Depth 4',
     ].join('\n'), { HONGGUO_TEST_INSTALLER: path.parse(targetInstaller).name });
+    const windows = output ? JSON.parse(output) : [];
+    const latest = Array.isArray(windows) ? windows.at(-1) : windows;
+    if (latest) {
+      receipt.installer = { processId: latest.processId, title: latest.title, buttons: latest.buttons, checkboxes: latest.checkboxes, clicked: latest.clicked };
+      if (latest.clicked) receipt.steps.push(`NSIS update wizard advanced via "${latest.clicked}"`);
+    }
   } catch {}
+}
+
+function captureInstallDiagnostics() {
+  try {
+    const output = pwsh([
+      '$path = [System.IO.Path]::GetFullPath($env:HONGGUO_TEST_EXE)',
+      '$version = if (Test-Path -LiteralPath $path) { (Get-Item -LiteralPath $path).VersionInfo.ProductVersion } else { $null }',
+      '$name = $env:HONGGUO_TEST_INSTALLER + ".exe"',
+      "$filter = 'Name = ' + [char]39 + $name + [char]39",
+      '$installers = @(Get-CimInstance -ClassName Win32_Process -Filter $filter -ErrorAction SilentlyContinue | Select-Object ProcessId,ParentProcessId,ExecutablePath,CommandLine)',
+      '[PSCustomObject]@{ appExists = (Test-Path -LiteralPath $path); installedVersion = $version; installerProcesses = $installers } | ConvertTo-Json -Compress -Depth 4',
+    ].join('\n'), { HONGGUO_TEST_EXE: exe, HONGGUO_TEST_INSTALLER: path.parse(targetInstaller).name });
+    receipt.installDiagnostics = JSON.parse(output);
+  } catch (error) {
+    receipt.installDiagnosticsError = error.message;
+  }
 }
 
 function automaticAppProcess(previousPid) {
@@ -199,7 +251,7 @@ function automaticAppProcess(previousPid) {
   child = null;
 
   const restarted = await waitFor('the updater to open the new app', 180000, () => {
-    finishInstaller();
+    advanceInstaller();
     return automaticAppProcess(previousPid);
   });
   const version = pwsh('(Get-Item -LiteralPath $env:HONGGUO_TEST_EXE).VersionInfo.ProductVersion', { HONGGUO_TEST_EXE: exe });
@@ -218,6 +270,7 @@ function automaticAppProcess(previousPid) {
   console.error(error.message);
   process.exitCode = 1;
 }).finally(() => {
+  captureInstallDiagnostics();
   socket?.close();
   child?.kill();
   try {
