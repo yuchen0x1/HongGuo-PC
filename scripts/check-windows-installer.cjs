@@ -26,6 +26,11 @@ function checkConfig() {
   assert(pkg.build.mac.target.some(target => target.target === 'zip' && target.arch.includes('arm64') && target.arch.includes('x64')));
   assert(pkg.build.mac.extraResources.some(resource => resource.from === 'build/app-update.yml' && resource.to === 'app-update.yml'), 'Mac directory builds must carry updater configuration');
   assert.notEqual(pkg.build.win.verifyUpdateCodeSignature, false);
+  assert.equal(pkg.main, 'src/native/app-entry.cjs');
+  assert.ok(fs.existsSync(path.join(root, pkg.main)), 'Configured application entry must exist');
+  assert.ok(pkg.build.files.includes('main.js') && pkg.build.files.includes('src/native/**/*'), 'Both bootstrap and normal application main must be packaged');
+  assert.equal(pkg.build.nsis.include, 'build/account-uninstall.nsh');
+  assert.notEqual(pkg.build.nsis.deleteAppDataOnUninstall, true, 'Uninstall must preserve settings and downloaded files');
 }
 
 checkConfig();
@@ -36,11 +41,13 @@ async function runInstallerCheck() {
   assert.equal(process.platform, 'win32', 'Installer check requires Windows');
   assert.equal(process.arch, 'x64');
   assert.equal(process.env.GITHUB_ACTIONS, 'true', 'Only run on disposable GitHub Actions runners');
+  assert.equal(process.env.RUNNER_ENVIRONMENT, 'github-hosted', 'Account uninstall checks require a disposable GitHub-hosted runner');
   const { execFileSync, spawn } = require('node:child_process');
   const { createHash } = require('node:crypto');
   const out = path.join(root, 'dist/windows-verification');
   fs.mkdirSync(out, { recursive: true });
-  const result = { version: pkg.version, checks: [], crossVersionUpgradeTested: false, passed: false };
+  const result = { version: pkg.version, checks: [], crossVersionUpgradeTested: false,
+    sameVersionAccountRetentionTested: false, accountUpgradeRetentionTested: false, accountUninstallTested: false, passed: false };
   const temp = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'hongguo-installer-'));
   const installDir = path.join(temp, 'installed');
   let profile = path.join(temp, 'profile');
@@ -48,6 +55,18 @@ async function runInstallerCheck() {
   const setup = path.join(root, 'dist', setupName);
   const correspondingSource = path.join(installDir, correspondingSourceName);
   const exe = path.join(installDir, pkg.build.productName + '.exe');
+  const accountProfileNames = ['hongguo-downloader', '红果短剧'];
+  const accountFiles = ['account-session.bin', 'account-session.bin.tmp', 'account-session.bin.revoked'];
+  const accountKeepFiles = ['data.json', 'danmaku-client.json', 'downloads/fixture.mp4'];
+  const accountMarkerName = '.hongguo-installer-account-fixture';
+  const accountMarker = require('node:crypto').randomUUID();
+  const accountAppData = path.resolve(process.env.APPDATA || '');
+  assert(process.env.APPDATA && path.isAbsolute(process.env.APPDATA), 'The real runner APPDATA path is required');
+  assert.equal(fs.realpathSync(accountAppData).toLowerCase(), accountAppData.toLowerCase(), 'APPDATA must not redirect through a junction');
+  const accountProfiles = accountProfileNames.map(name => path.join(accountAppData, name));
+  const ownedAccountProfiles = new Set();
+  const accountCookieFixtureScript = path.join(temp, 'account-cookie-fixture.cjs');
+  fs.writeFileSync(accountCookieFixtureScript, `(${accountCookieFixture.toString()})();\n`);
   const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
   let child, socket, sequence = 0;
   const pending = new Map();
@@ -87,6 +106,73 @@ async function runInstallerCheck() {
     // /D must be the final NSIS argument; this path belongs only to this CI run.
     execFileSync(installer, ['/S', '/currentuser', '/D=' + installDir], { timeout: 120000, windowsHide: true, stdio: 'pipe' });
     assert(fs.existsSync(exe), 'NSIS did not install the application at the isolated destination');
+  }
+
+  function assertOwnedAccountProfile(directory) {
+    assert(accountProfiles.includes(directory), 'Account fixture must be one of the exact historical profile paths');
+    assert.equal(path.dirname(directory), accountAppData);
+    assert(ownedAccountProfiles.has(directory), 'Account fixture must belong to this run');
+    const stat = fs.lstatSync(directory);
+    assert(stat.isDirectory() && !stat.isSymbolicLink(), 'Account fixture directory must not be a link');
+    assert.equal(fs.realpathSync(directory).toLowerCase(), directory.toLowerCase(), 'Account fixture path must not redirect');
+    assert.equal(fs.readFileSync(path.join(directory, accountMarkerName), 'utf8'), accountMarker, 'Account fixture ownership changed');
+  }
+
+  function checkAccountCookies(directory, state) {
+    assertOwnedAccountProfile(directory);
+    const env = { ...process.env };
+    delete env.ELECTRON_RUN_AS_NODE;
+    execFileSync(require('electron'), [accountCookieFixtureScript, '--mute-audio', '--fixture-profile', directory,
+      '--fixture-marker', accountMarker, '--fixture-state', state],
+    { env, timeout: 45000, windowsHide: true, stdio: 'pipe' });
+  }
+
+  function seedAccountFixtures() {
+    if (!ownedAccountProfiles.size) {
+      for (const directory of accountProfiles) {
+        assert(!fs.existsSync(directory), 'Refusing to change an existing historical account profile');
+      }
+      for (const directory of accountProfiles) {
+        fs.mkdirSync(directory);
+        fs.writeFileSync(path.join(directory, accountMarkerName), accountMarker, { flag: 'wx' });
+        ownedAccountProfiles.add(directory);
+        for (const filename of accountKeepFiles) {
+          const target = path.join(directory, filename);
+          fs.mkdirSync(path.dirname(target), { recursive: true });
+          fs.writeFileSync(target, `synthetic-retained-${filename}`, { flag: 'wx' });
+        }
+      }
+    }
+    for (const directory of accountProfiles) {
+      assertOwnedAccountProfile(directory);
+      for (const filename of accountFiles) fs.writeFileSync(path.join(directory, filename), `synthetic-account-${filename}`, { flag: 'wx' });
+      checkAccountCookies(directory, 'seed');
+      checkAccountCookies(directory, 'retained');
+    }
+  }
+
+  function verifyAccountFixtures(retained) {
+    for (const directory of accountProfiles) {
+      assertOwnedAccountProfile(directory);
+      for (const filename of accountFiles) {
+        const target = path.join(directory, filename);
+        if (retained) assert.equal(fs.readFileSync(target, 'utf8'), `synthetic-account-${filename}`, 'Installation must preserve account files before opening the application');
+        else assert(!fs.existsSync(target), 'Actual NSIS uninstall must remove account files');
+      }
+      for (const filename of accountKeepFiles) {
+        assert.equal(fs.readFileSync(path.join(directory, filename), 'utf8'), `synthetic-retained-${filename}`, 'Account cleanup must retain unrelated settings and downloaded files');
+      }
+      checkAccountCookies(directory, retained ? 'retained' : 'cleared');
+    }
+  }
+
+  function uninstallCandidate() {
+    execFileSync(path.join(installDir, `Uninstall ${pkg.build.productName}.exe`),
+      ['/S', '/currentuser', '/KEEP_APP_DATA', '_?=' + installDir],
+      { timeout: 120000, windowsHide: true, stdio: 'pipe' });
+    assert(!fs.existsSync(exe), 'Actual NSIS uninstall must remove the installed application');
+    verifyAccountFixtures(false);
+    result.checks.push('Actual candidate NSIS uninstall invokes the packaged helper and removes both historical profiles\' account files and official Cookies while retaining unrelated Cookies, settings and video');
   }
 
   function evaluate(expression) {
@@ -178,6 +264,14 @@ async function runInstallerCheck() {
     assert.equal(exeHeader.toString('ascii', 0, 2), 'MZ', 'Installed application must be a PE executable');
     assert.equal(peMachine(exe, exeHeader.readUInt32LE(0x3c)), 0x8664, 'Installed application payload must be x64');
     result.checks.push('Installed x64 application payload');
+    const asar = require('@electron/asar');
+    const archive = path.join(installDir, 'resources/app.asar');
+    const installedPackage = JSON.parse(asar.extractFile(archive, 'package.json').toString('utf8'));
+    assert.equal(installedPackage.main, pkg.main, 'Installed application must use the declared bootstrap');
+    for (const entryFile of [pkg.main, 'main.js', 'src/native/account-uninstall.js']) {
+      assert.equal(asar.extractFile(archive, entryFile).toString('utf8'), fs.readFileSync(path.join(root, entryFile), 'utf8'), `Installed ${entryFile} must match the verified source`);
+    }
+    result.checks.push('Installed ASAR declares the bootstrap and includes the matching normal main and account cleanup implementation');
     assert(fs.existsSync(correspondingSource), 'Installed application directory must retain the GPL FFmpeg/x264 corresponding source document');
     assert.equal(createHash('sha256').update(fs.readFileSync(correspondingSource)).digest('hex'), sourceDigest, 'Installed corresponding source document must exactly match the validated candidate archive');
     result.checks.push('NSIS installs into a fresh temporary directory and includes the matching GPL FFmpeg/x264 corresponding source document');
@@ -185,7 +279,11 @@ async function runInstallerCheck() {
     assert.equal((await evaluate('(async () => { const settings = await window.electronAPI.getSettings(); return window.electronAPI.saveSettings({ ...settings, download_quality: "720p" }); })()')).success, true);
     assert.equal(await evaluate('localStorage.setItem("hongguo-installer-smoke", "retained"); localStorage.getItem("hongguo-installer-smoke")'), 'retained');
     await quitAppNormally();
+    seedAccountFixtures();
     install();
+    verifyAccountFixtures(true);
+    result.sameVersionAccountRetentionTested = true;
+    result.checks.push('Actual same-version NSIS reinstall preserves both historical profiles\' account files and Cookies before application startup');
     await launch();
     assert.equal((await evaluate('window.electronAPI.getSettings()')).download_quality, '720p');
     assert.equal(await evaluate('localStorage.getItem("hongguo-installer-smoke")'), 'retained');
@@ -194,10 +292,7 @@ async function runInstallerCheck() {
     result.checks.push('Installed application opens before and after same-version reinstall; isolated settings, local storage and existing download remain');
 
     // Clear only this disposable CI installation so the legacy baseline is a fresh install.
-    execFileSync(path.join(installDir, `Uninstall ${pkg.build.productName}.exe`),
-      ['/S', '/currentuser', '/KEEP_APP_DATA', '_?=' + installDir],
-      { timeout: 120000, windowsHide: true, stdio: 'pipe' });
-    assert(!fs.existsSync(exe), 'Temporary installation must be removed before installing the legacy baseline');
+    uninstallCandidate();
     const oldSetup = path.join(temp, 'previous-setup.exe');
     const response = await fetch(previousRelease.url, { signal: AbortSignal.timeout(120000) });
     assert(response.ok, `Previous official installer download failed: HTTP ${response.status}`);
@@ -223,7 +318,11 @@ async function runInstallerCheck() {
     assert.equal(oldHistory[0].currentTime, 37.5);
     await quitAppNormally();
     result.checks.push('Real SHA256-pinned 1.80 NSIS installs, reports 1.80.0, saves settings and viewing history, and quits normally');
+    seedAccountFixtures();
     install();
+    verifyAccountFixtures(true);
+    result.accountUpgradeRetentionTested = true;
+    result.checks.push('Real 1.80 to candidate NSIS upgrade preserves synthetic account files and official Cookies before application startup');
     await launch();
     assert.equal((await evaluate('window.electronAPI.getSettings()')).download_quality, '1080p');
     assert.equal(await evaluate('localStorage.getItem("hongguo-upgrade-smoke")'), 'from-1.80');
@@ -239,13 +338,75 @@ async function runInstallerCheck() {
     await quitAppNormally();
     result.crossVersionUpgradeTested = true;
     result.checks.push(`Real 1.80.0 → ${pkg.version} NSIS upgrade reports the new version and retains settings, viewing history, local storage and existing download`);
+    uninstallCandidate();
+    assert.equal(fs.readFileSync(retainedFile, 'utf8'), 'Existing download must survive installation');
+    result.accountUninstallTested = true;
     result.passed = true;
-    console.log('Windows NSIS smoke: PASS (installation, launch, metadata, same-version retention, real 1.80 upgrade retention)');
   } catch (error) {
     result.error = error.stack;
     throw error;
   } finally {
     stopApp();
+    let cleanupError;
+    for (const directory of ownedAccountProfiles) {
+      try {
+        assertOwnedAccountProfile(directory);
+        fs.rmSync(directory, { recursive: true, maxRetries: 5, retryDelay: 100 });
+      } catch (error) { cleanupError ||= error; }
+    }
+    if (cleanupError) { result.passed = false; result.error ||= cleanupError.stack; }
     fs.writeFileSync(path.join(out, 'installer-result.json'), JSON.stringify(result, null, 2) + '\n');
+    if (cleanupError) throw cleanupError;
   }
+  console.log('Windows NSIS smoke: PASS (installation, launch, metadata, account retention, actual account uninstall, real 1.80 upgrade retention)');
+}
+
+function accountCookieFixture() {
+  const assert = require('node:assert/strict');
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const { app, session } = require('electron');
+  const flag = name => process.argv[process.argv.indexOf(name) + 1];
+  assert.equal(process.env.GITHUB_ACTIONS, 'true');
+  assert.equal(process.env.RUNNER_ENVIRONMENT, 'github-hosted');
+  const parent = path.resolve(process.env.APPDATA);
+  const directory = flag('--fixture-profile');
+  const marker = flag('--fixture-marker');
+  const state = flag('--fixture-state');
+  assert(path.isAbsolute(directory));
+  assert.equal(path.dirname(directory), parent);
+  assert(['hongguo-downloader', '红果短剧'].includes(path.basename(directory)));
+  assert.equal(fs.realpathSync(parent).toLowerCase(), parent.toLowerCase());
+  assert.equal(fs.realpathSync(directory).toLowerCase(), directory.toLowerCase());
+  assert(!fs.lstatSync(directory).isSymbolicLink());
+  assert.equal(fs.readFileSync(path.join(directory, '.hongguo-installer-account-fixture'), 'utf8'), marker);
+  assert.equal(path.resolve(app.getPath('appData')).toLowerCase(), parent.toLowerCase(), 'Fixture and packaged helper must use the same native APPDATA');
+  assert(['seed', 'retained', 'cleared'].includes(state));
+  app.setPath('userData', directory);
+  app.setPath('sessionData', directory);
+  app.commandLine.appendSwitch('disable-background-networking');
+  app.on('browser-window-created', () => app.exit(1));
+  const fixtures = [
+    { url: 'https://hongguoduanju.com/', domain: '.hongguoduanju.com', path: '/' },
+    { url: 'https://login.hongguoduanju.com/passport/', domain: 'login.hongguoduanju.com', path: '/passport/' },
+    { url: 'https://unrelated.example/', domain: 'unrelated.example', path: '/' },
+    { url: 'https://hongguoduanju.com.unrelated.example/', domain: 'hongguoduanju.com.unrelated.example', path: '/' },
+    { url: 'https://not-hongguoduanju.com/', domain: 'not-hongguoduanju.com', path: '/' },
+  ];
+  app.whenReady().then(async () => {
+    const jar = session.defaultSession;
+    assert.equal(path.resolve(jar.storagePath).toLowerCase(), directory.toLowerCase());
+    if (state === 'seed') {
+      for (const cookie of fixtures) await jar.cookies.set({ ...cookie, name: 'hongguo_installer_fixture',
+        value: marker, secure: true, httpOnly: true, expirationDate: Date.now() / 1000 + 3600 });
+      await jar.cookies.flushStore();
+    } else {
+      const cookies = await jar.cookies.get({});
+      const official = cookies.filter(cookie => /(?:^|\.)hongguoduanju\.com$/i.test(cookie.domain));
+      assert.equal(official.length, state === 'retained' ? 2 : 0);
+      const unrelated = cookies.filter(cookie => !/(?:^|\.)hongguoduanju\.com$/i.test(cookie.domain));
+      assert.equal(unrelated.length, 3);
+      assert(unrelated.every(cookie => cookie.name === 'hongguo_installer_fixture' && cookie.value === marker));
+    }
+  }).then(() => app.exit(0), () => app.exit(1));
 }

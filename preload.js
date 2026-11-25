@@ -73,6 +73,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // 在线播放（内存或临时磁盘缓存 + 自定义流协议）
   prepareOnlinePlay: (payload) => ipcRenderer.invoke('prepare-online-play', payload),
+  getPlaybackDiagnostics: () => ipcRenderer.invoke('get-playback-diagnostics'),
+  checkPlaybackAccount: () => ipcRenderer.invoke('check-playback-account'),
+  testPlaybackConnection: options => ipcRenderer.invoke('test-playback-connection', options),
+  exportPlaybackDiagnostics: () => ipcRenderer.invoke('export-playback-diagnostics'),
+  reportPlaybackState: payload => ipcRenderer.invoke('report-playback-state', payload),
   releaseOnlinePlay: (payload) => ipcRenderer.invoke('release-online-play', payload),
   onlineCacheStatus: () => ipcRenderer.invoke('online-cache-status'),
   discoverCastDevices: () => ipcRenderer.invoke('discover-cast-devices'),
@@ -125,7 +130,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
 
   // 播放器
-  getSeriesEpisodes: (seriesId) => ipcRenderer.invoke('get-series-episodes', seriesId),
+  getSeriesEpisodes: (seriesId, options) => ipcRenderer.invoke('get-series-episodes', seriesId, options),
   openEpisodeExternal: (seriesId, vidIndex) => ipcRenderer.invoke('open-episode-external', seriesId, vidIndex),
   downloadSingleEpisode: (seriesId, vidIndex, quality) =>
     ipcRenderer.invoke('download-single-episode', seriesId, vidIndex, quality),

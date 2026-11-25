@@ -1,6 +1,7 @@
 const axios = require('axios');
 const { net } = require('electron');
 const { webMediaRequestOptions } = require('./web-media-guard');
+const { stripMarkupText } = require('./plain-text');
 
 const SITE = 'https://hongguoduanju.com';
 const CATEGORIES = new Set(['real-drama', 'comic-drama', 'ai-drama', 'comic']);
@@ -82,7 +83,7 @@ function decodeHtml(value) {
 }
 
 function parseRanking(html, category, page, sourceUrl) {
-  const text = value => decodeHtml(String(value).replace(/<[^>]*>/g, ' ')).trim();
+  const text = value => decodeHtml(stripMarkupText(String(value), ' ')).trim();
   let data;
   // Streaming SSR puts the public payload inside an HTML-encoded JSON argument.
   // Parse its literals only; no remote functions or scripts are ever executed.
@@ -216,13 +217,17 @@ async function fetchCatalogPage(url, signal, proxyLogin, allowTrustedDns, parse)
   }
 }
 async function browseList(options = {}, proxyLogin) {
-  const { category = 'real-drama', genre = '', page = 1, forceRefresh = false } = options || {};
+  const { category = 'real-drama', genre = '', page = 1, forceRefresh = false, signal } = options || {};
   const ranking = RANKINGS.has(category);
   if ((!CATEGORIES.has(category) && !ranking) || (genre && (!/^[a-z0-9-]+$/.test(genre) || ranking))) return { success: false, error: '无效的目录分类或题材' };
   const pg = Math.max(1, Number.parseInt(page, 10) || 1);
   const url = `${SITE}/${ranking ? 'rank' : 'category'}/${category}${genre ? `/${genre}` : ''}${pg > 1 ? `?page=${pg}` : ''}`;
-  if (!forceRefresh && cache.get(url)?.expires > Date.now()) return cache.get(url).data;
-  const previous = pending.get(url);
+  const cancelledResult = () => ({ success: false, error: '已取消目录请求', code: 'ERR_CANCELED', sourceUrl: url });
+  if (signal?.aborted) return cancelledResult();
+  // A cancellable diagnostic owns its transport and must not interrupt a shared UI browse.
+  const isolated = !!signal;
+  if (!isolated && !forceRefresh && cache.get(url)?.expires > Date.now()) return cache.get(url).data;
+  const previous = !isolated && pending.get(url);
   if (previous) {
     if (!forceRefresh || previous.forceRefresh) return previous.promise;
     previous.controller.abort();
@@ -232,31 +237,40 @@ async function browseList(options = {}, proxyLogin) {
   const request = { controller: new AbortController(), forceRefresh, promise: null };
   const task = (async () => {
     const controller = request.controller;
-    let timer;
+    let timer, abort;
     try {
       const timeout = new Promise((_, reject) => {
         timer = setTimeout(() => { controller.abort(); reject(new Error('目录加载超时，请重试')); }, TIMEOUT_MS);
       });
+      const cancellation = new Promise((_, reject) => {
+        if (!signal) return;
+        abort = () => { controller.abort(); reject(Object.assign(new Error('已取消目录请求'), { code: 'ERR_CANCELED' })); };
+        signal.addEventListener('abort', abort, { once: true });
+        if (signal.aborted) abort();
+      });
       const data = await Promise.race([fetchCatalogPage(url, controller.signal, proxyLogin, options.allowTrustedDns === true,
-        html => (ranking ? parseRanking : parseCatalog)(html, category, pg, url)), timeout]);
-      if (pending.get(url) === request) {
+        html => (ranking ? parseRanking : parseCatalog)(html, category, pg, url)), timeout, cancellation]);
+      if (signal?.aborted) return cancelledResult();
+      if (!isolated && pending.get(url) === request) {
         cache.set(url, { expires: Date.now() + CACHE_MS, data });
         // Bound memory while retaining the latest category/filter pages.
         if (cache.size > 32) cache.delete(cache.keys().next().value);
       }
       return data;
     } catch (error) {
+      if (signal?.aborted) return cancelledResult();
       const message = controller.signal.aborted || error.code === 'ECONNABORTED' ? '目录加载超时，请重试'
         : /ECONNRESET|ERR_CONNECTION_RESET/.test(`${error.code} ${error.message}`)
           ? '红果连接被中断，请重试或切换来源（ECONNRESET）' : error.message;
       return { success: false, error: message, sourceUrl: url };
     } finally {
       clearTimeout(timer);
-      if (pending.get(url) === request) pending.delete(url);
+      if (abort) signal.removeEventListener('abort', abort);
+      if (!isolated && pending.get(url) === request) pending.delete(url);
     }
   })();
   request.promise = task;
-  pending.set(url, request);
+  if (!isolated) pending.set(url, request);
   return task;
 }
 

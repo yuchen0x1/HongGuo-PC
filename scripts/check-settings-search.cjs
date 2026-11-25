@@ -27,7 +27,7 @@ const saveButton = ui => ui.find(n => n.type === 'button' && n.props.onClick && 
   } }, 'Settings');
   try {
     await ui.flush();
-    assert.equal(visibleIds(ui).length, 13);
+    assert.equal(visibleIds(ui).length, 14);
     rootInput(ui).props.onChange({ target: { value: '/unsaved' } }); await ui.flush();
     await setSearch(ui, '代理');
     assert.deepEqual(visibleIds(ui), ['proxy']);
@@ -36,12 +36,12 @@ const saveButton = ui => ui.find(n => n.type === 'button' && n.props.onClick && 
     assert.equal(saves.length, 0, 'filtering must never write settings');
     assert.equal(anchor(ui, 'proxy').props.role, 'region');
     assert.equal(anchor(ui, 'proxy').props['aria-label'], '代理');
-    for (const [query, id] of [['下载 目录', 'download'], ['语言', 'language'], [' ＥＮＧＬＩＳＨ ', 'language'], ['诊断', 'storage'], ['弹幕', 'danmaku'], ['优先使用红果 App 搜索', 'playback'], ['代理密码', 'proxy'], ['配置位置', 'storage']]) {
+    for (const [query, id] of [['下载 目录', 'download'], ['语言', 'language'], [' ＥＮＧＬＩＳＨ ', 'language'], ['配置 诊断', 'storage'], ['播放诊断', 'playback-diagnostics'], ['会话', 'playback-diagnostics'], ['弹幕', 'danmaku'], ['优先使用红果 App 搜索', 'playback'], ['代理密码', 'proxy'], ['配置位置', 'storage']]) {
       await setSearch(ui, query); assert.deepEqual(visibleIds(ui), [id], query);
     }
     let focused = false, scrolled = false;
     targets.set('settings-anchor-storage', { hidden: false, focus: () => { focused = true; }, scrollIntoView: () => { scrolled = true; } });
-    await setSearch(ui, '诊断');
+    await setSearch(ui, '配置 诊断');
     ui.find(n => n.type === 'form').props.onSubmit({ preventDefault() {} }); await ui.flush();
     assert.ok(focused && scrolled, 'Enter focuses and reveals the first matching section');
     assert.equal(anchor(ui, 'storage').props.tabIndex, -1);
@@ -54,7 +54,7 @@ const saveButton = ui => ui.find(n => n.type === 'button' && n.props.onClick && 
     search(ui).props.onKeyDown({ key: 'Escape', nativeEvent: { isComposing: true }, preventDefault() { assert.fail('IME Escape must not clear'); } });
     await ui.flush(); assert.equal(search(ui).props.value, 'no-matching-setting');
     search(ui).props.onKeyDown({ key: 'Escape', nativeEvent: { isComposing: false }, preventDefault() {}, stopPropagation() {} });
-    await ui.flush(); assert.equal(visibleIds(ui).length, 13); assert.ok(searchFocused);
+    await ui.flush(); assert.equal(visibleIds(ui).length, 14); assert.ok(searchFocused);
     assert.equal(rootInput(ui).props.value, '/unsaved');
 
     await ui.button('配置代理').props.onClick(); await ui.flush();

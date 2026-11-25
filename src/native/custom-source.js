@@ -2,12 +2,13 @@ const axios = require('axios');
 const store = require('../store');
 const { collectSourceById } = require('./media-sources');
 const { isPublicMediaUrl, webMediaRequestOptions } = require('./web-media-guard');
+const { stripMarkupText } = require('./plain-text');
 
 const UUID = /^[a-f\d]{8}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{12}$/i;
 const ID = /^\d{1,30}$/;
 const USER_AGENT = 'Mozilla/5.0';
 const activeRequests = new Map();
-const plainText = value => typeof value === 'string' ? value.replace(/<[^>]*>/g, '').trim() : '';
+const plainText = value => typeof value === 'string' ? stripMarkupText(value).trim() : '';
 
 function validateSource(draft) {
   if (!draft || typeof draft !== 'object') throw new Error('自定义源配置无效');

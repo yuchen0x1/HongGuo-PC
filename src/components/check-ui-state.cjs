@@ -154,6 +154,40 @@ async function mount(file, api, props = {}, storage = null) {
       ui.unmount();
     }
   });
+  await test('account restart labels cached login as unverified until server verification completes', async () => {
+    const history = deferred();
+    const ui = await mount('AccountManagement', {
+      getAccountStatus: async () => ({ success: true, signedIn: true, sessionValidity: 'unverified', account: { id: 'private-account-id', nickname: '缓存账号' } }),
+      getAccountHistory: async () => history.promise,
+    });
+    await ui.flush();
+    assert.ok(ui.text().includes('登录态待验证'));
+    assert.ok(!ui.text().includes('登录态已验证'));
+    assert.ok(!ui.text().includes('private-account-id'));
+    history.resolve({ success: true, signedIn: true, sessionValidity: 'valid', results: [] });
+    await ui.flush();
+    assert.ok(ui.text().includes('登录态已验证'));
+    assert.ok(!ui.text().includes('登录态待验证'));
+    ui.unmount();
+  });
+  await test('account network failure keeps cached identity with an unavailable label and logout clears it', async () => {
+    const ui = await mount('AccountManagement', {
+      getAccountStatus: async () => ({ success: true, signedIn: true, sessionValidity: 'unavailable', account: { id: 'private-account-id', nickname: '缓存账号' } }),
+      getAccountHistory: async () => assert.fail('unavailable session must not auto-repeat the failed account request'),
+      logoutAccount: async () => ({ success: true, signedIn: false, sessionValidity: 'anonymous' }),
+    });
+    await ui.flush();
+    assert.ok(ui.text().includes('缓存账号'));
+    assert.ok(ui.text().includes('暂时无法验证登录状态'));
+    assert.ok(!ui.text().includes('登录态已验证'));
+    assert.ok(ui.text().includes('未读取'));
+    await ui.button('退出账号').props.onClick();
+    await ui.flush();
+    assert.ok(!ui.text().includes('缓存账号'));
+    assert.ok(ui.text().includes('已退出红果账号'));
+    assert.ok(ui.button('获取登录二维码'));
+    ui.unmount();
+  });
   await test('download progress exposes bounded accessible values without changing task state', async () => {
     const ui = await mount('DownloadManager', {
       getDownloadTasks: async () => [{ id: 'ui-progress', title: '测试下载进度', filename: 'progress.mp4', status: 'downloading', progress: 140 }],

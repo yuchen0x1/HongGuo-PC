@@ -23,6 +23,7 @@ function fixture(inline, fallback, { status = 200, code = 0, stringModel = false
         module, Buffer, URL, AbortSignal, setTimeout, clearTimeout,
         require(name) {
             if (name === './playback-device') return {
+                createPlaybackIdentityManager: require('./playback-device').createPlaybackIdentityManager,
                 registerPlaybackDevice: async () => ({ device_id: '1000000000000001', iid: '1000000000000002', cdid: 'fixture' }),
             };
             if (name === 'axios') return async config => {

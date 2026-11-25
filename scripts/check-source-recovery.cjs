@@ -12,7 +12,8 @@ const webPage = (vid = '11', sid = '1', extra = {}) => `<script>window._ROUTER_D
     publicVideoSeo: { available: true, itemId: vid, seriesId: sid }, ...extra },
 } })}</script><script type="application/ld+json">${JSON.stringify({ '@type': 'VideoObject', url: `https://hongguoduanju.com/player/${sid}/${vid}`, contentUrl: media('web') })}</script>`;
 function load(file, dependencies) {
-  dependencies = { './playback-device': { registerPlaybackDevice: async () => playbackDevice }, ...dependencies };
+  dependencies = { './playback-device': { createPlaybackIdentityManager: require('../src/native/playback-device').createPlaybackIdentityManager,
+    registerPlaybackDevice: async () => playbackDevice }, ...dependencies };
   const context = { Buffer, URL, URLSearchParams, AbortSignal, AbortController, process: { env: {} }, module: { exports: {} },
     console: { warn() {} }, setTimeout: (fn, ms) => ms === 600 ? setTimeout(fn, 0) : fn(),
     require: name => Object.hasOwn(dependencies, name) ? dependencies[name] : require(name.startsWith('.') ? path.join(nativeDir, name) : name) };
@@ -95,7 +96,8 @@ const checks = [
         }
         return request(...args);
       });
-      const routedApp = load('app-source.js', { './playback-device': { registerPlaybackDevice }, axios: async config => {
+      const routedApp = load('app-source.js', { './playback-device': { registerPlaybackDevice,
+        createPlaybackIdentityManager: require('../src/native/playback-device').createPlaybackIdentityManager }, axios: async config => {
         if (failure.status) return { status: failure.status, headers: {}, data: 'secret' };
         throw Object.assign(new Error('secret https://signed.invalid/?token=private'), failure);
       } });
@@ -180,7 +182,7 @@ const checks = [
       }
     }
   }],
-  ['Playback route budgets reach App after Web timeout and bound legacy API to one attempt', async () => {
+  ['Playback route budgets reach App after Web timeout and bound each transient retry round', async () => {
     const webTimeouts = [], apiTimeouts = [];
     let appAvailable = true, webAvailable = false;
     const f = load('hongguo.js', {
@@ -205,11 +207,55 @@ const checks = [
     assert.deepEqual(apiTimeouts, []);
     appAvailable = false; webTimeouts.length = 0;
     assert.equal((await f.fetchPlayUrlSingle('11', '1', { force: true })).code, 'SOURCE_UNAVAILABLE');
-    assert.deepEqual(webTimeouts, [4000, 4000]);
-    assert.deepEqual(apiTimeouts, [6000], 'legacy playback lookup must not repeat after timeout');
+    assert.deepEqual(webTimeouts, [4000, 4000, 4000, 4000], 'all-transient failures permit only one manager retry round');
+    assert.deepEqual(apiTimeouts, [], 'playback must not fall back to an unverified legacy request profile');
     webAvailable = true; webTimeouts.length = 0;
     assert.equal((await f.fetchEpisodeListFromWeb('1')).series_id, '1');
     assert.deepEqual(webTimeouts, [1500, 1500], 'episode page first race bounds each web route');
+  }],
+  ['Explicit App refusal stops automatic fallback without legacy or additional web requests', async () => {
+    for (const failure of [
+      { response: { status: 401 } }, { response: { status: 403 } }, { response: { status: 429 } },
+      { code: 'BUSINESS_REJECTED' }, { code: 'ACCOUNT_REQUIRED' },
+      { code: 'ACCOUNT_EXPIRED' }, { code: 'ACCOUNT_UNAUTHORIZED' }, { code: 'SIGNATURE_INVALID' },
+      { code: 'ACCOUNT_SESSION_EXPIRED' }, { code: 'SIGNATURE_REJECTED' },
+      { faultCode: 'API_FORBIDDEN' }, { faultCode: 'API_RATE_LIMITED' },
+    ]) {
+      for (const skipWeb of [false, true]) {
+        const calls = [];
+        const f = load('hongguo.js', {
+          axios: {
+            get: async () => { calls.push('web'); return { data: webPage('11', '1', { protectedPlayback: true }) }; },
+            post: async () => { calls.push('legacy'); assert.fail('an explicit refusal must never use an unverified fallback'); },
+          },
+          './app-source': { fetchAppPlayUrl: async () => {
+            calls.push('app'); throw Object.assign(new Error('secret'), failure);
+          } },
+        });
+        if (skipWeb) f.markWebMediaFailure({ source: 'web', vid: '11' });
+        const result = await f.fetchPlayUrlSingle('11', '1');
+        assert.equal(result.code, 'SOURCE_UNAVAILABLE');
+        assert.ok(result.sources.some(item => item.source === 'app'));
+        assert.deepEqual(calls, skipWeb ? ['app'] : ['web', 'app'], JSON.stringify(failure));
+        assert.doesNotMatch(JSON.stringify(result), /secret/);
+      }
+    }
+  }],
+  ['Playback identity failures retain a safe actionable fault instead of an absent-model error', async () => {
+    for (const failure of [{ code: 'DEVICE_REJECTED' }, { code: 'DEVICE_EXPIRED' }, { faultCode: 'DEVICE_IDENTITY_EXPIRED' }]) {
+      const calls = [];
+      const f = load('hongguo.js', {
+        axios: {
+          get: async () => { calls.push('web'); return { data: webPage('11', '1', { protectedPlayback: true }) }; },
+          post: async () => { calls.push('legacy'); assert.fail('identity recovery belongs to the unified App source'); },
+        },
+        './app-source': { fetchAppPlayUrl: async () => { calls.push('app'); throw Object.assign(new Error('secret'), failure); } },
+      });
+      const result = await f.fetchPlayUrlSingle('11', '1');
+      assert.equal(result.sources.find(item => item.source === 'app').code, 'DEVICE_IDENTITY_EXPIRED');
+      assert.deepEqual(calls, ['web', 'app']);
+      assert.doesNotMatch(JSON.stringify(result), /secret/);
+    }
   }],
   ['Web rejects wrong or missing current episode identity even when vid_list contains the request', async () => {
     for (const data of [
@@ -351,6 +397,8 @@ const checks = [
     try {
       const main = fs.readFileSync(path.join(__dirname, '../main.js'), 'utf8');
       const context = vm.createContext({ URL, axios: require('axios'), hongguo: { UA: 'test', WEB_UA: 'browser', VIDEO_REFERER: 'https://novelquickapp.com/', WEB_REFERER: 'https://hongguoduanju.com/' },
+        isMediaExpired: require('../src/native/media-url-manager').isMediaExpired,
+        classifyPlaybackError: require('../src/native/playback-errors').classifyPlaybackError,
         checkCustomAccess() {}, require: () => ({ webMediaRequestOptions: () => ({}) }) });
       vm.runInContext(main.slice(main.indexOf('async function requestMedia('), main.indexOf('function awaitMediaOperation(')), context);
       const base = `http://127.0.0.1:${server.address().port}`;
@@ -410,7 +458,7 @@ const checks = [
     f.markWebMediaFailure(first); f.state.calls.length = 0;
     const recovered = await f.fetchPlayUrlSingle('11', '1', { force: true });
     assert.equal(recovered.source, 'web', 'five-minute penalty must not hide the only working source');
-    assert.deepEqual(f.state.calls, ['app', 'api', 'web']);
+    assert.deepEqual(f.state.calls, ['app', 'web']);
     f.state.app = true; f.state.calls.length = 0;
     assert.equal((await f.fetchPlayUrlSingle('11', '1')).source, 'app');
     assert.deepEqual(f.state.calls, ['app'], 'web penalty remains after last-resort recovery');
@@ -419,7 +467,7 @@ const checks = [
     const f = routeFixture(); f.state.web = false;
     const unavailable = await f.fetchPlayUrlSingle('11', '1');
     assert.equal(unavailable.code, 'SOURCE_UNAVAILABLE');
-    assert.deepEqual(Array.from(unavailable.sources, item => item.source), ['web', 'app', 'api']);
+    assert.deepEqual(Array.from(unavailable.sources, item => item.source), ['web', 'app']);
     assert.doesNotMatch(JSON.stringify(unavailable), /secret|signed\.invalid|private|仅.{0,4}集|付费会员|会员专享/);
     assert.ok(unavailable.sources.every(item => item.code && item.message));
     f.state.app = true;

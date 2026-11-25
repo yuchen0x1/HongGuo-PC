@@ -6,6 +6,7 @@
 // Public protocol constants below are not account credentials. Device registration remains in playback-device.js.
 const crypto = require('node:crypto');
 const sm3 = require('./sm3');
+const { LEGACY_PLAYBACK } = require('./playback-profiles');
 const LICENSE_ID = 1611921764n;
 const SIGN_KEY = Buffer.from('fc78e0a9657a0c748ce51559903ccf03510e51d3cff232d71343e88a321c5304', 'hex');
 const AES_KEY = Buffer.from('d31e3718288a1027baab59f146a09a9c', 'hex');
@@ -118,7 +119,7 @@ const Argus = {
       .putVarint(9, 134744640).putBytes(10, Buffer.alloc(8)).putVarint(11, 0).putVarint(12, integer(ts) << 1n)
       .putBytes(13, Argus.bodyHash(stubHex)).putBytes(14, Argus.queryHash(query))
       .putProtobuf(15, new ProtoBuf().putVarint(1, 1).putVarint(2, 1).putVarint(3, 1).putVarint(7, 0xc792eccc))
-      .putUtf8(16, installId).putUtf8(20, 'none').putVarint(21, 738)
+      .putUtf8(16, installId).putUtf8(20, 'none').putVarint(21, LEGACY_PLAYBACK.argusField21)
       .putProtobuf(23, new ProtoBuf().putUtf8(1, 'NX551J').putVarint(2, 8196).putVarint(4, 0x80e0d800)).putVarint(25, 2);
     const protobuf = pad16(bean.toBuf()), key = Array.from({ length: 4 }, (_, i) => SIGN_KEY.readBigUInt64LE(i * 8));
     const blocks = [];

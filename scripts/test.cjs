@@ -15,6 +15,7 @@ const skip = new Set([
   'check-merge-benchmark.cjs',
   'check-error-boundary.cjs',
   'check-danmaku-live.cjs',
+  'check-playback-live.cjs',
   'check-ui-theme.cjs',
 ]);
 
@@ -57,5 +58,5 @@ if (failed) {
   console.error(`npm test: ${failed} command(s) failed`);
   process.exitCode = 1;
 } else {
-  console.log(`npm test: unit tests and ${checks.length + 2} platform checks passed`);
+  console.log(`npm test: unit tests and ${checks.length + 3} platform checks passed`);
 }

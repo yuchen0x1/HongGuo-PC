@@ -8,9 +8,10 @@
 const crypto = require('node:crypto');
 const { gzipSync } = require('node:zlib');
 const { setTimeout: delay } = require('node:timers/promises');
-const { registerPlaybackDevice } = require('./playback-device');
+const { registerPlaybackDevice, createPlaybackIdentityManager } = require('./playback-device');
 const { signPlayer } = require('./playback-signature');
 const { signPlaybackV5 } = require('./playback-v5');
+const { getPlaybackProfile, getPlaybackProfileStatus, LEGACY_PLAYBACK, requestProfiles } = require('./playback-profiles');
 const { abortError, throwIfAborted, boundedSignal, networkFailure } = require('./request-signal');
 const sm3 = require('./sm3');
 const { normalizeDownloadQuality, meetsDownloadQuality } = require('./download-quality');
@@ -20,32 +21,14 @@ const PROCESS_STARTED = Date.now();
 let playbackQueue = Promise.resolve();
 let playbackReadyAt = 0;
 let playbackRejection = null;
-const VIDEO_API = 'https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/v1/';
-const PLAYER_API = 'https://reading.snssdk.com/novel/player/multi_video_model/preload/v1';
-const PLAYER_ALTERNATE_API = 'https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/preload/v1';
+const playbackIdentity = createPlaybackIdentityManager({ register: registerPlaybackDevice });
+const VIDEO_API = LEGACY_PLAYBACK.endpoint;
 const SEARCH_API = 'https://api5-normal-sinfonlinea.fqnovel.com/reading/bookapi/search/tab/v';
-const VIDEO_UA = 'com.phoenix.read/71332 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)';
-const SEARCH_UA = 'com.phoenix.read/72232 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3)';
-const PLAYBACK_PROFILE = {
-    aid: '8662', app_name: 'novelread', version_code: '74532', version_name: '7.4.5.32',
-    update_version_code: '74532', manifest_version_code: '74532', os: 'android', ssmix: 'a',
-    channel: 'update_64', device_platform: 'android', device_type: '25053RT47C', device_brand: 'Redmi',
-    os_version: '16', os_api: '36', ac: 'wifi', language: 'zh', host_abi: 'arm64-v8a',
-};
-const PLAYBACK_MODEL_UA = 'com.phoenix.read/74532 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3)';
-const DEVICE = {
-    ac: 'wifi', channel: 'update_64', aid: '8662', app_name: 'novelread',
-    version_code: '71332', version_name: '7.1.3.32', device_platform: 'android', os: 'android',
-    ssmix: 'a', device_type: '25053RT47C', device_brand: 'Redmi', language: 'zh', os_api: '36',
-    os_version: '16', manifest_version_code: '71332', resolution: '1280*2772', dpi: '520',
-    update_version_code: '71332', host_abi: 'arm64-v8a', dragon_device_type: 'phone', pv_player: '71332',
-    compliance_status: '0', need_personal_recommend: '1', player_so_load: '1', is_android_pad_screen: '0',
-};
-const PLAYBACK_DEVICE = { ...DEVICE, version_code: '74332', version_name: '7.4.3.32',
-    manifest_version_code: '74332', update_version_code: '74332', pv_player: '74332' };
-// Media CDN requests remain on the UA accepted by the existing stream proxy.
-// The V5 API request has its own 73932 UA in playbackRequest(...).
-const PLAYBACK_UA = 'com.phoenix.read/71532 (Linux; U; Android 9; SM-N9860; Build/PQ3A.190705.10241111;tt-ok/3.12.13.20)';
+const VIDEO_UA = LEGACY_PLAYBACK.videoUserAgent;
+const SEARCH_UA = LEGACY_PLAYBACK.searchUserAgent;
+const DEVICE = LEGACY_PLAYBACK.baseDevice;
+const PLAYBACK_DEVICE = { ...DEVICE, ...LEGACY_PLAYBACK.playbackDevice };
+const PLAYBACK_UA = LEGACY_PLAYBACK.mediaUserAgent;
 function str(value, fallback = '') { return String(value == null ? fallback : value).trim(); }
 function cleanUrl(value) { return str(value).replace(/\\\//g, '/').replace(/\\u0026/g, '&').replace(/&amp;/g, '&'); }
 function jsonBody(value) { try { return JSON.parse(value); } catch { return null; } }
@@ -142,7 +125,37 @@ class AesV3 {
 function xmxor(data, key) { const encoded=Buffer.alloc(data.length); for(let i=0;i<data.length;i+=1){const at=(i*4)&28;const d0=key[at],d1=key[at+1];let d2=((((data[i]<<4)|(data[i]>>>4))&255)+d0);d2=(~d2)^d1;d2=((((d2&255)<<3)|((d2&255)>>>5))&255);d2=(d2+d1)&255;d2=(d2^d0)&255;encoded[data.length-i-1]=(~d2)&255;} let last=encoded[encoded.length-1]^encoded[encoded.length-2];const first=encoded[0];encoded[0]=(~last+first)&255;encoded[1]=((encoded[0]^encoded[encoded.length-1]^254)+encoded[1])&255;encoded[2]=(encoded[2]+((last-first)^(((encoded[1]<<3)|(encoded[1]>>>5))&255)^2))&255;for(let i=0;i<encoded.length-4;i+=1){const temp=(((encoded[i+2]<<3)|(encoded[i+2]>>>5))&255)^encoded[i+1]^(i+3);encoded[i+3]=(~temp+encoded[i+3])&255;}encoded[encoded.length-1]^=encoded[encoded.length-2];let sum=0;for(let i=0;i<encoded.length-1;i+=1)sum+=encoded[i+1];encoded[0]=((encoded[0]^encoded[1])+sum)&255;return encoded; }
 function keyHash(signKey, random) { const input=Buffer.concat([signKey,le32(random),signKey]); const hash=sm3(input); const d1=(random>>16)&255; let d2=((d1<<11)|(random>>>24))^(d1>>5)^d1; d2=(~d2)>>>0; return [hash,le32(d2)]; }
 function buildMedusa(url, body, khronos, device) {
-    const bodyMd5=body?crypto.createHash('md5').update(body).digest():Buffer.alloc(16); const querySm3=sm3(url.split('?')[1]); const ts=le32(khronos); const queryBodyTs=hashF13(querySm3,bodyMd5,ts,khronos); const nested=proto([[1,111,'sint'],[2,10,'sint'],[3,694367,'sint'],[5,586952199,'sint']]); const messageRand=Math.floor(Math.random()*0x100000000); const envLaunch=Math.floor(Math.random()*21)+100; const envPid=Math.floor(Math.random()*2000)+10001; const env=proto([[1,envLaunch,'sint'],[2,146331399,'sint'],[3,146331396,'sint'],[5,7,'sint'],[6,'v04.06.04.03-bugfix'],[7,envPid,'sint'],[12,deviceProto(device.device_id),'message'],[13,proto([[1,Math.floor(Date.now()/1000),'sint'],[2,-2,'sint'],[4,200,'sint']]),'message'],[14,device.version_name]]); const queryHash=sm3(Buffer.concat([Buffer.from(url.split('?')[1]),bodyMd5,Buffer.from('none')])); const message=proto([[1,Buffer.from('f7e85ffad7d7dc3bd62ac87057cf6118','hex'),'bytes'],[2,3,'sint'],[3,messageRand,'sint'],[4,'8662'],[5,device.device_id],[6,'1588093228'],[7,device.version_name],[8,'v04.06.04-ml-android'],[9,67503104,'sint'],[10,Buffer.from('4001000000000000','hex'),'bytes'],[12,khronos,'sint'],[13,queryBodyTs,'bytes'],[14,querySm3.subarray(0,6),'bytes'],[15,nested,'message'],[16,PROCESS_NONCE],[17,khronos,'sint'],[19,queryHash,'bytes'],[20,'none'],[21,312,'sint'],[23,env,'message'],[24,'{\"cmr\":16777216,\"cmr2\":16777216,\"un_h\":1879194040,\"vpn\":0,\"kd\":0,\"fkd\":3672518972,\"pd\":-1872573247,\"dyn\":\"\",\"do\":0,\"tk\":true}']]); const random=Math.floor(Math.random()*0x100000000); const [hash,seed]=keyHash(Buffer.from('8ebdfa3806ecc5cee79423e6029ed82540bc2218bb7eae f71cb691f7aa8aa2f5'.replace(/ /g,''),'hex'),random); let transformed=xmxor(message,hash); transformed=Buffer.concat([Buffer.from('4001000000000000','hex'),transformed]).reverse(); for(let i=0;i<transformed.length;i+=1)transformed[i]^=seed[(~i)&3]; const check=((querySm3[0]&63)<<14)|0x18000001|((queryBodyTs[0]&63)<<8); const xmRand=Math.floor(Math.random()*0x100000000); const packed=Buffer.concat([Buffer.from([0x35]),le32(xmRand),le32(check),transformed,Buffer.from([random>>16,random>>24])]); const encrypted=new AesV3(Buffer.from('f1593376766ea98d34f31b057a9d5be4','hex'),khronos).encrypt(packed,Buffer.from('1fe109a4125283f418de9e051a969e12','hex')); const version=Buffer.from('03000000f7e85ffad7d7dc3bd62ac87057cf6118','hex'); const prefix=Buffer.alloc(20); for(let i=0;i<20;i+=4) prefix.writeUInt32LE(u32(version.readUInt32LE(i)^khronos),i); return Buffer.concat([prefix,Buffer.from([random&255,(random>>8)&255,0,1]),encrypted]).toString('base64');
+    const bodyMd5 = body ? crypto.createHash('md5').update(body).digest() : Buffer.alloc(16);
+    const querySm3 = sm3(url.split('?')[1]);
+    const queryBodyTs = hashF13(querySm3, bodyMd5, le32(khronos), khronos);
+    const nested = proto([[1,111,'sint'], [2,10,'sint'], [3,694367,'sint'], [5,586952199,'sint']]);
+    const messageRand = Math.floor(Math.random() * 0x100000000);
+    const envLaunch = Math.floor(Math.random() * 21) + 100;
+    const envPid = Math.floor(Math.random() * 2000) + 10001;
+    const env = proto([[1,envLaunch,'sint'], [2,146331399,'sint'], [3,146331396,'sint'], [5,7,'sint'],
+        [6,'v04.06.04.03-bugfix'], [7,envPid,'sint'], [12,deviceProto(device.device_id),'message'],
+        [13,proto([[1,Math.floor(Date.now()/1000),'sint'], [2,-2,'sint'], [4,200,'sint']]),'message'], [14,device.version_name]]);
+    const queryHash = sm3(Buffer.concat([Buffer.from(url.split('?')[1]), bodyMd5, Buffer.from('none')]));
+    const message = proto([[1,Buffer.from('f7e85ffad7d7dc3bd62ac87057cf6118','hex'),'bytes'], [2,3,'sint'],
+        [3,messageRand,'sint'], [4,'8662'], [5,device.device_id], [6,'1588093228'], [7,device.version_name],
+        [8,'v04.06.04-ml-android'], [9,67503104,'sint'], [10,Buffer.from('4001000000000000','hex'),'bytes'],
+        [12,khronos,'sint'], [13,queryBodyTs,'bytes'], [14,querySm3.subarray(0,6),'bytes'], [15,nested,'message'],
+        [16,PROCESS_NONCE], [17,khronos,'sint'], [19,queryHash,'bytes'], [20,'none'],
+        [21,LEGACY_PLAYBACK.medusaField21,'sint'], [23,env,'message'],
+        [24,'{"cmr":16777216,"cmr2":16777216,"un_h":1879194040,"vpn":0,"kd":0,"fkd":3672518972,"pd":-1872573247,"dyn":"","do":0,"tk":true}']]);
+    const random = Math.floor(Math.random() * 0x100000000);
+    const [hash, seed] = keyHash(Buffer.from('8ebdfa3806ecc5cee79423e6029ed82540bc2218bb7eae f71cb691f7aa8aa2f5'.replace(/ /g,''),'hex'), random);
+    let transformed = Buffer.concat([Buffer.from('4001000000000000','hex'), xmxor(message, hash)]).reverse();
+    for (let i = 0; i < transformed.length; i++) transformed[i] ^= seed[(~i) & 3];
+    const check = ((querySm3[0] & 63) << 14) | 0x18000001 | ((queryBodyTs[0] & 63) << 8);
+    const xmRand = Math.floor(Math.random() * 0x100000000);
+    const packed = Buffer.concat([Buffer.from([0x35]), le32(xmRand), le32(check), transformed, Buffer.from([random>>16,random>>24])]);
+    const encrypted = new AesV3(Buffer.from('f1593376766ea98d34f31b057a9d5be4','hex'), khronos)
+        .encrypt(packed, Buffer.from('1fe109a4125283f418de9e051a969e12','hex'));
+    const version = Buffer.from('03000000f7e85ffad7d7dc3bd62ac87057cf6118','hex');
+    const prefix = Buffer.alloc(20);
+    for (let i = 0; i < 20; i += 4) prefix.writeUInt32LE(u32(version.readUInt32LE(i) ^ khronos), i);
+    return Buffer.concat([prefix, Buffer.from([random&255,(random>>8)&255,0,1]), encrypted]).toString('base64');
 }
 function helios(khronos) {
     const random = Math.floor(Math.random() * 0x100000000); const data = Buffer.concat([le32(random), Buffer.from('8662')]); const digest = crypto.createHash('md5').update(data).digest(); const ascii = Buffer.from(digest.toString('hex'), 'ascii'); const words = [];
@@ -158,13 +171,13 @@ function playbackRequest(payload, identity, videoId = '', alternate = false) {
     // Sign the final query and actual gzip body; other API families retain their original signer.
     if (videoId) {
         const body = gzipSync(Buffer.from(payload));
-        const signed = signPlaybackV5({ base: alternate ? PLAYER_ALTERNATE_API : PLAYER_API,
-            values: { ...PLAYBACK_PROFILE,
+        const profile = getPlaybackProfile();
+        const signed = signPlaybackV5({ base: profile.routes[alternate ? 1 : 0].endpoint,
+            values: { ...profile.app,
                 iid: identity.iid, cdid: identity.cdid, device_id: identity.device_id },
             body, now: Date.now() });
         return { ...signed, body, method: 'POST', headers: { ...signed.headers,
-            'User-Agent': PLAYBACK_MODEL_UA,
-            Accept: 'application/json', 'Content-Type': 'application/json; charset=utf-8', 'Content-Encoding': 'gzip' } };
+            'User-Agent': profile.userAgent, ...profile.headers } };
     }
     // Keep the legacy compatibility request in its original uncompressed form.
     // V5 is the only route that signs and sends a gzip body.
@@ -188,26 +201,23 @@ function playbackRequest(payload, identity, videoId = '', alternate = false) {
     return { url, body, headers, method: 'POST' };
 }
 
-const VIDEO_TAB_API = 'https://api5-normal-sinfonlineb.fqnovel.com/reading/bookapi/video_tab/multi_video_model/v1/';
-
 function videoTabRequest(identity, videoId) {
     // video_tab belongs to the player family; generic Argus/Ladon signing is rejected with an empty body.
     // Route and parameters follow jackotom/hongguo-drama 7.7 (issue #130), referencing the
     // GPL-3.0-only tsukiyo-zero/hongguoTV tabVideoModel response shape.
+    const profile = getPlaybackProfile();
     const signed = signPlaybackV5({
-        base: VIDEO_TAB_API,
+        base: profile.routes[2].endpoint,
         values: {
-            ...PLAYBACK_PROFILE,
+            ...profile.app,
             iid: identity.iid, cdid: identity.cdid, device_id: identity.device_id,
-            video_id: String(videoId), video_id_type: '0', device_level: '1',
-            need_all_video_definition: '1', need_mp4_align: '0', use_os_player: '0',
-            video_platform: '1024', source: '0', from_video_id: '',
+            video_id: String(videoId), ...profile.tabQuery,
         },
         body: null,
         now: Date.now(),
     });
     return { url: signed.url, body: null, method: 'GET',
-        headers: { ...signed.headers, 'User-Agent': PLAYBACK_MODEL_UA, Accept: 'application/json' } };
+        headers: { ...signed.headers, 'User-Agent': profile.userAgent, Accept: 'application/json' } };
 }
 
 function parseSearchInteger(value) {
@@ -424,6 +434,9 @@ async function fetchAppPlayUrl(vid, options = {}) {
     normalizeDownloadQuality(options.quality); // Validate before registration or network I/O.
     vid = String(vid || '');
     if (!/^\d{1,30}$/.test(vid)) throw new Error('分集编号无效');
+    const budget = Math.max(1, Math.min(getPlaybackProfile().timeout.totalMs, (Number(options.deadline) || Infinity) - Date.now()));
+    const operation = boundedSignal(options.signal, budget);
+    options = { ...options, signal: operation.signal, deadline: Date.now() + budget };
     // Playback, prefetch and downloads share one paced turn, including registration.
     const previousRejection = playbackRejection;
     const pending = playbackQueue.then(async () => {
@@ -438,15 +451,14 @@ async function fetchAppPlayUrl(vid, options = {}) {
         try { return await fetchAppPlayUrlFresh(vid, options); }
         catch (error) {
             // An explicit refusal also stops work queued before it was received.
-            if ([403, 429].includes(error.status) || error.code === 'BUSINESS_REJECTED'
+            if ([401, 403, 429].includes(error.status) || error.code === 'BUSINESS_REJECTED'
                 || (error.code === 'DEVICE_REGISTRATION_FAILED'
                   && ['BUSINESS_REJECTED', 'HTTP_403', 'HTTP_429'].includes(error.registrationFailure))) playbackRejection = error;
             throw error;
         }
-        finally { playbackReadyAt = Math.max(playbackReadyAt, Date.now() + 1000); }
+        finally { playbackReadyAt = Math.max(playbackReadyAt, Date.now() + getPlaybackProfile().recovery.pacingMs); }
     });
     playbackQueue = pending.catch(() => {});
-    if (!options.signal) return pending;
     let cancel;
     try {
         return await Promise.race([pending, new Promise((resolve, reject) => {
@@ -454,97 +466,119 @@ async function fetchAppPlayUrl(vid, options = {}) {
             options.signal.addEventListener('abort', cancel, { once: true });
             if (options.signal.aborted) cancel();
         })]);
-    } finally { options.signal.removeEventListener('abort', cancel); }
+    } finally { options.signal.removeEventListener('abort', cancel); operation.dispose(); }
+}
+
+function playbackModel(response, vid) {
+    if (Number(response.Code || response.code || 0) !== 0) throw Object.assign(new Error('App 接口暂未提供本集播放信息'), { code: 'BUSINESS_REJECTED' });
+    const data = response.data;
+    const entry = [data?.['1004']?.[vid], data?.[vid], data?.video_model_data?.[vid],
+        data?.['1004']?.video_model_data?.[vid], data?.video_model ? data : null]
+        .find(candidate => candidate && typeof candidate === 'object');
+    const model = typeof entry?.video_model === 'string' ? jsonBody(entry.video_model) : entry?.video_model;
+    if (!model || typeof model !== 'object' || Array.isArray(model)) {
+        throw Object.assign(new Error('App 接口未返回所选分集，已停止取址'), { code: entry?.video_model ? 'INVALID_RESPONSE' : 'MISSING_MODEL' });
+    }
+    return model;
+}
+
+// Main-process-only, narrowly scoped A/B verification. The normal resolver never
+// consumes website cookies; account-session owns the temporary authenticated probe.
+async function createPlaybackAuthProbeRequest(vid, { signal } = {}) {
+    throwIfAborted(signal);
+    if (typeof vid !== 'string' || !/^\d{1,30}$/.test(vid)) throw new TypeError('A valid episode ID is required');
+    const identity = await playbackIdentity.acquire(requestJson, { signal });
+    throwIfAborted(signal);
+    const payload = JSON.stringify({ ...getPlaybackProfile().body, mixed_video_id_map: { '1004': [vid] } });
+    const signed = playbackRequest(payload, identity, vid);
+    return { url: signed.url, options: { method: signed.method, headers: { ...signed.headers, Connection: 'close' }, data: signed.body } };
+}
+
+function inspectPlaybackAuthProbeResponse(payload, vid) {
+    const data = payload?.data;
+    const entry = [data?.['1004']?.[vid], data?.[vid], data?.video_model_data?.[vid], data?.['1004']?.video_model_data?.[vid]]
+        .find(candidate => candidate && typeof candidate === 'object');
+    const model = typeof entry?.video_model === 'string' ? jsonBody(entry.video_model) : entry?.video_model;
+    const modelPresent = !!model && typeof model === 'object' && !Array.isArray(model);
+    return { businessAccepted: !!payload && typeof payload === 'object' && Number(payload.Code || payload.code || 0) === 0,
+        episodeMatches: !!entry, modelPresent,
+        mediaModelPresent: modelPresent && (!!model.video_list && typeof model.video_list === 'object'
+            && Object.keys(model.video_list).length > 0 || !!parseFallback(model.fallback_api)) };
 }
 
 async function fetchAppPlayUrlFresh(vid, options) {
+    const profile = getPlaybackProfile();
     const payload = JSON.stringify({
-        biz_param: { detail_page_version: 0, device_level: 2, disable_digg_stat: false, disable_video_relate_book: false, need_all_video_definition: true, need_mp4_align: false, use_os_player: false, use_server_dns: false, video_platform: 1024 },
+        ...profile.body,
         mixed_video_id_map: { '1004': [vid] },
-        dr_scene: 'preload',
     });
-    // Playback identities can be single-use; search/account retain their shared device.
-    let identity = await registerPlaybackDevice(requestJson, { signal: options.signal });
+    // Device lifetime is independent of account login and individual requests.
+    let identity = await playbackIdentity.acquire(requestJson, { signal: options.signal,
+        timeoutMs: options.deadline - Date.now() });
     throwIfAborted(options.signal);
-    // Registration has its own 8s budget; it must not consume the model request budget.
-    // Empty HTTP 200 responses have been observed to vary with the registered
-    // playback identity. Retry the current V5 route with a fresh identity when
-    // time permits; the legacy route also returned empty responses in testing.
-    const overallDeadline = Date.now() + 20000;
-    const request = boundedSignal(options.signal, 20000);
+    const overallDeadline = Math.min(options.deadline, Date.now() + profile.timeout.modelTotalMs);
+    const request = boundedSignal(options.signal, Math.max(1, overallDeadline - Date.now()));
     const { signal } = request;
-    const MAX_MODEL_ATTEMPTS = 5;
-    // A fallback lookup shares the successful model attempt's deadline; it
-    // never starts a new timeout window or extends the overall deadline.
-    const firstDeadline = Math.min(Date.now() + 12000, overallDeadline);
+    const firstDeadline = Math.min(Date.now() + profile.timeout.requestMs, overallDeadline);
     let deadline = firstDeadline;
+    let routeId = '', requestElapsedMs = 0, requestCount = 0, networkRetries = 0, deviceRefreshes = 0;
+    const observe = event => {
+        const safe = { type: 'source-request', profileId: profile.id, profileVersion: profile.version, ...event };
+        requestProfiles.record(safe);
+        try { options.onPlaybackEvent?.(safe); } catch (_) {}
+    };
+    const ready = result => ({ ...result, profileId: profile.id, profileVersion: profile.version,
+        routeId, requestElapsedMs, sourceRecoveryCount: networkRetries + deviceRefreshes });
     try {
-        let response;
-        for (let attempt = 0; attempt < MAX_MODEL_ATTEMPTS; attempt++) {
+        let model;
+        for (;;) {
             throwIfAborted(signal);
-            // Each model request keeps its own bounded 12s budget; the overall
-            // deadline only limits the total time spent across retries.
-            deadline = attempt === 0 ? firstDeadline : Math.min(Date.now() + 12000, overallDeadline);
-            // Empty HTTP 200 responses recover through a fixed ladder inside each
-            // round: the current V5 POST, the same request on the alternate
-            // official host, then the signed video_tab GET. Only EMPTY_RESPONSE
-            // advances the ladder, and each step keeps ≥1s of the attempt budget.
-            const signed = playbackRequest(payload, identity, vid);
-            signed.headers.Connection = 'close';
+            deadline = requestCount === 0 ? firstDeadline : Math.min(Date.now() + profile.timeout.requestMs, overallDeadline);
             try {
-                try {
-                    response = await requestJson(signed.url, { method: signed.method, headers: signed.headers, data: signed.body }, deadline, signal);
-                } catch (error) {
-                    throwIfAborted(signal);
-                    if (error.code === 'ERR_CANCELED') throw error;
-                    if (error.code !== 'EMPTY_RESPONSE' || deadline - Date.now() < 1000) throw error;
-                    const alternate = playbackRequest(payload, identity, vid, true);
+                for (const [index, route] of profile.routes.entries()) {
+                    const signed = route.method === 'GET' ? videoTabRequest(identity, vid) : playbackRequest(payload, identity, vid, index === 1);
+                    signed.headers.Connection = 'close';
+                    const started = Date.now();
+                    requestCount++;
                     try {
-                        response = await requestJson(alternate.url, { method: alternate.method, headers: alternate.headers, data: alternate.body }, deadline, signal);
-                    } catch (alternateError) {
+                        const response = await requestJson(signed.url, { method: signed.method, headers: signed.headers, data: signed.body }, deadline, signal);
+                        model = playbackModel(response, vid);
+                        routeId = route.id;
+                        requestElapsedMs = Date.now() - started;
+                        observe({ routeId, elapsedMs: requestElapsedMs, status: 200, code: '', attempt: requestCount, modelValid: true });
+                        break;
+                    } catch (error) {
+                        requestElapsedMs = Date.now() - started;
+                        const code = Number(error.status) >= 300 ? `HTTP_${Number(error.status)}` : String(error.code || 'INVALID_RESPONSE');
+                        observe({ routeId: route.id, elapsedMs: requestElapsedMs, status: Number(error.status) || 0,
+                            code, attempt: requestCount, modelValid: false });
                         throwIfAborted(signal);
-                        if (alternateError.code === 'ERR_CANCELED') throw alternateError;
-                        if (alternateError.code !== 'EMPTY_RESPONSE' || deadline - Date.now() < 1000) throw alternateError;
-                        const tab = videoTabRequest(identity, vid);
-                        response = await requestJson(tab.url, { method: tab.method, headers: tab.headers, data: tab.body }, deadline, signal);
+                        // Compatibility routes are attempted only for an observed empty
+                        // body, never for forbidden/rate-limited/business rejections.
+                        if (error.code !== 'EMPTY_RESPONSE' || index === profile.routes.length - 1
+                            || deadline - Date.now() < profile.timeout.minimumRouteMs) throw error;
                     }
                 }
                 throwIfAborted(signal);
                 break;
             } catch (error) {
                 throwIfAborted(signal);
-                if (error.code === 'ERR_CANCELED') throw error;
-                if (error.code !== 'EMPTY_RESPONSE' || attempt === MAX_MODEL_ATTEMPTS - 1 || overallDeadline - Date.now() < 2500) throw error;
-                // Prefer a fresh identity within the remaining time budget;
-                // preserve explicit registration rejections and cancellation.
-                if (overallDeadline - Date.now() >= 9000) {
-                    try { identity = await registerPlaybackDevice(requestJson, { signal }); }
-                    catch (registrationError) {
-                        throwIfAborted(signal);
-                        if (registrationError.code === 'ERR_CANCELED') throw registrationError;
-                        if (registrationError.code === 'DEVICE_REGISTRATION_FAILED'
-                            && ['BUSINESS_REJECTED', 'HTTP_403', 'HTTP_429'].includes(registrationError.registrationFailure)) throw registrationError;
-                        // Keep the previous identity for other registration failures.
-                    }
+                if (error.code === 'DEVICE_IDENTITY_EXPIRED' && deviceRefreshes < profile.recovery.maxDeviceRefreshes
+                    && overallDeadline - Date.now() > profile.timeout.registrationMs + profile.timeout.minimumRouteMs) {
+                    identity = await playbackIdentity.acquire(requestJson, { signal, rejectedDevice: identity, reason: error.code,
+                        timeoutMs: overallDeadline - Date.now() });
+                    deviceRefreshes++;
+                    continue;
                 }
-                throwIfAborted(signal);
-                if (overallDeadline - Date.now() < 2000) throw error;
-                try { await delay(250, undefined, { signal }); }
+                const transient = ['ECONNABORTED', 'ETIMEDOUT', 'ECONNRESET', 'EAI_AGAIN', 'ECONNREFUSED', 'EPIPE', 'ERR_NETWORK'].includes(error.code)
+                    || [500, 502, 503, 504].includes(error.status);
+                if (!transient || networkRetries >= profile.recovery.maxNetworkRetries
+                    || overallDeadline - Date.now() < profile.timeout.minimumRouteMs + profile.recovery.retryDelayMs) throw error;
+                networkRetries++;
+                try { await delay(profile.recovery.retryDelayMs, undefined, { signal }); }
                 catch (waitError) { throwIfAborted(signal); throw waitError; }
-                throwIfAborted(signal);
             }
         }
-        if (Number(response.Code || response.code || 0) !== 0) throw Object.assign(new Error('App 接口暂未提供本集播放信息'), { code: 'BUSINESS_REJECTED' });
-        const data = response.data;
-        const entry = [
-            data?.['1004']?.[vid],
-            data?.[vid],
-            data?.video_model_data?.[vid],
-            data?.['1004']?.video_model_data?.[vid],
-            data?.video_model ? data : null,
-        ].find(candidate => candidate && typeof candidate === 'object');
-        const model = typeof entry?.video_model === 'string' ? jsonBody(entry.video_model) : entry?.video_model;
-        if (!model || typeof model !== 'object' || Array.isArray(model)) throw Object.assign(new Error('App 接口未返回所选分集，已停止取址'), { code: entry?.video_model ? 'INVALID_RESPONSE' : 'MISSING_MODEL' });
         const inline = model.video_list && typeof model.video_list === 'object' && Object.keys(model.video_list).length > 0;
         const readFallback = async () => {
             const fallback = parseFallback(model.fallback_api);
@@ -559,10 +593,10 @@ async function fetchAppPlayUrlFresh(vid, options) {
         if (!inline) {
             const info = await readFallback();
             throwIfAborted(signal);
-            return parseAppPlayModel(info, vid, options, false);
+            return ready(parseAppPlayModel(info, vid, options, false));
         }
         try {
-            return parseAppPlayModel(model, vid, options, true);
+            return ready(parseAppPlayModel(model, vid, options, true));
         } catch (error) {
             // Only absent encryption metadata enables this recovery path; the fallback
             // must independently pass identity, duration, encryption and URL validation.
@@ -576,7 +610,7 @@ async function fetchAppPlayUrlFresh(vid, options) {
                 || Math.abs(fallbackDuration - duration) > 0.5) {
                 throw Object.assign(new Error('备用片源编号或完整时长无法确认，已停止取址'), { code: 'INVALID_RESPONSE' });
             }
-            return parseAppPlayModel(info, vid, options, false, true, error.minimumPixels);
+            return ready(parseAppPlayModel(info, vid, options, false, true, error.minimumPixels));
         }
     } finally {
         request.dispose();
@@ -669,4 +703,6 @@ function parseAppPlayModel(info, vid, options, inline, requireEncryptionMetadata
         });
 }
 
-module.exports = { fetchAppPlayUrl, signedSearchRequest, signedMetadataRequest, signedAccountRequest, parseSearchInteger, preserveLargeJsonIntegers, requestJson, SEARCH_API, SEARCH_UA };
+module.exports = { fetchAppPlayUrl, signedSearchRequest, signedMetadataRequest, signedAccountRequest, parseSearchInteger,
+    preserveLargeJsonIntegers, requestJson, SEARCH_API, SEARCH_UA, getPlaybackProfileStatus,
+    getPlaybackIdentityStatus: () => playbackIdentity.status(), createPlaybackAuthProbeRequest, inspectPlaybackAuthProbeResponse };

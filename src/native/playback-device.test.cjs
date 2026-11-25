@@ -16,7 +16,7 @@ function load(clock = Date, full = false) {
     vm.runInNewContext(source, {
         module, Buffer, AbortSignal, AbortController, setTimeout, clearTimeout, Date: clock,
         require(name) {
-            assert.ok(['node:crypto', 'node:zlib'].includes(name), 'no transport or persistence dependencies');
+            assert.ok(['node:crypto', 'node:zlib', './playback-profiles'].includes(name), 'no transport or persistence dependencies');
             return require(name);
         },
         console: { log() { assert.fail('no logging'); }, warn() { assert.fail('no logging'); }, error() { assert.fail('no logging'); } },
@@ -291,4 +291,79 @@ test('business rejection cannot be accepted even if IDs are present', async () =
             code: 'DEVICE_REGISTRATION_FAILED', message: failureMessage,
         });
     }
+});
+
+test('playback identity is stable and separate from search/account shared identity', async () => {
+    const { createPlaybackIdentityManager, getPlaybackDevice } = load(Date, true);
+    let calls = 0;
+    const request = async () => ({ device_id: String(++calls), install_id: String(calls + 10) });
+    const manager = createPlaybackIdentityManager();
+    const concurrent = await Promise.all(Array.from({ length: 10 }, () => manager.acquire(request)));
+    assert.equal(calls, 1);
+    assert.ok(concurrent.every(identity => identity === concurrent[0]));
+    assert.equal(await manager.acquire(request), concurrent[0]);
+    assert.notEqual(await getPlaybackDevice(request), concurrent[0]);
+    assert.equal(calls, 2);
+    assert.equal(manager.status().state, 'ready');
+    assert.doesNotMatch(JSON.stringify(manager.status()), /device_id|iid|cdid|cookie/);
+});
+
+test('empty response is not identity expiry and explicit renewal has a cooldown', async () => {
+    const { createPlaybackIdentityManager } = load(Date, true);
+    let now = 100000, calls = 0;
+    const manager = createPlaybackIdentityManager({ now: () => now,
+        register: async () => Object.freeze({ device_id: String(++calls), iid: '10', cdid: 'synthetic' }) });
+    const original = await manager.acquire();
+    assert.equal(await manager.acquire(null, { rejectedDevice: original, reason: 'EMPTY_RESPONSE' }), original);
+    assert.equal(calls, 1);
+    const renewed = await manager.acquire(null, { rejectedDevice: original, reason: 'DEVICE_IDENTITY_EXPIRED' });
+    assert.notEqual(renewed, original);
+    assert.equal(calls, 2);
+    assert.equal(await manager.acquire(null, { rejectedDevice: original, reason: 'DEVICE_IDENTITY_EXPIRED' }), renewed, 'late failures do not replace newer identities');
+    await assert.rejects(manager.acquire(null, { rejectedDevice: renewed, reason: 'DEVICE_IDENTITY_EXPIRED' }), { code: 'DEVICE_IDENTITY_EXPIRED' });
+    await assert.rejects(manager.acquire(), { code: 'DEVICE_IDENTITY_EXPIRED' });
+    assert.equal(manager.status().state, 'expired');
+    assert.equal(calls, 2);
+    now += 60001;
+    assert.notEqual(await manager.acquire(), renewed);
+    assert.equal(calls, 3);
+});
+
+test('one cancelled consumer cannot cancel another consumer registration', async () => {
+    const { createPlaybackIdentityManager } = load(Date, true);
+    let finish, signal;
+    const manager = createPlaybackIdentityManager({ register: async (_request, options) => {
+        signal = options.signal;
+        return new Promise(resolve => { finish = resolve; });
+    } });
+    const first = new AbortController(), second = new AbortController();
+    const a = manager.acquire(null, { signal: first.signal });
+    const b = manager.acquire(null, { signal: second.signal });
+    await Promise.resolve();
+    first.abort();
+    await assert.rejects(a, { code: 'ERR_CANCELED' });
+    assert.equal(signal.aborted, false);
+    const identity = Object.freeze({ device_id: '1', iid: '2', cdid: 'synthetic' });
+    finish(identity);
+    assert.equal(await b, identity);
+});
+
+test('cancelling every consumer aborts transport and allows a fresh later initialization', async () => {
+    const { createPlaybackIdentityManager } = load(Date, true);
+    let signal, calls = 0;
+    const identity = Object.freeze({ device_id: '1', iid: '2', cdid: 'synthetic' });
+    const manager = createPlaybackIdentityManager({ register: async (_request, options) => {
+        calls++;
+        signal = options.signal;
+        if (calls > 1) return identity;
+        return new Promise((resolve, reject) => signal.addEventListener('abort', () => reject(Object.assign(new Error('cancelled'), { code: 'ERR_CANCELED' })), { once: true }));
+    } });
+    const controller = new AbortController();
+    const first = manager.acquire(null, { signal: controller.signal });
+    await Promise.resolve();
+    controller.abort();
+    await assert.rejects(first, { code: 'ERR_CANCELED' });
+    assert.equal(signal.aborted, true);
+    assert.equal(await manager.acquire(), identity);
+    assert.equal(calls, 2);
 });

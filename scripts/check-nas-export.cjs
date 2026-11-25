@@ -76,6 +76,57 @@ test('NAS refuses an orphan NFO that belongs to another episode', async t => {
   assert.match(fs.readFileSync(nfo, 'utf8'), new RegExp(series.episodes[1].vid));
 });
 
+test('NAS keeps valid XML identity separate from comment, escaped and CDATA descriptions', async t => {
+  const root = temp(t), file = path.join(root, 'tvshow.nfo');
+  const nfo = `<?xml version="1.0" encoding="UTF-8"?><tvshow>
+    <!-- <uniqueid type="hongguo">comment-only</uniqueid> -->
+    <plot><![CDATA[<uniqueid type="hongguo">description-only</uniqueid>]]></plot>
+    <tag>&lt;uniqueid type="hongguo"&gt;escaped-only&lt;/uniqueid&gt;</tag>
+    <uniqueid type="hongguo" default="true">${seriesId}</uniqueid>
+  </tvshow>`;
+  fs.writeFileSync(file, nfo);
+  const { destination } = await prepare(root);
+  assert.equal(destination.seriesId, seriesId);
+  assert.equal(fs.readFileSync(file, 'utf8'), nfo, 'user-edited metadata must remain unchanged');
+
+  const ep = series.episodes[0], stem = path.join(root, nas.nasEpisodeFilename(destination, ep).slice(0, -4));
+  fs.writeFileSync(`${stem}.mp4`, Buffer.alloc(120000, 7));
+  fs.writeFileSync(`${stem}.nfo`, `<episodedetails><!-- note --><plot><![CDATA[not an identity]]></plot><uniqueid type="hongguo">${ep.vid}</uniqueid></episodedetails>`);
+  assert.equal((await nas.inspectNasEpisode(destination, ep)).status, 'existing', 'valid legacy episode NFO remains supported');
+});
+
+const invalidNfoBodies = {
+  'plain description': id => `This file describes <uniqueid type="hongguo">${id}</uniqueid>`,
+  'CDATA description': id => `<tvshow><plot><![CDATA[<uniqueid type="hongguo">${id}</uniqueid>]]></plot></tvshow>`,
+  'escaped description': id => `<tvshow><plot>&lt;uniqueid type="hongguo"&gt;${id}&lt;/uniqueid&gt;</plot></tvshow>`,
+  'comment description': id => `<tvshow><!--<uniqueid type="hongguo">${id}</uniqueid>--></tvshow>`,
+  'unclosed comment': id => `<tvshow><!--<uniqueid type="hongguo">${id}</uniqueid></tvshow>`,
+  'mismatched tags': id => `<tvshow><uniqueid type="hongguo">${id}</tvshow>`,
+  'nested identity': id => `<tvshow><plot><uniqueid type="hongguo">${id}</uniqueid></plot></tvshow>`,
+  'non-text identity': id => `<tvshow><uniqueid type="hongguo"><title>${id}</title></uniqueid></tvshow>`,
+  'duplicate identity': id => `<tvshow><uniqueid type="hongguo">${id}</uniqueid><uniqueid type="hongguo">${id}</uniqueid></tvshow>`,
+  'multiple roots': id => `<tvshow><uniqueid type="hongguo">${id}</uniqueid></tvshow><other/>`,
+  'trailing text': id => `<tvshow><uniqueid type="hongguo">${id}</uniqueid></tvshow>unparsed text`,
+  'unknown entity': id => `<tvshow><plot>&unknown;</plot><uniqueid type="hongguo">${id}</uniqueid></tvshow>`,
+  'lookalike type attribute': id => `<tvshow><uniqueid data-type="hongguo">${id}</uniqueid></tvshow>`,
+  'foreign root': id => `<description><uniqueid type="hongguo">${id}</uniqueid></description>`,
+  'external declaration': id => `<!DOCTYPE tvshow SYSTEM "https://example.invalid/external.dtd"><tvshow><uniqueid type="hongguo">${id}</uniqueid></tvshow>`,
+};
+for (const [name, makeNfo] of Object.entries(invalidNfoBodies)) test(`NAS rejects ${name} as ownership evidence without modifying user files`, async t => {
+  const root = temp(t), file = path.join(root, 'tvshow.nfo'), nfo = makeNfo(seriesId);
+  fs.writeFileSync(file, nfo);
+  await assert.rejects(() => prepare(root), /已有其他|归属/);
+  assert.equal(fs.readFileSync(file, 'utf8'), nfo);
+  assert.deepEqual(fs.readdirSync(root), ['tvshow.nfo']);
+
+  const validRoot = temp(t), { destination } = await prepare(validRoot), ep = series.episodes[0];
+  const stem = path.join(validRoot, nas.nasEpisodeFilename(destination, ep).slice(0, -4));
+  fs.writeFileSync(`${stem}.mp4`, Buffer.alloc(120000, 9));
+  fs.writeFileSync(`${stem}.nfo`, makeNfo(ep.vid));
+  assert.equal((await nas.inspectNasEpisode(destination, ep)).status, 'conflict', 'unverified episode NFO cannot adopt an existing video');
+  assert.equal(fs.readFileSync(`${stem}.mp4`)[0], 9);
+});
+
 test('NAS rejects detached roots, unsafe folder names, symlinks and fake posters', async t => {
   const root = temp(t);
   await assert.rejects(() => nas.prepareNasExport({ root, folderName: '../outside', series }), /目录|路径/);

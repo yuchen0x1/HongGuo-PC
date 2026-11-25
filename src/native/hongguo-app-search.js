@@ -1,6 +1,7 @@
 // Registered, signed App search; the caller chooses website/new-release fallback.
 const { signedSearchRequest, parseSearchInteger, requestJson } = require('./app-source');
 const { getPlaybackDevice } = require('./playback-device');
+const { stripMarkupText } = require('./plain-text');
 
 const SEARCH_TAB = 11;
 const DEFAULT_TIMEOUT_MS = 8000;
@@ -10,8 +11,7 @@ function appError(message, code) {
 }
 
 function cleanTitle(value) {
-  return String(value || '')
-    .replace(/<[^>]*>/g, '')
+  return stripMarkupText(String(value || ''))
     .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'")
     .replace(/\s+/g, ' ').trim();
 }

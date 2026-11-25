@@ -6,6 +6,7 @@ import AppearanceSettings from './AppearanceSettings';
 import ShortcutSettings from './ShortcutSettings';
 import CustomSources from './CustomSources';
 import BuiltinSources from './BuiltinSources';
+import PlaybackDiagnostics from './PlaybackDiagnostics';
 import { Settings, Folder, Check, Globe, X, RefreshCw, AlertCircle, Search } from './icons';
 import { resolveLocale, useI18n } from '../i18n.js';
 
@@ -63,6 +64,7 @@ const SETTING_ANCHORS = [
   { id: 'builtin', label: '内置来源', keywords: '来源 采集 搜索' },
   { id: 'custom', label: '自定义源', keywords: '播放源 苹果cms api 接口' },
   { id: 'playback', label: '播放缓存', keywords: '播放与缓存 缓存后续 2 集 自动兼容模式 看完自动删除 连播 优先使用红果 App 搜索 官网' },
+  { id: 'playback-diagnostics', label: '播放诊断', keywords: '账号 会话 身份 接口 取源 线路 故障 解码 媒体 连接测试 诊断报告 playback diagnostics' },
   { id: 'danmaku', label: '弹幕', keywords: '本集评论 时间轴弹幕 显示弹幕按钮 弹幕来源' },
   { id: 'download', label: '下载', keywords: '下载目录 文件命名规则 默认下载清晰度 最大并发下载数 选择文件夹 普通下载保存整剧资料 封面 简介 NFO NAS' },
   { id: 'proxy', label: '代理', keywords: '网络代理 直连 跟随系统代理 代理密码 主机 端口 用户名 连接测试' },
@@ -477,6 +479,9 @@ function SettingsPage({ active = true, preview = false, appInfo = null }) {
       <div {...anchorProps('builtin')}><BuiltinSources /></div>
       <div {...anchorProps('custom')}><CustomSources active={active} /></div>
       <p className="settings-hint" hidden={!visibleAnchors.has('pip')}>播放页顶部可开启小窗模式：窗口缩小、置顶并在支持的系统上跨虚拟桌面可见；鼠标移开时暂停隐藏，移回继续，Esc 或 Dock 可恢复主窗口。</p>
+      <section className="settings-card" {...anchorProps('playback-diagnostics')}>
+        <PlaybackDiagnostics active={active && visibleAnchors.has('playback-diagnostics')} />
+      </section>
       <fieldset className="settings-card" disabled={saving}>
         <div className="settings-group" {...anchorProps('playback')}>
           <span className="settings-label">播放与缓存</span>

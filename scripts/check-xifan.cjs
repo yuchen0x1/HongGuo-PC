@@ -4,6 +4,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 const sourcePath = path.join(__dirname, '../src/native/xifan.js');
+const sourceRequire = require('node:module').createRequire(sourcePath);
 const sid = 'xifan:huabo:drama1';
 const vid = `${sid}:episode1`;
 const list = { elements: [{ contents: [{ duanjuVo: { source: 'huabo', duanjuId: 'drama1', title: '<tag>测试剧</tag>', total: 3, categories: ['都市'] } }] }], hasMore: true, offset: 30 };
@@ -27,7 +28,7 @@ async function check() {
       ] }] } : list;
     return { data: { ret: 0, result: structuredClone(data) } };
   } };
-  const context = { module: { exports: {} }, require: name => name === 'axios' ? axios : require(name),
+  const context = { module: { exports: {} }, require: name => name === 'axios' ? axios : sourceRequire(name),
     Buffer, URL, AbortController, setTimeout, clearTimeout };
   vm.runInNewContext(fs.readFileSync(sourcePath, 'utf8'), context, { filename: sourcePath });
   const xifan = context.module.exports;

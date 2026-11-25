@@ -402,6 +402,37 @@
 
 .settings-path code { word-break: break-all; }
 
+.playback-diagnostics-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 28px;
+  margin: 0;
+  font-size: 12px;
+}
+.playback-diagnostics-row {
+  display: grid;
+  grid-template-columns: minmax(90px, 0.8fr) minmax(0, 1.2fr);
+  align-items: baseline;
+  gap: 12px;
+  min-width: 0;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--border-muted);
+}
+.playback-diagnostics dt,
+.playback-connection-result dt { color: var(--text-secondary); }
+.playback-diagnostics dd,
+.playback-connection-result dd { margin: 0; min-width: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.playback-diagnostics-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.playback-diagnostics-actions .btn { min-height: 34px; max-width: 100%; white-space: normal; }
+.playback-connection-result { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 8px 0 0; font-size: 12px; }
+.playback-connection-result > div { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+@media (max-width: 760px) {
+  .playback-diagnostics-grid { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 420px) {
+  .playback-connection-result { grid-template-columns: minmax(0, 1fr); }
+}
+
 /* ============ 设计系统打磨层（本次 UI 升级追加） ============ */
 .settings-card { border-radius: var(--radius-xl); border-color: var(--border); padding: 6px 28px; }
 .settings-header h2 { letter-spacing: 0; }

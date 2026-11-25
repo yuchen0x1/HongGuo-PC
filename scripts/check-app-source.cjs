@@ -92,7 +92,8 @@ function fixture({ wrongVid = false, fallback = 'https://vod.snssdk.com/info', m
   const context = { Buffer, URL, URLSearchParams, AbortSignal, module: { exports: {} },
     require: name => {
       if (name === 'axios') return axios;
-      if (name === './playback-device') return { registerPlaybackDevice: async requestJson => {
+      if (name === './playback-device') return { createPlaybackIdentityManager: require(path.join(nativeDir, 'playback-device')).createPlaybackIdentityManager,
+        registerPlaybackDevice: async requestJson => {
         assert.equal(typeof requestJson, 'function');
         registrations += 1;
         return playbackDevice;
@@ -103,6 +104,7 @@ function fixture({ wrongVid = false, fallback = 'https://vod.snssdk.com/info', m
       if (name === 'node:timers/promises') return require('node:timers/promises');
       if (name === './playback-signature') return require(path.join(nativeDir, 'playback-signature'));
       if (name === './playback-v5') return require(path.join(nativeDir, 'playback-v5'));
+      if (name === './playback-profiles') return require(path.join(nativeDir, 'playback-profiles'));
       if (name === './request-signal') return require(path.join(nativeDir, 'request-signal'));
       if (name === 'node:crypto') return { ...crypto, createHash(name, ...args) {
         assert.notEqual(name.toLowerCase(), 'sm3', 'must not depend on OpenSSL SM3');

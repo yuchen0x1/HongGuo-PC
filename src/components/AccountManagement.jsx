@@ -2,8 +2,16 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Play, RefreshCw, User } from './icons';
 import './AccountManagement.css';
 
-export default function AccountManagement({ active = true }) {
+const SESSION_LABELS = {
+  anonymous: '尚未登录', unverified: '登录态待验证', valid: '登录态已验证',
+  expired: '登录已过期，请重新扫码', invalid: '登录态无效，请重新扫码', unavailable: '暂时无法验证登录状态',
+};
+
+export const ACCOUNT_PRIVACY_NOTICE = '本应用保存的账号资料与登录凭据仅存于本机；凭据经系统加密，仅用于红果官方服务。退出登录或卸载应用时自动清除本机账号数据。';
+
+export default function AccountManagement({ active = true, loginOnly = false, autoLogin = false, onSignedIn }) {
   const [account, setAccount] = useState(null);
+  const [sessionValidity, setSessionValidity] = useState('anonymous');
   const [rows, setRows] = useState([]);
   const [query, setQuery] = useState('');
   const [qr, setQr] = useState(null);
@@ -17,7 +25,10 @@ export default function AccountManagement({ active = true }) {
   const historyRequest = useRef(0);
   const generation = useRef(0);
   const pollTimer = useRef(null);
+  const loginIdRef = useRef(null);
   const visibleRows = rows.filter(row => !query.trim() || row.series_title.includes(query.trim()));
+  const updateSession = result => setSessionValidity(SESSION_LABELS[result?.sessionValidity]
+    ? result.sessionValidity : result?.signedIn ? 'unverified' : 'anonymous');
 
   const loadHistory = async (refresh = false) => {
     const version = ++historyRequest.current;
@@ -26,10 +37,21 @@ export default function AccountManagement({ active = true }) {
       const result = await window.electronAPI.getAccountHistory?.({ refresh });
       if (version !== historyRequest.current) return;
       if (!result?.success) throw new Error(result?.error || 'APP 观看记录加载失败');
+      updateSession(result);
+      if (!result.signedIn) setAccount(null);
       setRows(result.signedIn ? result.results || [] : []);
       if (result.warning) setStatus(`已读取 APP 记录；${result.warning}`);
     } catch (failure) {
-      if (version === historyRequest.current) setError(failure.message || 'APP 观看记录加载失败，请重试');
+      if (version === historyRequest.current) {
+        setError(failure.message || 'APP 观看记录加载失败，请重试');
+        try {
+          const current = await window.electronAPI.getAccountStatus?.();
+          if (version === historyRequest.current && current?.success) {
+            updateSession(current);
+            setAccount(current.account || null);
+          }
+        } catch {}
+      }
     } finally {
       if (version === historyRequest.current) setHistoryLoading(false);
     }
@@ -42,10 +64,11 @@ export default function AccountManagement({ active = true }) {
       if (version !== request.current) return;
       if (!result?.success) throw new Error(result?.error || '账号状态读取失败');
       setAccount(result.account || null);
+      updateSession(result);
       setError(result.error || '');
       setLoading(false);
       if (result.signedIn) {
-        await loadHistory();
+        if (result.sessionValidity !== 'unavailable') await loadHistory();
       } else {
         historyRequest.current++;
         setRows([]);
@@ -69,9 +92,12 @@ export default function AccountManagement({ active = true }) {
         if (!result?.success) throw new Error(result?.error || '扫码状态读取失败');
         if (result.status === 'signed-in') {
           generation.current++;
+          loginIdRef.current = null;
           setBusy(false); setQr(null); setAccount(result.account || null);
+          updateSession(result);
           setStatus(result.storageWarning || '登录成功');
-          loadHistory();
+          if (loginOnly) onSignedIn?.(result);
+          else loadHistory();
           return;
         }
         if (result.status === 'cancelled') { setBusy(false); setQr(null); setStatus('扫码已取消'); return; }
@@ -95,8 +121,12 @@ export default function AccountManagement({ active = true }) {
     setBusy(true); setError(''); setStatus('正在获取红果登录二维码…');
     try {
       const result = await window.electronAPI.startAccountLogin?.();
-      if (token !== generation.current) return;
+      if (token !== generation.current) {
+        if (result?.loginId) await window.electronAPI.cancelAccountLogin?.(result.loginId).catch(() => {});
+        return;
+      }
       if (!result?.success) throw new Error(result?.error || '二维码获取失败');
+      loginIdRef.current = result.loginId;
       setQr({ id: result.loginId, image: result.image });
       setStatus(`请用手机红果 App 扫码，并在手机上确认登录。二维码约 ${result.expiresIn} 秒有效。`);
       schedulePoll(result.loginId, token);
@@ -111,7 +141,8 @@ export default function AccountManagement({ active = true }) {
   const cancelLogin = async () => {
     generation.current++;
     clearTimeout(pollTimer.current);
-    const id = qr?.id;
+    const id = loginIdRef.current;
+    loginIdRef.current = null;
     setQr(null); setBusy(false); setStatus('已取消扫码登录');
     if (id) await window.electronAPI.cancelAccountLogin?.(id).catch(() => {});
   };
@@ -122,7 +153,8 @@ export default function AccountManagement({ active = true }) {
       const result = await window.electronAPI.logoutAccount?.();
       if (!result?.success) throw new Error(result?.error || '退出账号失败');
       historyRequest.current++;
-      setAccount(null); setRows([]); setQuery(''); setStatus('已退出红果账号，本机记录不受影响。');
+      setAccount(null); updateSession(result); setRows([]); setQuery('');
+      setStatus(result.storageWarning || '已退出红果账号，本机记录不受影响。');
     } catch (failure) { setError(failure.message || '退出账号失败，请重试'); }
     finally { setBusy(false); }
   };
@@ -144,14 +176,38 @@ export default function AccountManagement({ active = true }) {
   };
 
   useEffect(() => {
-    if (active) load();
+    if (loginOnly) setLoading(false);
+    else if (active) load();
     return () => { request.current++; historyRequest.current++; };
-  }, [active]);
-  useEffect(() => window.electronAPI.onAccountUpdated?.(() => { if (active && source === 'hongguo') load(); }), [active, source]);
+  }, [active, loginOnly]);
+  useEffect(() => { if (autoLogin && active) beginLogin(); }, [autoLogin, active]);
+  useEffect(() => window.electronAPI.onAccountUpdated?.(() => { if (!loginOnly && active && source === 'hongguo') load(); }), [active, source, loginOnly]);
   useEffect(() => () => {
     generation.current++;
     clearTimeout(pollTimer.current);
+    const id = loginIdRef.current;
+    loginIdRef.current = null;
+    if (id) window.electronAPI.cancelAccountLogin?.(id).catch(() => {});
   }, []);
+
+  const loginControls = <>
+    <div className="account-login-copy">
+      <h3>扫码登录</h3>
+      <p>使用手机红果 App 扫码并确认。登录状态不会替代平台会员或内容授权。</p>
+    </div>
+    {qr && <div className="account-qr"><img src={qr.image} alt="红果登录二维码" /><span>手机红果 App → 我的 → 扫一扫</span></div>}
+    <div className="account-page-actions">
+      {qr ? <button className="btn btn-outline" type="button" onClick={cancelLogin}>取消扫码</button>
+        : <button className="btn btn-primary" type="button" disabled={busy} onClick={beginLogin}>{busy ? '正在获取二维码…' : '获取登录二维码'}</button>}
+    </div>
+  </>;
+
+  if (loginOnly) return <div className="account-login-inline">
+    {loginControls}
+    <p className="account-privacy-notice">{ACCOUNT_PRIVACY_NOTICE}</p>
+    {status && <p className="account-page-status" role="status">{status}</p>}
+    {error && <div className="history-error" role="alert"><span>{error}</span></div>}
+  </div>;
 
   if (loading) return <div className="account-page"><p role="status">正在读取红果账号…</p></div>;
 
@@ -166,11 +222,12 @@ export default function AccountManagement({ active = true }) {
       {account ? <>
         <div className="account-identity">
           <span className="account-avatar"><User size={24} /></span>
-          <div><strong>{account.nickname}</strong><p>已登录红果账号</p></div>
+          <div className="account-identity-copy"><strong>{account.nickname}</strong>
+            <p className={`account-session-label is-${sessionValidity}`} role="status">{SESSION_LABELS[sessionValidity]}</p></div>
         </div>
         <div className="account-summary">
           <span>APP 观看记录</span>
-          <strong>{historyLoading && !rows.length ? '读取中' : `${rows.length} 部`}</strong>
+          <strong>{sessionValidity === 'unavailable' && !rows.length ? '未读取' : historyLoading && !rows.length ? '读取中' : `${rows.length} 部`}</strong>
           <small>最近 50 部；不会批量导入本机记录</small>
         </div>
         <div className="account-page-actions">
@@ -184,7 +241,8 @@ export default function AccountManagement({ active = true }) {
           <h3>观看记录</h3>
           <label>搜索<input className="input-field" type="search" value={query} onChange={event => setQuery(event.target.value)} placeholder="输入剧名" /></label>
         </div>
-        {historyLoading && !rows.length ? <div className="account-history-empty" role="status">正在读取 APP 观看记录…</div>
+        {sessionValidity === 'unavailable' && !rows.length ? <div className="account-history-empty">账号连接暂不可用，请稍后刷新。</div>
+          : historyLoading && !rows.length ? <div className="account-history-empty" role="status">正在读取 APP 观看记录…</div>
           : !rows.length ? <div className="account-history-empty">APP 还没有观看记录。</div>
           : !visibleRows.length ? <div className="account-history-empty">没有匹配的 APP 记录。</div>
           : <ul className="account-history-list">{visibleRows.map(row => <li key={row.series_id}>
@@ -202,16 +260,10 @@ export default function AccountManagement({ active = true }) {
             </button>
           </li>)}</ul>}
       </> : <>
-        <div className="account-login-copy">
-          <h3>扫码登录</h3>
-          <p>使用手机红果 App 扫码并确认。登录态由系统安全存储加密，普通资料备份不会包含账号凭据。</p>
-        </div>
-        {qr && <div className="account-qr"><img src={qr.image} alt="红果登录二维码" /><span>手机红果 App → 我的 → 扫一扫</span></div>}
-        <div className="account-page-actions">
-          {qr ? <button className="btn btn-outline" type="button" onClick={cancelLogin}>取消扫码</button>
-            : <button className="btn btn-primary" type="button" disabled={busy} onClick={beginLogin}>{busy ? '正在获取二维码…' : '获取登录二维码'}</button>}
-        </div>
+        {sessionValidity !== 'anonymous' && <p className={`account-session-label is-${sessionValidity}`} role="status">{SESSION_LABELS[sessionValidity]}</p>}
+        {loginControls}
       </>}
+      <p className="account-privacy-notice">{ACCOUNT_PRIVACY_NOTICE}</p>
       {status && <p className="account-page-status" role="status">{status}</p>}
       {error && <div className="history-error" role="alert"><span>{error}</span></div>}
     </section>

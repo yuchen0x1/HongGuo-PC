@@ -45,6 +45,8 @@ const { randomUUID, createHash } = require('node:crypto');
 
 const hongguo = require('./src/native/hongguo');
 const { safeCode, sanitizePlaybackDiagnostics, updatePlaybackRoute, playbackFailureMessage } = require('./src/native/playback-diagnostics');
+const { classifyPlaybackError, playbackRecoveryPolicy } = require('./src/native/playback-errors');
+const { isMediaExpired } = require('./src/native/media-url-manager');
 const { normalizeDownloadQuality, meetsDownloadQuality } = require('./src/native/download-quality');
 const { decryptInWorker } = require('./src/native/decrypt-worker.cjs');
 const store = require('./src/store');
@@ -74,6 +76,7 @@ const rendererSecurity = require('./src/native/renderer-security').createRendere
   path.join(__dirname, 'dist-react', 'index.html'), devServerUrl);
 const attachFloatingPlayerWindow = require('./src/native/floating-player-window');
 const APP_VERSION = app.getVersion() || '1.0.0';
+hongguo.getPlaybackManager?.().setAccountSession(getAccountService);
 
 const APP_TITLE = IS_PREVIEW ? '红果短剧预览' : '红果短剧';
 const { createStealthController } = require('./src/native/stealth-window');
@@ -97,7 +100,7 @@ let trayBalloonShown = false;
 let mergeTempCleanup = null;
 const MAINTENANCE_CHANNELS = new Set(['delete-task', 'delete-tasks', 'delete-series-files', 'delete-episode-file',
   'cleanup-watched-episode', 'delete-all-downloaded', 'clear-series-playback-cache', 'forget-series', 'clear-online-cache', 'clear-compat-cache']);
-const UPDATE_BLOCKED_CHANNELS = new Set(['hongguo-download-batch', 'download-single-episode', 'download-series-to-nas', 'retry-task', 'retry-tasks', 'resume-all', 'merge-series', 'transcode-for-playback', 'prepare-online-play', 'start-casting', 'save-settings', 'set-boss-key', ...MAINTENANCE_CHANNELS]);
+const UPDATE_BLOCKED_CHANNELS = new Set(['hongguo-download-batch', 'download-single-episode', 'download-series-to-nas', 'retry-task', 'retry-tasks', 'resume-all', 'merge-series', 'transcode-for-playback', 'prepare-online-play', 'test-playback-connection', 'check-playback-account', 'export-playback-diagnostics', 'start-casting', 'save-settings', 'set-boss-key', ...MAINTENANCE_CHANNELS]);
 const ipcMain = {
   handle(channel, handler) {
     rawIpcMain.handle(channel, async (event, ...args) => {
@@ -169,6 +172,15 @@ function trackOnlineWork(controller, promise) {
   return promise.finally(() => onlineWork.delete(job));
 }
 const onlineSessions = new Map(); // opaque stream ID -> playback lifetime
+const playbackStateReporter = require('./src/native/playback-state-reporter').createPlaybackStateReporter({
+  sessions: onlineSessions, diagnostics: hongguo.playbackDiagnostics,
+});
+function foregroundPlaybackRequestId(matches) {
+  for (const session of onlineSessions.values()) {
+    if (hongguo.playbackDiagnostics?.isForeground?.(session.requestId) && matches(session)) return session.requestId;
+  }
+  return '';
+}
 
 function onlineCacheTotal() {
   let t = 0;
@@ -229,7 +241,14 @@ async function prepareHlsFile(playInfo, output, options = {}) {
     ...options, checkAccess:() => checkCustomAccess(playInfo.vid) }); }
   catch (error) {
     checkCustomAccess(playInfo.vid);
-    if (!options.signal?.aborted && !options.cancelToken?.reason) error.mediaRetryable = true;
+    error.stage ||= 'media';
+    const status = Number(error.mediaStatus || error.status || error.response?.status);
+    error.faultCode ||= classifyPlaybackError(error, { stage: 'hls', expiresAt: playInfo.expiresAt || 0 });
+    const refused = [401, 403, 429].includes(status) && error.faultCode !== 'MEDIA_URL_EXPIRED';
+    if (refused) {
+      error.faultCode = status === 429 ? 'API_RATE_LIMITED' : 'API_FORBIDDEN';
+      error.mediaRetryable = false;
+    } else if (!options.signal?.aborted && !options.cancelToken?.reason) error.mediaRetryable = true;
     throw error;
   }
 }
@@ -1123,19 +1142,19 @@ async function executeHongguoDownload(task) {
         cached.lastUsed = Date.now();
       }
     }
-    if (!reusedCache) await withMediaRecovery(vid, hongguoInfo?.series_id, { playInfo: checkedPlayInfo, quality, allowLowerQuality, force: true, cancelToken: source.token }, async playInfo => {
+    if (!reusedCache) await withMediaRecovery(vid, hongguoInfo?.series_id, { playInfo: checkedPlayInfo, quality, allowLowerQuality, force: true, cancelToken: source.token, budgetMs: 10 * 60 * 1000 }, async (playInfo, recoverySignal) => {
       source.token.throwIfRequested();
       notifyQuality(Math.min(Number(playInfo.width), Number(playInfo.height)));
       task.progress = 0; task.receivedBytes = 0; task.totalBytes = 0;
       sendToRenderer('download-progress', { id, progress: 0, receivedBytes: 0, totalBytes: 0 });
       if (playInfo.format === 'hls') {
-        await prepareHlsFile(playInfo,tmpPath,{cancelToken:source.token,onProgress:received => { task.receivedBytes = received; sendToRenderer('download-progress',{id,progress:0,receivedBytes:received,totalBytes:0}); }});
+        await prepareHlsFile(playInfo,tmpPath,{signal: recoverySignal,cancelToken:source.token,onProgress:received => { task.receivedBytes = received; sendToRenderer('download-progress',{id,progress:0,receivedBytes:received,totalBytes:0}); }});
         task.actualQuality = await verifyReceived(tmpPath);
         source.token.throwIfRequested(); checkCustomAccess(vid);
         publishDownloadFile(tmpPath,finalPath);
         return;
       }
-      response = await requestMedia(playInfo, { cancelToken: source.token });
+      response = await requestMedia(playInfo, { cancelToken: source.token, signal: recoverySignal });
       stopMediaIdle = guardMediaIdle(response.data);
       source.token.throwIfRequested();
       const totalLength = Number(response.headers['content-length']) || 0;
@@ -1151,13 +1170,13 @@ async function executeHongguoDownload(task) {
         }
       });
       // pipeline rejects on either side and destroys both streams (including abrupt CDN close).
-      await pipeline(response.data, writer);
+      await pipeline(response.data, writer, { signal: recoverySignal });
       source.token.throwIfRequested();
       if (!received || (totalLength && received !== totalLength)) throw mediaTransferError('视频下载不完整，请重试');
       if (playInfo.contentKey) {
         const decodedPath = tmpPath + '.decoded';
         try {
-          await decryptContentKeyFile(tmpPath, decodedPath, playInfo.contentKey, { cancelToken: source.token });
+          await decryptContentKeyFile(tmpPath, decodedPath, playInfo.contentKey, { cancelToken: source.token, signal: recoverySignal });
           task.actualQuality = await verifyReceived(decodedPath);
           source.token.throwIfRequested();
           publishDownloadFile(decodedPath, finalPath);
@@ -1169,7 +1188,7 @@ async function executeHongguoDownload(task) {
         // Decrypt to another temporary file; never expose partial data as a completed MP4.
         const decodedPath = tmpPath + '.decoded';
         try {
-          await decryptInWorker({ srcPath: tmpPath, dstPath: decodedPath, key }, { cancelToken: source.token });
+          await decryptInWorker({ srcPath: tmpPath, dstPath: decodedPath, key }, { cancelToken: source.token, signal: recoverySignal });
           task.actualQuality = await verifyReceived(decodedPath);
           source.token.throwIfRequested();
           publishDownloadFile(decodedPath, finalPath);
@@ -2211,7 +2230,7 @@ function diagnosticsSnapshot() {
 ipcMain.handle('get-diagnostics', async () => ({ success: true, report: diagnosticsSnapshot() }));
 ipcMain.handle('export-diagnostics', async () => {
   const report = diagnosticsSnapshot();
-  const stamp = report.generatedAt.replace(/[:.]/g, '-').replace(/Z$/, 'Z');
+  const stamp = report.generatedAt.replace(/[:.]/g, '-');
   const result = await dialog.showSaveDialog(mainWindow, {
     title: '导出诊断信息',
     defaultPath: path.join(app.getPath('downloads'), `hongguo-diagnostics-${stamp}.json`),
@@ -2717,8 +2736,12 @@ function loadMergeTasks() {
  * 判定可播的规则与下载跳过逻辑一致：文件存在且 > 100KB。
  * 由于解密文件是「先写 .enc.tmp、成功后改名 .mp4」，因此不会读到半成品。
  */
-ipcMain.handle('get-series-episodes', async (event, seriesId) => {
+ipcMain.handle('get-series-episodes', async (event, seriesId, options = {}) => {
   try {
+    const refreshLocalIndex = options?.refreshLocalIndex;
+    if (refreshLocalIndex != null && (!Number.isSafeInteger(refreshLocalIndex) || refreshLocalIndex < 1 || refreshLocalIndex > 1000000)) {
+      return { success: false, error: '重试分集编号无效' };
+    }
     const sid = String(seriesId);
     const entry = seriesRegistry.find((s) => String(s.series_id) === sid);
     const tasks = downloadTasks.filter((t) => t.hongguoInfo && String(t.hongguoInfo.series_id) === sid);
@@ -2769,7 +2792,7 @@ ipcMain.handle('get-series-episodes', async (event, seriesId) => {
           }
           if (hasCompleteTaskFile(t)) {
             status = 'completed';
-            fileUrl = localPlayUrl(t.savePath);
+            fileUrl = localPlayUrl(t.savePath, { refresh: idx === refreshLocalIndex });
           } else if (t.status === 'downloading') {
             status = 'downloading';
             progress = t.progress || 0;
@@ -2785,7 +2808,7 @@ ipcMain.handle('get-series-episodes', async (event, seriesId) => {
           const f = scannedByIndex.get(idx);
           if (f) {
             savePath = f.path;
-            fileUrl = localPlayUrl(f.path);
+            fileUrl = localPlayUrl(f.path, { refresh: idx === refreshLocalIndex });
             try { fileSize = fs.statSync(f.path).size; } catch (_) {}
             status = 'completed';
           }
@@ -2891,8 +2914,8 @@ function playbackQuality(value = 'auto', vid = '') {
   return value;
 }
 
-function onlineCacheKey(vid, quality = 'auto') {
-  return quality === 'auto' ? String(vid) : `${vid}:${quality}`;
+function onlineCacheKey(vid, quality = 'auto', allowLowerQuality = false) {
+  return quality === 'auto' ? String(vid) : `${vid}:${quality}${allowLowerQuality ? ':lower-quality' : ''}`;
 }
 
 
@@ -2918,6 +2941,9 @@ function bufferedMediaResponse(request, buffer) {
 
 /** Same media headers and cancellation apply to download and playback. */
 async function requestMedia(playInfo, options = {}) {
+  if (isMediaExpired(playInfo)) throw Object.assign(new Error('视频地址已过期，请重新获取片源'), {
+    code: 'MEDIA_URL_EXPIRED', faultCode: 'MEDIA_URL_EXPIRED', mediaRetryable: true,
+  });
   const url = new URL(playInfo.url);
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error('无效播放地址');
   checkCustomAccess(playInfo.vid);
@@ -2950,6 +2976,7 @@ async function requestMedia(playInfo, options = {}) {
         const failure = new Error(`片源请求失败（HTTP ${status}），请重新连接片源`);
         failure.mediaRetryable = [404, 408, 410].includes(status) || appSource && status === 403 || status >= 500 && status <= 599;
         failure.mediaStatus = status;
+        failure.faultCode = classifyPlaybackError(failure, { stage: 'media', expiresAt: playInfo.expiresAt || 0 });
         throw failure;
       }
       throw error;
@@ -3037,23 +3064,30 @@ function awaitMediaOperation(promise, signal, timeout = 0) {
 
 /** Retry the complete operation so a broken body never counts as a successful download. */
 async function withMediaRecovery(vid, seriesId, options, consume) {
+  if (/^hema:/.test(String(vid)) || /^hema:/.test(String(seriesId || ''))) throw new Error('河马来源已移除');
   const controller = new AbortController();
   const abort = () => controller.abort();
   options.signal?.addEventListener('abort', abort, { once: true });
   options.cancelToken?.subscribe(abort);
+  let budgetExpired = false;
+  const budgetTimer = setTimeout(() => { budgetExpired = true; controller.abort(); options.onBudgetExceeded?.(); }, options.budgetMs || 90000);
+  budgetTimer.unref?.();
   const cancelled = () => {
     options.cancelToken?.throwIfRequested();
+    if (budgetExpired) throw Object.assign(new Error('播放恢复超时，请重试'), { code: 'ETIMEDOUT', faultCode: 'NETWORK_TIMEOUT' });
     if (options.signal?.aborted || controller.signal.aborted) throw Object.assign(new Error('已取消媒体请求'), { code: 'ERR_CANCELED' });
   };
   const hongguoId = /^\d{1,30}$/.test(String(vid));
-  if (/^hema:/.test(String(vid)) || /^hema:/.test(String(seriesId || ''))) throw new Error('河马来源已移除');
+  const diagnosticRequestId = () => typeof options.getRequestId === 'function' ? options.getRequestId() : options.requestId || '';
   // Refresh only known provider identities. Every lookup below rechecks that provider's
   // current episode access; an old URL never authorizes a newly locked episode.
   const refreshable = hongguoId
     || /^xifan:[a-zA-Z0-9_-]{1,200}:[a-zA-Z0-9_-]{1,200}:[a-zA-Z0-9_-]{1,200}$/.test(String(vid))
     || /^custom:[a-f\d]{8}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{12}:\d{1,30}:\d{1,5}:\d{1,5}$/i.test(String(vid));
-  const accessRefused = error => !hongguoId
-    && [401, 403, 429].includes(Number(error?.mediaStatus || error?.status || error?.response?.status));
+  const accessRefused = error => ['ACCOUNT_EXPIRED', 'ACCOUNT_UNAUTHORIZED', 'API_RATE_LIMITED', 'API_FORBIDDEN'].includes(error?.faultCode)
+    || Number(error?.mediaStatus || error?.status || error?.response?.status) === 429
+    || error?.faultCode !== 'MEDIA_URL_EXPIRED' && (!hongguoId || !error?.mediaRetryable)
+      && [401, 403].includes(Number(error?.mediaStatus || error?.status || error?.response?.status));
   const recoverable = error => !accessRefused(error) && (error?.code === 'SOURCE_UNAVAILABLE'
     ? sourceFailureIsTransient(error)
     : error?.mediaRetryable || error?.code === 'MEDIA_DECODE_ERROR'
@@ -3085,7 +3119,8 @@ async function withMediaRecovery(vid, seriesId, options, consume) {
       let info;
       try {
         info = !round && options.playInfo || await awaitMediaOperation(hongguo.fetchPlayUrlSingle(vid, seriesId,
-          { quality: options.quality, allowLowerQuality: options.allowLowerQuality, force: options.force || round > 0 }), controller.signal, 30000);
+          { quality: options.quality, allowLowerQuality: options.allowLowerQuality, force: options.force || round > 0,
+            signal: controller.signal, getRequestId: diagnosticRequestId }), controller.signal, 30000);
       } catch (error) {
         cancelled();
         if (error?.routeTrace) playbackDiagnostics = retainRouteHistory(sanitizePlaybackDiagnostics({
@@ -3104,13 +3139,13 @@ async function withMediaRecovery(vid, seriesId, options, consume) {
       }));
       reportDiagnostics();
       if (!info?.url) {
-        lastError = Object.assign(new Error(info?.error || '未获取到有效播放地址'), { code: info?.code, sources: info?.sources });
+        lastError = Object.assign(new Error(info?.error || '未获取到有效播放地址'), { code: info?.code, faultCode: info?.faultCode, sources: info?.sources });
         lastError.playbackDiagnostics = sanitizePlaybackDiagnostics({
           source: info?.source, routes: playbackDiagnostics.routes, stage: 'source', code: info?.code,
         });
         playbackDiagnostics = lastError.playbackDiagnostics;
         reportDiagnostics();
-        if (!recoverable(lastError) || info?.locked) throw lastError;
+        if (info?.faultCode || !recoverable(lastError) || info?.locked) throw lastError;
         continue;
       }
       const seen = new Set();
@@ -3122,20 +3157,22 @@ async function withMediaRecovery(vid, seriesId, options, consume) {
         transfers++;
         const candidateSource = candidate.source || info.source || 'unknown';
         playbackDiagnostics = updatePlaybackRoute(playbackDiagnostics, candidateSource, {
-          status: 'address-found', mediaAddress: true, mediaRead: 'unknown',
-        }, { stage: 'media', source: candidateSource, mediaRead: 'unknown' });
+          status: 'address-found', mediaAddress: true, mediaRead: 'unknown', code: '',
+        }, { stage: 'media', source: candidateSource, mediaRead: 'unknown', code: '', faultCode: '' });
         reportDiagnostics();
         try {
-          const value = await consume(candidate);
+          // Cancellation releases this reader promptly; cleanup still protects quit and installation.
+          const operation = trackOnlineWork(controller, Promise.resolve().then(() => consume(candidate, controller.signal)));
+          const value = await awaitMediaOperation(operation, controller.signal);
           cancelled();
           const streaming = !!value?.playInfo;
           const isResponse = typeof Response === 'function' && value instanceof Response;
           const mediaRead = streaming || isResponse ? 'not-requested'
             : Buffer.isBuffer(value) || value?.complete === true ? 'complete' : 'partial';
           playbackDiagnostics = updatePlaybackRoute(playbackDiagnostics, candidateSource, {
-            status: streaming || isResponse ? 'address-found' : 'ready', mediaRead,
+            status: streaming || isResponse ? 'address-found' : 'ready', mediaRead, code: '',
           }, { stage: streaming ? 'source' : 'media', source: candidateSource,
-            mediaRead });
+            mediaRead, code: '', faultCode: '' });
           reportDiagnostics();
           if (value && typeof value === 'object' && !Buffer.isBuffer(value)
             && (Object.hasOwn(value, 'quality') || value.playInfo || value.complete === true)) {
@@ -3145,9 +3182,11 @@ async function withMediaRecovery(vid, seriesId, options, consume) {
           return value;
         } catch (error) {
           cancelled();
+          error.faultCode ||= classifyPlaybackError(error, { stage: error?.stage || (error?.code === 'MEDIA_DECODE_ERROR' ? 'decode' : 'media'), expiresAt: candidate.expiresAt || 0 });
           const status = Number(error?.mediaStatus || error?.status || error?.response?.status);
           const failureCode = safeCode(error?.code) || (status >= 300 && status <= 599 ? `HTTP_${status}` : '');
-          const failedStage = error?.code === 'MEDIA_DECODE_ERROR' ? 'decode' : 'media';
+          const failedStage = error.stage || (error?.code === 'MEDIA_DECODE_ERROR' ? 'decode' : 'media');
+          error.stage = failedStage;
           playbackDiagnostics = updatePlaybackRoute(playbackDiagnostics, candidateSource, {
             status: 'media-failed',
             mediaRead: playbackDiagnostics?.mediaRead === 'partial' ? 'partial' : 'failed',
@@ -3163,6 +3202,7 @@ async function withMediaRecovery(vid, seriesId, options, consume) {
             || /^(?:EACCES|EPERM|ENOSPC|EDQUOT|EROFS|EIO|ENOENT|EEXIST|ENOTDIR|EISDIR|EMFILE|ENFILE|EBUSY|ENAMETOOLONG|EMLINK|EFBIG|LOCAL_MEDIA_TOOL_ERROR|SECURITY_BLOCKED|ERR_WEB_MEDIA_ADDRESS)$/.test(error?.code);
           if (options.allowLowerQuality && terminal || (!recoverable(error) && !options.allowLowerQuality)) throw error;
           lastError = error;
+          hongguo.playbackDiagnostics?.record({ requestId: diagnosticRequestId(), event: 'recovery', faultCode: error.faultCode, stage: 'media' });
           // A bad Web body changes source priority; retry lookup before giving up on App recovery.
           if (error?.code === 'MEDIA_DECODE_ERROR' && candidate.source !== 'web') decodeFailure = error;
           hongguo.markWebMediaFailure?.(candidate);
@@ -3176,6 +3216,7 @@ async function withMediaRecovery(vid, seriesId, options, consume) {
     }
     throw attachDiagnostics(lastError);
   } finally {
+    clearTimeout(budgetTimer);
     options.signal?.removeEventListener('abort', abort);
     options.cancelToken?.unsubscribe(abort);
   }
@@ -3236,18 +3277,25 @@ function registerStreamProtocol() {
     request.signal.addEventListener('abort', abort, { once: true });
     if (request.signal.aborted) abort();
     const cleanup = () => { session.requests.delete(controller); request.signal.removeEventListener('abort', abort); };
-    const publishPlaybackDiagnostics = diagnostics => {
-      entry.playbackDiagnostics = sanitizePlaybackDiagnostics(diagnostics);
+    const publishPlaybackDiagnostics = (diagnostics, terminalFailure = false) => {
+      // Native recovery owns intermediate failures; only a final body failure may restart the player.
+      entry.playbackDiagnostics = sanitizePlaybackDiagnostics(terminalFailure ? diagnostics : { ...diagnostics, code: '', faultCode: '' });
+      const faultCode = terminalFailure
+        ? classifyPlaybackError(diagnostics, { stage: diagnostics.stage, expiresAt: entry.playInfo?.expiresAt || 0 }) || 'CDN_UNAVAILABLE'
+        : '';
+      hongguo.playbackDiagnostics?.record({ requestId: session.requestId, event: faultCode ? 'failure' : 'media-state', faultCode,
+        stage: diagnostics.stage, mediaStatus: terminalFailure ? 'failed' : 'loading' });
       sendToRenderer('online-play-diagnostics', {
         requestId: session.requestId,
         streamId: id,
         diagnostics: entry.playbackDiagnostics,
+        ...(faultCode ? { faultCode, stage: diagnostics.stage } : {}),
       });
     };
     try {
       return await withMediaRecovery(session.vid, entry.seriesId,
-        { playInfo: entry.playInfo, quality: entry.quality, signal: controller.signal, recover: !session.mediaStarted,
-          onDiagnostics: publishPlaybackDiagnostics }, async playInfo => {
+        { playInfo: entry.playInfo, quality: entry.quality, signal: controller.signal, requestId: session.requestId, recover: !session.mediaStarted,
+          onBudgetExceeded: () => controller.abort(), onDiagnostics: publishPlaybackDiagnostics }, async (playInfo, recoverySignal) => {
         const identity = JSON.stringify([playInfo.url, playInfo.contentKey, playInfo.spadeA]);
         const checkIdentity = () => {
           if (session.mediaStarted && session.mediaIdentity !== identity) throw new Error('片源已变化，请重新连接播放');
@@ -3258,7 +3306,7 @@ function registerStreamProtocol() {
             entry.hlsIdentity = identity;
             entry.hlsJob = trackOnlineWork(controller, (async () => {
               const prepared = {...entry}; delete prepared.hlsJob;
-              await prepareHlsEntry(playInfo,prepared,controller.signal,received => sendToRenderer('online-play-progress',
+              await prepareHlsEntry(playInfo,prepared,recoverySignal,received => sendToRenderer('online-play-progress',
                 {vid:session.vid,seriesId:entry.seriesId,vidIndex:entry.vidIndex,requestId:session.requestId,received,total:0,percent:0,phase:'downloading'}));
               try { checkIdentity(); } catch (error) { disposeOnlineDisk(prepared); throw error; }
               Object.assign(entry,prepared,{mediaIdentity:identity,vid:session.vid,source:/^custom:[^:]+/.exec(session.vid)?.[0] || 'hongguo',complete:true});
@@ -3273,7 +3321,7 @@ function registerStreamProtocol() {
         }
         // A fallback can change encryption and size; serve Range only after decoding that candidate.
         if (playInfo.spadeA || playInfo.contentKey) {
-          const buffer = await trackOnlineWork(controller, fetchDecryptedEpisodeOnce(session.vid, null, entry.seriesId, playInfo, controller.signal));
+          const buffer = await trackOnlineWork(controller, fetchDecryptedEpisodeOnce(session.vid, null, entry.seriesId, playInfo, recoverySignal));
           checkIdentity();
           entry.buffer = buffer; entry.size = buffer.length; entry.mediaIdentity = identity; delete entry.playInfo;
           session.mediaStarted = true; session.mediaIdentity = identity;
@@ -3315,7 +3363,7 @@ function registerStreamProtocol() {
             mediaRead,
             ...(code ? { code } : {}),
           });
-          publishPlaybackDiagnostics(diagnostic);
+          publishPlaybackDiagnostics(diagnostic, status === 'media-failed');
         };
         upstream.data.once('end', () => {
           ended = true;
@@ -3326,7 +3374,12 @@ function registerStreamProtocol() {
           }
         });
         upstream.data.once('error', error => {
-          if (controller.signal.aborted || ['ABORT_ERR', 'ERR_CANCELED'].includes(error?.code)) return;
+          if (controller.signal.aborted || ['ABORT_ERR', 'ERR_CANCELED'].includes(error?.code)) {
+            // Chromium cancels the old body when seeking; Readable.toWeb reports
+            // this as an abort before close, without aborting the Request signal.
+            controller.abort();
+            return;
+          }
           const status = Number(error?.status || error?.response?.status);
           const code = safeCode(error?.code) || (status >= 300 && status <= 599 ? `HTTP_${status}` : 'MEDIA_TRANSFER_ERROR');
           recordMediaRead('failed', 'media-failed', code);
@@ -3341,10 +3394,38 @@ function registerStreamProtocol() {
         // Later requests must reconnect by playback time, never reuse offsets against a new rendition.
         session.mediaStarted = true;
         session.mediaIdentity = identity;
-        return new Response(Readable.toWeb(upstream.data, { strategy: { highWaterMark: 64 * 1024, size: chunk => chunk.byteLength } }), { status: upstream.status, headers });
+        const reader = Readable.toWeb(upstream.data, {
+          strategy: { highWaterMark: 64 * 1024, size: chunk => chunk.byteLength },
+        }).getReader();
+        const body = new (require('node:stream/web').ReadableStream)({
+          async pull(target) {
+            try {
+              const chunk = await reader.read();
+              if (controller.signal.aborted) return;
+              if (chunk.done) target.close();
+              else target.enqueue(chunk.value);
+            } catch (error) {
+              if (!controller.signal.aborted) target.error(error);
+            }
+          },
+          cancel(reason) {
+            // Mark a consumer seek/cancel before Axios can report ECONNRESET.
+            controller.abort();
+            return reader.cancel(reason).catch(error => {
+              if (!['ABORT_ERR', 'ERR_CANCELED'].includes(error?.code)) throw error;
+            });
+          },
+        });
+        return new Response(body, { status: upstream.status, headers });
       });
     } catch (error) {
       cleanup();
+      const faultCode = classifyPlaybackError(error, { stage: error.stage || 'media', expiresAt: entry.playInfo?.expiresAt || 0 });
+      if (!controller.signal.aborted) {
+        hongguo.playbackDiagnostics?.record({ requestId: session.requestId, event: 'failure', faultCode, stage: error.stage || 'media' });
+        sendToRenderer('online-play-diagnostics', { requestId: session.requestId, streamId: id, faultCode,
+          stage: error.stage || 'media', diagnostics: error.playbackDiagnostics || sanitizePlaybackDiagnostics({ stage: error.stage || 'media', code: error.code }) });
+      }
       if (error.code === 'MEDIA_TOO_LARGE') sendToRenderer('online-play-progress', { requestId: session.requestId, code: error.code, error: error.message });
       return new Response('media unavailable', { status: controller.signal.aborted ? 499 : 502 });
     }
@@ -3352,9 +3433,9 @@ function registerStreamProtocol() {
 }
 
 /** 发放进程内随机播放地址，不向网页暴露本地路径。 */
-function localPlayUrl(filePath) {
+function localPlayUrl(filePath, options) {
   if (!filePath) return null;
-  return mediaAccess.localUrl(filePath);
+  return mediaAccess.localUrl(filePath, options);
 }
 
 /**
@@ -3471,14 +3552,19 @@ async function decryptContentKeyFile(input, output, contentKey, { signal, cancel
     if ((await fsp.stat(output)).size === 0) throw new Error('媒体解密没有生成可用文件');
   } catch (error) {
     try { await fsp.unlink(output); } catch (_) {}
+    if (!signal?.aborted && !cancelToken?.reason) {
+      error.code ||= 'MEDIA_DECRYPT_FAILED';
+      error.faultCode ||= 'MEDIA_DECRYPT_FAILED';
+      error.stage = 'decrypt';
+    }
     throw error;
   }
 }
 
 /** Encrypted sources and compatibility transcoding still require the complete MP4. */
-async function fetchDecryptedEpisode(vid, onProgress, seriesId, playInfo, signal, maxBytes = ONLINE_MAX_BYTES, force = false, quality = 'auto') {
-  return withMediaRecovery(vid, seriesId, { playInfo, signal, force, quality }, candidate =>
-    fetchDecryptedEpisodeOnce(vid, onProgress, seriesId, candidate, signal, maxBytes));
+async function fetchDecryptedEpisode(vid, onProgress, seriesId, playInfo, signal, maxBytes = ONLINE_MAX_BYTES, force = false, quality = 'auto', getRequestId) {
+  return withMediaRecovery(vid, seriesId, { playInfo, signal, force, quality, getRequestId }, (candidate, recoverySignal) =>
+    fetchDecryptedEpisodeOnce(vid, onProgress, seriesId, candidate, recoverySignal, maxBytes));
 }
 
 async function fetchDecryptedEpisodeOnce(vid, onProgress, seriesId, playInfo, signal, maxBytes = ONLINE_MAX_BYTES) {
@@ -3536,8 +3622,12 @@ async function fetchDecryptedEpisodeOnce(vid, onProgress, seriesId, playInfo, si
   if (playInfo.spadeA) {
     if (onProgress) onProgress(buf.length, buf.length, 'decrypting');
     const key = hongguo.deriveKey(playInfo.spadeA);
-    if (!key) throw new Error('密钥派生失败');
-    buf = await decryptInWorker({ buffer: buf, key }, { signal });
+    if (!key) throw Object.assign(new Error('密钥派生失败'), { code: 'MEDIA_DECRYPT_FAILED', stage: 'decrypt' });
+    try { buf = await decryptInWorker({ buffer: buf, key }, { signal }); }
+    catch (error) {
+      if (!signal?.aborted) Object.assign(error, { faultCode: 'MEDIA_DECRYPT_FAILED', stage: 'decrypt' });
+      throw error;
+    }
   }
   return buf;
 }
@@ -3554,17 +3644,20 @@ async function prepareHlsEntry(playInfo,entry,signal,onProgress) {
 }
 
 ipcMain.handle('prepare-online-play', async (event, payload) => {
-  const { vid, seriesId, vidIndex, requestId, prefetch = false, force = false } = payload || {};
+  const { vid, seriesId, vidIndex, requestId, prefetch = false, force = false, recoveryCount = 0 } = payload || {};
   if (!vid) return { success: false, error: '缺少 vid' };
   if (/^hema:/.test(String(vid)) || /^hema:/.test(String(seriesId || ''))) return { success: false, error: '河马来源已移除' };
   let quality;
   try { quality = playbackQuality(payload.quality, vid); } catch (error) { return { success: false, error: error.message }; }
-  const sourceVid = String(vid), key = onlineCacheKey(sourceVid, quality), streamId = randomUUID();
+  const sourceVid = String(vid);
+  const allowLowerQuality = payload.allowLowerQuality === true && quality !== 'auto' && /^\d{1,30}$/.test(sourceVid);
+  const key = onlineCacheKey(sourceVid, quality, allowLowerQuality), streamId = randomUUID();
   const session = { vid: sourceVid, seriesId: String(seriesId || ''), vidIndex: Number(vidIndex), cacheKey: key, requestId, requests: new Set(), entry: null };
   onlineSessions.set(streamId, session);
+  playbackStateReporter.begin({ streamId, requestId, prefetch, recoveryCount });
   try {
     checkCustomAccess(sourceVid);
-    const checkedPlayInfo = /^(xifan|custom):/.test(sourceVid) ? await hongguo.fetchPlayUrlSingle(sourceVid, seriesId, { force, quality }) : null;
+    const checkedPlayInfo = /^(xifan|custom):/.test(sourceVid) ? await hongguo.fetchPlayUrlSingle(sourceVid, seriesId, { force, quality, requestId }) : null;
     if (!onlineSessions.has(streamId)) throw new Error('已取消播放');
     if (checkedPlayInfo && !checkedPlayInfo.url) throw new Error(checkedPlayInfo.error || '来源未开放该集');
     if (force) deleteOnlineCacheEntry(key);
@@ -3574,6 +3667,8 @@ ipcMain.handle('prepare-online-play', async (event, payload) => {
       if (!job || (force && !job.force)) {
         const controller = new AbortController();
         job = { controller, force };
+        session.job = job;
+        onlinePreparing.set(key, job);
         job.promise = trackOnlineWork(controller, (async () => {
           const progress = (received,total,phase) => {
             for (const active of onlineSessions.values()) if (active.cacheKey === key) {
@@ -3581,12 +3676,13 @@ ipcMain.handle('prepare-online-play', async (event, payload) => {
                 received,total,percent:total?Math.floor(received/total*100):0,phase:phase||'downloading'});
             }
           };
-          const prepared = await withMediaRecovery(sourceVid,seriesId,{playInfo:checkedPlayInfo,quality,force,signal:controller.signal},async playInfo => {
-            const entry = {quality,codec:playInfo.codec || '',size:0,lastUsed:Date.now(),seriesId:String(seriesId||''),vidIndex:Number(vidIndex)||0};
-            if (playInfo.format === 'hls') await prepareHlsEntry(playInfo,entry,controller.signal,received => progress(received,0));
+          const prepared = await withMediaRecovery(sourceVid,seriesId,{playInfo:checkedPlayInfo,quality,allowLowerQuality,force,signal:controller.signal,
+            getRequestId: () => foregroundPlaybackRequestId(active => active.job === job)},async (playInfo, recoverySignal) => {
+            const entry = {quality:allowLowerQuality?'auto':quality,codec:playInfo.codec || '',size:0,lastUsed:Date.now(),seriesId:String(seriesId||''),vidIndex:Number(vidIndex)||0};
+            if (playInfo.format === 'hls') await prepareHlsEntry(playInfo,entry,recoverySignal,received => progress(received,0));
             else if (!prefetch && !playInfo.spadeA && !playInfo.contentKey) return {...entry,playInfo};
             else {
-              entry.buffer = await fetchDecryptedEpisodeOnce(sourceVid,progress,seriesId,playInfo,controller.signal);
+              entry.buffer = await fetchDecryptedEpisodeOnce(sourceVid,progress,seriesId,playInfo,recoverySignal);
               entry.size = entry.buffer.length;
             }
             if (controller.signal.aborted) throw new Error('已取消播放');
@@ -3599,7 +3695,6 @@ ipcMain.handle('prepare-online-play', async (event, payload) => {
           if (prepared.complete && onlinePreparing.get(key) === job) { onlineCache.set(key,prepared); trimOnlineCache(); }
           return prepared;
         })().finally(() => { if (onlinePreparing.get(key) === job) onlinePreparing.delete(key); }));
-        onlinePreparing.set(key, job);
       }
       session.job = job;
       entry = await job.promise;
@@ -3616,12 +3711,23 @@ ipcMain.handle('prepare-online-play', async (event, payload) => {
         mediaRead: entry.playbackDiagnostics?.mediaRead || (entry.complete ? 'complete' : 'not-requested'),
       }) };
   } catch (error) {
+    const cancelled = !onlineSessions.has(streamId) || error?.name === 'AbortError'
+      || ['ABORT_ERR', 'ERR_CANCELED'].includes(error?.code);
+    const stage = error?.stage || error?.playbackDiagnostics?.stage || (error?.code === 'MEDIA_DECODE_ERROR' ? 'decode' : 'source');
     releaseOnlineSession(streamId);
+    if (cancelled) {
+      hongguo.playbackDiagnostics?.record({ requestId, event: 'cancelled', stage });
+      return { success: false, cancelled: true, error: '已取消播放', code: 'ERR_CANCELED', stage,
+        diagnostics: sanitizePlaybackDiagnostics({ stage }) };
+    }
     const diagnostics = error?.playbackDiagnostics || sanitizePlaybackDiagnostics({
       sourceTrace: error?.routeTrace, stage: error?.code === 'MEDIA_DECODE_ERROR' ? 'decode' : 'source', code: error?.code,
     });
     const code = safeCode(error?.code);
-    return { success: false, error: playbackFailureMessage(error || {}), ...(code ? { code } : {}), diagnostics };
+    const faultCode = classifyPlaybackError(error, { stage });
+    hongguo.playbackDiagnostics?.record({ requestId, event: 'failure', faultCode, stage });
+    return { success: false, error: playbackFailureMessage(error || {}), ...(code ? { code } : {}),
+      ...(faultCode ? { faultCode } : {}), stage, diagnostics };
   }
 });
 
@@ -3954,7 +4060,9 @@ ipcMain.handle('transcode-for-playback', async (event, payload = {}) => {
     });
     compatPreparing.set(key, job);
   }
-  const request = { key, job, requestId, cancelled: false };
+  const playbackRequestId = foregroundPlaybackRequestId(session => session.vid === String(payload.vid || '')
+    && session.seriesId === String(payload.seriesId || '') && session.vidIndex === Number(payload.vidIndex));
+  const request = { key, job, requestId, playbackRequestId, cancelled: false };
   job.requests.set(requestId, request);
   compatRequests.set(requestId, request);
   request.promise = job.promise.then(result => ({ ...(request.cancelled ? compatCancelled() : result), requestId })).finally(() => {
@@ -3967,6 +4075,12 @@ ipcMain.handle('transcode-for-playback', async (event, payload = {}) => {
 async function transcodeForPlayback(payload, job = { controller: new AbortController() }) {
   let tmpInput, tmpOut, diskInput;
   const signal = job.controller.signal;
+  const getRequestId = () => {
+    for (const request of job.requests?.values() || []) {
+      if (!request.cancelled && hongguo.playbackDiagnostics?.isForeground?.(request.playbackRequestId)) return request.playbackRequestId;
+    }
+    return '';
+  };
   const checkCancelled = () => { if (signal.aborted) throw new Error('已取消转码'); };
   const abortPreparation = () => {
     const child = job.child;
@@ -4020,17 +4134,17 @@ async function transcodeForPlayback(payload, job = { controller: new AbortContro
       const cached = !force && onlineCache.get(onlineCacheKey(vid, quality));
       if (cached?.filePath) { diskInput = cached; cached.disk.readers++; inputPath = cached.filePath; }
       else {
-        const playInfo = String(vid).startsWith('custom:') ? await hongguo.fetchPlayUrlSingle(String(vid),seriesId,{force:!!force,quality}) : null;
+        const playInfo = String(vid).startsWith('custom:') ? await hongguo.fetchPlayUrlSingle(String(vid),seriesId,{force:!!force,quality,getRequestId}) : null;
         tmpInput = path.join(getCompatDir(), `.tmp_${randomUUID()}.mp4`);
-        if (playInfo) await withMediaRecovery(vid,seriesId,{playInfo,signal,quality},async candidate => {
-          if (candidate.format === 'hls') await prepareHlsFile(candidate,tmpInput,{signal});
+        if (playInfo) await withMediaRecovery(vid,seriesId,{playInfo,signal,quality,getRequestId},async (candidate,recoverySignal) => {
+          if (candidate.format === 'hls') await prepareHlsFile(candidate,tmpInput,{signal:recoverySignal});
           else {
-            const buf = await fetchDecryptedEpisodeOnce(String(vid),()=>{},seriesId,candidate,signal);
+            const buf = await fetchDecryptedEpisodeOnce(String(vid),()=>{},seriesId,candidate,recoverySignal);
             checkCancelled(); fs.writeFileSync(tmpInput,buf);
           }
         });
         else {
-          const buf = cached?.buffer || await fetchDecryptedEpisode(String(vid), () => {}, seriesId, playInfo, signal, ONLINE_MAX_BYTES, !!force, quality);
+          const buf = cached?.buffer || await fetchDecryptedEpisode(String(vid), () => {}, seriesId, playInfo, signal, ONLINE_MAX_BYTES, !!force, quality, getRequestId);
           checkCancelled(); fs.writeFileSync(tmpInput,buf);
         }
         inputPath = tmpInput;
@@ -4471,15 +4585,30 @@ function getAccountWebSession() {
 }
 
 async function clearAccountCookies() {
-  if (accountWebSession) await accountWebSession.clearStorageData({ storages: ['cookies'] });
-  const cookies = await session.defaultSession.cookies.get({});
-  await Promise.all(cookies
-    .filter(cookie => /(?:^|\.)hongguoduanju\.com$/i.test(String(cookie.domain || '')))
-    .map(async cookie => {
-      const host = String(cookie.domain || '').replace(/^\./, '');
-      if (!host) return;
-      try { await session.defaultSession.cookies.remove(`https://${host}${cookie.path || '/'}`, cookie.name); } catch {}
-    }));
+  let failures = 0;
+  const operations = [];
+  if (accountWebSession) operations.push(Promise.resolve()
+    .then(() => accountWebSession.clearStorageData({ storages: ['cookies'] }))
+    .catch(() => { failures++; }));
+  operations.push((async () => {
+    let cookies;
+    try { cookies = await session.defaultSession.cookies.get({}); }
+    catch { failures++; return; }
+    if (!Array.isArray(cookies)) { failures++; return; }
+    await Promise.all(cookies
+      .filter(cookie => /(?:^|\.)hongguoduanju\.com$/i.test(String(cookie.domain || '')))
+      .map(async cookie => {
+        const host = String(cookie.domain || '').replace(/^\./, '');
+        if (!host) return;
+        try { await session.defaultSession.cookies.remove(`https://${host}${cookie.path || '/'}`, cookie.name); }
+        catch { failures++; }
+      }));
+  })());
+  const settled = await Promise.allSettled(operations);
+  failures += settled.filter(result => result.status === 'rejected').length;
+  if (failures) throw Object.assign(new Error('登录态清理未完成，请重试退出账号'), {
+    code: 'ACCOUNT_STORAGE_ERROR', failedOperations: failures,
+  });
 }
 
 function getAccountService() {
@@ -4488,19 +4617,99 @@ function getAccountService() {
     accountService = createAccountService({
       filePath: path.join(app.getPath('userData'), 'account-session.bin'), safeStorage,
       webRequest: accountWebRequest,
-      onAccountExpired: () => {
-        clearAccountCookies().catch(error => console.warn('[Account] 清除登录 Cookie 失败:', error.message));
-        sendToRenderer('account-updated', { signedIn: false });
+      onAccountExpired: ({ code } = {}) => {
+        clearAccountCookies().catch(error => console.warn('[Account] 清除登录 Cookie 失败:', accountSafeMessage(error)));
+        hongguo.getPlaybackManager?.().invalidateAccount();
+        accountResumePositions.clear();
+        sendToRenderer('account-updated', { signedIn: false,
+          faultCode: classifyPlaybackError({ code }, { stage: 'source' }) || 'ACCOUNT_EXPIRED' });
       },
     });
   }
   return accountService;
 }
 
+async function playbackDiagnosticSnapshot() {
+  const account = await accountAction(service => service.status());
+  const profile = require('./src/native/playback-profiles').getPlaybackProfileStatus();
+  const device = require('./src/native/app-source').getPlaybackIdentityStatus();
+  return hongguo.playbackDiagnostics.snapshot({ account, profile, device });
+}
+
+ipcMain.handle('get-playback-diagnostics', async () => ({ success: true, diagnostics: await playbackDiagnosticSnapshot() }));
+ipcMain.handle('check-playback-account', async () => {
+  const result = await accountAction(service => service.checkSession({ force: true }));
+  sendToRenderer('account-updated', { signedIn: result.signedIn === true });
+  return { success: result.success !== false, diagnostics: await playbackDiagnosticSnapshot(),
+    ...(result.lastErrorCode ? { faultCode: result.lastErrorCode } : {}) };
+});
+
+ipcMain.handle('report-playback-state', async (_event, payload = {}) => ({ success: playbackStateReporter.report(payload) }));
+
+let playbackConnectionTest;
+ipcMain.handle('test-playback-connection', async (_event, options = {}) => {
+  if (playbackConnectionTest) return playbackConnectionTest;
+  const controller = new AbortController();
+  playbackConnectionTest = trackOnlineWork(controller, (async () => {
+    const timer = setTimeout(() => controller.abort(), 45000);
+    const checks = { source: 'not-tested', media: 'not-tested', decode: 'not-tested' };
+    let upstream;
+    try {
+      const catalog = await awaitMediaOperation(require('./src/native/catalog').browseList({ forceRefresh: true, signal: controller.signal }), controller.signal);
+      const rows = catalog.results || [];
+      if (!catalog.success || !rows.length) throw Object.assign(new Error('目录暂不可用'), { code: 'SOURCE_UNAVAILABLE' });
+      const seriesId = rows[Math.floor(Math.random() * rows.length)].series_id;
+      const details = await awaitMediaOperation(hongguo.fetchEpisodeList(seriesId, { signal: controller.signal, deadline: Date.now() + 20000 }), controller.signal);
+      const episode = details.episodes.find(item => item.locked !== true);
+      if (!episode) throw Object.assign(new Error('没有公开可用分集'), { code: 'ACCOUNT_REQUIRED' });
+      let authorization;
+      if (options.authorizationProbe === true) {
+        const service = getAccountService();
+        authorization = {
+          web: await service.probeOfficialPlayback({ seriesId, vid: episode.vid, signal: controller.signal }),
+          webApi: await service.probeOfficialWebPlaybackApi({ seriesId, vid: episode.vid, signal: controller.signal }),
+          app: await service.probeOfficialAppPlayback({ vid: episode.vid, signal: controller.signal }),
+        };
+      }
+      const info = await hongguo.fetchPlayUrlSingle(episode.vid, seriesId, { force: true, signal: controller.signal });
+      if (!info.url) throw Object.assign(new Error('取源失败'), { code: info.code, faultCode: info.faultCode, sources: info.sources, authorization });
+      checks.source = 'passed';
+      // A bounded media read checks transport only. Decryption/decoding need the actual player.
+      upstream = await requestMedia(info, { signal: controller.signal, headers: { Range: 'bytes=0-65535' } });
+      let bytes = 0;
+      for await (const chunk of upstream.data) { bytes += chunk.length; if (bytes >= 65536) break; }
+      if (!bytes) throw Object.assign(new Error('媒体为空'), { code: 'MEDIA_TRANSFER_ERROR' });
+      checks.media = 'partial';
+      return { success: true, checks, diagnostics: await playbackDiagnosticSnapshot(), ...(authorization ? { authorization } : {}) };
+    } catch (error) {
+      const stage = checks.source === 'passed' ? 'media' : 'source';
+      checks[stage] = 'failed';
+      const faultCode = controller.signal.aborted ? 'NETWORK_TIMEOUT' : classifyPlaybackError(error, { stage });
+      hongguo.playbackDiagnostics.record({ event: 'failure', stage, faultCode });
+      return { success: false, faultCode, checks, diagnostics: await playbackDiagnosticSnapshot(),
+        ...(error.authorization ? { authorization: error.authorization } : {}) };
+    } finally { clearTimeout(timer); upstream?.data?.destroy(); }
+  })()).finally(() => { playbackConnectionTest = null; });
+  return playbackConnectionTest;
+});
+
+ipcMain.handle('export-playback-diagnostics', async () => trackMaintenance((async () => {
+  const diagnostics = await playbackDiagnosticSnapshot();
+  const result = await dialog.showSaveDialog(mainWindow, {
+    title: '导出播放诊断报告',
+    defaultPath: path.join(app.getPath('downloads'), `hongguo-playback-diagnostics-${Date.now()}.json`),
+    filters: [{ name: 'JSON', extensions: ['json'] }],
+  });
+  if (result.canceled || !result.filePath) return { success: true, cancelled: true };
+  await fsp.writeFile(result.filePath, JSON.stringify(diagnostics, null, 2), { mode: 0o600 });
+  return { success: true };
+})()));
+
 async function accountWebRequest(url, options = {}) {
   const response = await getAccountWebSession().fetch(url, {
     method: options.method || 'GET', headers: options.headers || {}, redirect: 'manual',
-    signal: AbortSignal.timeout(12000),
+    body: options.body,
+    signal: options.signal || AbortSignal.timeout(12000), credentials: 'omit',
   });
   const headers = {};
   for (const [name, value] of response.headers) headers[name] = value;
@@ -4821,7 +5030,7 @@ ipcMain.handle('open-account-web-login', async () => {
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   const observer = require('./src/native/account-web-login').createWebLoginObserver({
     readCookies: () => getAccountWebSession().cookies.get({ url: 'https://hongguoduanju.com/' }),
-    complete: cookie => accountAction(service => service.completeWebLogin(cookie)),
+    complete: (cookie, metadata) => accountAction(service => service.completeWebLogin(cookie, metadata)),
     cancel: () => getAccountService().cancelLogin(),
     onSignedIn: () => {
       sendToRenderer('account-updated', { signedIn: true });
@@ -4862,10 +5071,15 @@ ipcMain.handle('cancel-account-login', async (_event, loginId) => {
 ipcMain.handle('logout-account', async () => {
   if (accountLoginWindow && !accountLoginWindow.isDestroyed()) accountLoginWindow.close();
   const result = await accountAction(service => service.logout());
-  if (result.success) {
-    await clearAccountCookies();
-    sendToRenderer('account-updated', { signedIn: false });
+  hongguo.getPlaybackManager?.().invalidateAccount();
+  accountResumePositions.clear();
+  try { await clearAccountCookies(); }
+  catch (error) {
+    console.warn('[Account] 清除登录 Cookie 失败:', accountSafeMessage(error));
+    result.success = false;
+    result.error = '登录态清理未完成，请重试退出账号';
   }
+  sendToRenderer('account-updated', { signedIn: false });
   return result;
 });
 ipcMain.handle('get-account-history', async (_event, options) => accountAction(service => service.history({ refresh: options?.refresh === true })));

@@ -1,5 +1,5 @@
 // Full Electron UI theme audit against the already-built dist-react renderer.
-// Usage: node scripts/check-ui-theme.cjs --baseline | --after | --settings-search
+// Usage: node scripts/check-ui-theme.cjs --baseline | --after | --settings-search [--output-dir directory]
 // Runs the real app in a disposable profile; it never plays or downloads media.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -16,7 +16,10 @@ if (!MODE) {
   console.error('Usage: node scripts/check-ui-theme.cjs --baseline | --after | --settings-search | --default-theme');
   process.exit(2);
 }
-const OUTPUT_DIR = SETTINGS_ONLY
+const outputFlag = process.argv.indexOf('--output-dir');
+const requestedOutput = outputFlag >= 0 ? process.argv[outputFlag + 1] : '';
+if (outputFlag >= 0 && (!requestedOutput || requestedOutput.startsWith('--'))) throw new Error('--output-dir requires a directory');
+const OUTPUT_DIR = requestedOutput ? path.resolve(ROOT, requestedOutput) : SETTINGS_ONLY
   ? path.join(ROOT, 'docs', 'screenshots', 'settings-search-6.21')
   : DEFAULT_THEME_ONLY ? path.join(os.tmpdir(), `hongguo-default-theme-${process.pid}`)
     : path.join(ROOT, 'docs', 'screenshots', 'ui-audit-2026-11-20', MODE);
@@ -41,7 +44,7 @@ if (!process.versions.electron) {
   try {
     const childMode = DEFAULT_THEME_ONLY ? '--default-theme'
       : SETTINGS_ONLY ? '--settings-search' : MODE === 'before' ? '--baseline' : '--after';
-    const result = spawnSync(require('electron'), [__filename, childMode, '--profile', profile], {
+    const result = spawnSync(require('electron'), [__filename, childMode, '--profile', profile, ...(requestedOutput ? ['--output-dir', OUTPUT_DIR] : [])], {
       cwd: ROOT, env, encoding: 'utf8', timeout: 300000, maxBuffer: 32 * 1024 * 1024,
     });
     if (result.stdout) process.stdout.write(result.stdout);
@@ -519,7 +522,7 @@ if (!process.versions.electron) {
       await execute(win, `document.querySelector('.settings-search input').focus()`);
       win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Escape' });
       win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Escape' });
-      await until(() => execute(win, `document.querySelector('.settings-search input').value === '' && document.querySelectorAll('[id^="settings-anchor-"]:not([hidden])').length === 12`), 'Escape restores all settings');
+      await until(() => execute(win, `document.querySelector('.settings-search input').value === '' && document.querySelectorAll('[id^="settings-anchor-"]:not([hidden])').length === document.querySelectorAll('.settings-quicknav-item').length`), 'Escape restores all settings');
       await execute(win, `(() => {
         const input = document.querySelector('.settings-search input');
         Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'no-matching-setting');
@@ -530,6 +533,44 @@ if (!process.versions.electron) {
       await execute(win, `document.querySelector('.settings-search-empty button').click()`);
       await until(() => execute(win, `document.querySelector('.settings-search input').value === '' && document.activeElement === document.querySelector('.settings-search input')`), 'clear restores search focus');
       evidence.assertions.push({ theme, proxyFilter: true, enterFocus: true, escapeClear: true, emptyResult: true, clearFocus: true, screenshot, emptyScreenshot });
+
+      await execute(win, `(() => {
+        const input = document.querySelector('.settings-search input');
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, '播放诊断');
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+      })()`);
+      await until(() => execute(win, `document.querySelectorAll('[id^="settings-anchor-"]:not([hidden])').length === 1 && !document.querySelector('#settings-anchor-playback-diagnostics').hidden`), 'playback diagnostic settings filter');
+      await until(() => execute(win, `[...document.querySelectorAll('.playback-diagnostics-row')].some(row => row.innerText.includes('软件版本') && !row.innerText.includes('尚未读取'))`), 'real playback diagnostic snapshot');
+      await execute(win, `document.querySelector('.playback-diagnostics-actions button').click()`);
+      await until(() => execute(win, `document.querySelector('.playback-diagnostics [role="status"]')?.textContent.includes('当前未登录红果账号')`), 'anonymous account diagnostic check');
+      for (const width of [900, 1280]) {
+        await setWindowSize(win, width, 750, evidence.display.workArea);
+        await execute(win, `document.querySelector('#settings-anchor-playback-diagnostics').scrollIntoView({block:'start'})`);
+        await raf(win);
+        const layout = await execute(win, `(() => {
+          const panel = document.querySelector('.playback-diagnostics');
+          const nodes = [...panel.querySelectorAll('dt,dd,button')];
+          return { rows: panel.querySelectorAll('.playback-diagnostics-row').length,
+            buttons: panel.querySelectorAll('button').length,
+            overflow: nodes.filter(node => node.scrollWidth > node.clientWidth + 1).length,
+            panelOverflow: panel.scrollWidth > panel.clientWidth + 1,
+            error: panel.querySelector('[role="alert"]')?.textContent || '',
+            snapshot: panel.innerText };
+        })()`);
+        assert.equal(layout.rows, 14, `${theme}: all playback diagnostic fields are visible`);
+        assert.equal(layout.buttons, 3);
+        assert.equal(layout.overflow, 0, `${theme}/${width}: diagnostic field text fits`);
+        assert.equal(layout.panelOverflow, false, `${theme}/${width}: diagnostic panel fits`);
+        assert.equal(layout.error, '', `${theme}/${width}: real diagnostic read and account check succeed`);
+        assert.doesNotMatch(layout.snapshot, /sessionid=|Cookie:|https?:\/\/|device_id=/i);
+        evidence.assertions.push({ kind: 'playback-diagnostics', theme, width, ...layout,
+          screenshot: await capture(win, `${theme}-playback-diagnostics-${width}`) });
+      }
+      await execute(win, `(() => {
+        const input = document.querySelector('.settings-search input');
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, '');
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+      })()`);
     }
     assert.equal(mediaStartedEvents, 0);
     assert(win.webContents.isAudioMuted());
@@ -537,7 +578,7 @@ if (!process.versions.electron) {
     evidence.isolation.mediaStartedEvents = mediaStartedEvents;
     evidence.finishedAt = new Date().toISOString();
     fs.writeFileSync(path.join(OUTPUT_DIR, 'evidence.json'), JSON.stringify(evidence, null, 2));
-    console.log('PASS real settings search: both themes, card visibility, Enter focus, Escape clear, empty state, clear focus and proxy dialog keyboard; no playback or downloads');
+    console.log('PASS real settings search: both themes, card visibility, Enter focus, Escape clear, empty state, proxy dialog keyboard, playback diagnostic snapshot and anonymous account check at 900/1280 widths; no playback or downloads');
   }
 
   // Keep labels and panel selectors inside literal programs, not nested string substitutions.

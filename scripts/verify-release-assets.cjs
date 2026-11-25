@@ -18,6 +18,9 @@ function verify(dir, receipt) {
   assert.equal(receipt.version, version);
   assert.equal(receipt.passed, true);
   assert.equal(receipt.crossVersionUpgradeTested, true);
+  assert.equal(receipt.sameVersionAccountRetentionTested, true, 'Same-version account retention must pass');
+  assert.equal(receipt.accountUpgradeRetentionTested, true, 'Account upgrade retention must pass');
+  assert.equal(receipt.accountUninstallTested, true, 'Account uninstall cleanup must pass');
   assert.deepEqual(receipt.installer, assets[0], 'The exact candidate installer must match the install-test receipt');
   const metadata = fs.readFileSync(path.join(dir, manifest), 'utf8');
   const date = /^releaseDate: '([^']+)'$/m.exec(metadata)?.[1];

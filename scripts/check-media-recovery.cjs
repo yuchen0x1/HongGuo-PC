@@ -53,6 +53,11 @@ function load(fetchPlayUrlSingle, overrides = {}) {
     if (r.url === '/forbidden') { s.writeHead(403); s.end(); return; }
     if (r.url === '/limited') { s.writeHead(429); s.end(); return; }
     if (r.url === '/empty') { s.writeHead(200, {'Content-Length':'0'}); s.end(); return; }
+    if (r.url === '/seek-cancel' && !r.headers.range) {
+      s.writeHead(200, {'Content-Type':'video/mp4','Content-Length':'999999'});
+      s.write('initial-media-bytes');
+      return;
+    }
     if (r.url === '/html') { s.setHeader('Content-Type','text/html'); s.end('bad'); return; }
     if (r.url === '/broken') { s.writeHead(200, {'Content-Length':'999'}); s.write('partial'); setTimeout(() => s.destroy(), 5); return; }
     if (r.url === '/race') {
@@ -77,6 +82,24 @@ function load(fetchPlayUrlSingle, overrides = {}) {
   const harness = (fn, overrides) => { const h=load(fn, overrides); harnesses.push(h); return h; };
   const task = id => ({id, type:'hongguo',filename:id+'.mp4',customDir:root,hongguoInfo:{vid:'11',series_id:'1'}});
   async function check(name, fn) { try { await fn(); console.log('PASS '+name); } catch(e) { failures++; console.error('FAIL '+name+': '+e.message+'\n'+e.stack); } }
+  await check('seeking cancels the previous reader without a false CDN failure or source refresh', async () => {
+    let lookups = 0;
+    const h = harness(async () => { lookups++; return info('/seek-cancel', 'web'); });
+    const prepared = await h.handlers['prepare-online-play']({}, { vid:'11', seriesId:'1', requestId:'seek-reader' });
+    assert.equal(prepared.success, true);
+    const response = await h.protocols['hongguo-stream'](new Request(prepared.url));
+    const reader = response.body.getReader();
+    assert.ok((await reader.read()).value.length > 0);
+    await reader.cancel('seeking to a different byte range');
+    await sleep(30);
+    assert.equal(h.rendererEvents.some(event => event.channel === 'online-play-diagnostics'
+      && (event.payload.faultCode || event.payload.diagnostics?.mediaRead === 'failed')), false);
+    assert.equal(h.run(`onlineSessions.get(${JSON.stringify(prepared.streamId)}).requests.size`), 0);
+    const next = await h.protocols['hongguo-stream'](new Request(prepared.url, { headers:{ Range:'bytes=2-5' } }));
+    assert.equal(next.status, 206);
+    assert.equal(await next.text(), 'mple');
+    assert.equal(lookups, 1, 'a consumer seek does not invalidate the official media source');
+  });
   await check('download refreshes a failed address without another click',async()=>{
     const calls=[]; const h=harness(async(_v,_s,o)=>{ calls.push(o); return calls.length===1?info('/missing','web'):info('/ok'); });
     const t=task('refresh'); await h.context.executeHongguoDownload(t);
@@ -169,6 +192,7 @@ function load(fetchPlayUrlSingle, overrides = {}) {
     assert.equal(event.payload.requestId,'diag-empty');
     assert.equal(event.payload.diagnostics.mediaRead,'failed');
     assert.equal(event.payload.diagnostics.routes.at(-1).code,'EMPTY_RESPONSE');
+    assert.equal(event.payload.faultCode,'CDN_UNAVAILABLE');
   });
   await check('interrupted stream body emits a sanitized failed-read diagnostic',async()=>{
     const h=harness(async()=>info('/broken','app'));
@@ -182,6 +206,7 @@ function load(fetchPlayUrlSingle, overrides = {}) {
     assert.equal(event.payload.diagnostics.stage,'media');
     assert.equal(event.payload.diagnostics.mediaRead,'failed');
     assert.equal(event.payload.diagnostics.routes.at(-1).status,'media-failed');
+    assert.equal(event.payload.faultCode,'CDN_UNAVAILABLE');
     assert.doesNotMatch(JSON.stringify(event),/127\.0\.0\.1|token=|secret/);
   });
   await check('playback IPC omits unrecognized and potentially sensitive error codes',async()=>{
@@ -203,6 +228,39 @@ function load(fetchPlayUrlSingle, overrides = {}) {
     const p=await h.handlers['prepare-online-play']({}, {vid:'11',seriesId:'1'});
     const r=await h.protocols['hongguo-stream'](new Request(p.url,{headers:{Range:'bytes=2-5'}}));
     assert.equal(r.status,206); assert.equal(await r.text(),'mple');
+  });
+  await check('a recovered stream candidate clears its error without asking the player to reconnect',async()=>{
+    const first=info('/missing'); first.variants=[info('/ok')];
+    const h=harness(async()=>first);
+    const prepared=await h.handlers['prepare-online-play']({}, {vid:'11',seriesId:'1',requestId:'diag-recovered'});
+    const response=await h.protocols['hongguo-stream'](new Request(prepared.url));
+    assert.equal(response.status,200); assert.equal(await response.text(),'complete-media');
+    const events=h.rendererEvents.filter(event=>event.channel==='online-play-diagnostics');
+    assert(events.some(event=>event.payload.diagnostics.routes.some(route=>route.code==='HTTP_404')),
+      'the failed attempt remains visible as route evidence');
+    assert(events.every(event=>!event.payload.faultCode && !event.payload.diagnostics.faultCode && !event.payload.diagnostics.code),
+      'intermediate route evidence must not trigger renderer recovery');
+    const final=events.at(-1).payload.diagnostics;
+    assert.equal(final.mediaRead,'complete');
+    assert(final.routes.every(route=>!route.code),'a successfully recovered route must clear the stale failure code');
+  });
+  await check('recoverable native diagnostics do not publish a classified top-level fault',async()=>{
+    const first=info('/missing'); first.variants=[info('/ok')];
+    const h=harness(async()=>first);
+    let requests=0;
+    const requestMedia=h.context.requestMedia;
+    h.context.requestMedia=async (...args)=>{
+      if (++requests===1) throw Object.assign(new Error('synthetic unavailable rendition'), {
+        code:'CDN_UNAVAILABLE',faultCode:'CDN_UNAVAILABLE',mediaRetryable:true,
+      });
+      return requestMedia(...args);
+    };
+    const prepared=await h.handlers['prepare-online-play']({}, {vid:'11',seriesId:'1',requestId:'diag-classified-recovery'});
+    const response=await h.protocols['hongguo-stream'](new Request(prepared.url));
+    assert.equal(await response.text(),'complete-media'); assert.equal(requests,2);
+    const events=h.rendererEvents.filter(event=>event.channel==='online-play-diagnostics');
+    assert(events.every(event=>!event.payload.faultCode && !event.payload.diagnostics.code && !event.payload.diagnostics.faultCode));
+    assert.equal(events.at(-1).payload.diagnostics.routes.at(-1).code,undefined);
   });
   await check('broken prefetch body retries complete transfer and caches only final bytes',async()=>{
     let lookups=0; const h=harness(async()=>++lookups===1?info('/broken'):info('/ok'));
@@ -293,12 +351,18 @@ function load(fetchPlayUrlSingle, overrides = {}) {
   await check('unresponsive source lookup has a finite wait instead of leaving playback loading',async()=>{
     const h=harness(()=>new Promise(()=>{}));
     const deadlines=[];
-    h.context.setTimeout=(fn,ms)=>{ deadlines.push(ms); assert.ok(ms>0 && ms<=30000); return setTimeout(fn,Math.min(ms,5)); };
+    h.context.setTimeout=(fn,ms)=>{
+      deadlines.push(ms);
+      assert.ok(ms>0 && (ms<=30000 || ms===90000));
+      // The operation budget must outlive individual scaled source deadlines.
+      return setTimeout(fn,ms===90000?500:Math.min(ms,5));
+    };
     const pending=h.handlers['prepare-online-play']({}, {vid:'11',seriesId:'1',requestId:'timeout'});
     // Several scaled retries run here; Windows CI timer granularity is not the source timeout.
     const result=await Promise.race([pending,sleep(2000).then(()=>({unbounded:true}))]);
     await h.handlers['release-online-play']({}, {requestId:'timeout'});await pending;
     assert.ok(deadlines.includes(30000),'source lookup must retain its 30-second deadline');
+    assert.ok(deadlines.includes(90000),'recovery must retain its 90-second total budget');
     assert.ok(!result.unbounded,'source lookup never settled within its time budget');assert.equal(result.success,false);assert.equal(result.error,'当前内容暂时无法播放，请稍后重试。');
   });
   await check('removed Hema IDs fail before any recovery lookup', async () => {
@@ -326,6 +390,43 @@ function load(fetchPlayUrlSingle, overrides = {}) {
       assert.equal(calls.length, 1);
       assert.equal(calls[0].vid, provider.vid); assert.equal(calls[0].sid, provider.sid);
       assert.equal(calls[0].options.force, true);
+    });
+    await check(`${provider.source} known-expired HLS HTTP 403 refreshes the same episode exactly once`, async () => {
+      const calls = []; let remuxes = 0, expiredFailure;
+      const output = path.join(root, `expired-hls-${provider.source}.mp4`);
+      const h = harness(async (vid, sid, options) => {
+        calls.push({ vid, sid, options });
+        return { ...playInfo('/fresh.m3u8'), format: 'hls', expiresAt: Date.now() + 60000 };
+      }, { ...overrides, './src/native/hls-media': { remuxHls: async ({ output }) => {
+        if (++remuxes === 1) {
+          expiredFailure = Object.assign(new Error('expired HLS address'), { mediaStatus: 403 });
+          throw expiredFailure;
+        }
+        fs.writeFileSync(output, 'complete-media');
+      } } });
+      const expired = { ...playInfo('/expired.m3u8'), format: 'hls', expiresAt: Date.now() - 1000 };
+      const result = await h.context.withMediaRecovery(provider.vid, provider.sid, { playInfo: expired }, async (value, signal) => {
+        await h.context.prepareHlsFile(value, output, { signal });
+        return fs.readFileSync(output, 'utf8');
+      });
+      assert.equal(result, 'complete-media'); assert.equal(remuxes, 2); assert.equal(calls.length, 1);
+      assert.equal(calls[0].vid, provider.vid); assert.equal(calls[0].sid, provider.sid);
+      assert.equal(calls[0].options.force, true);
+      assert.equal(expiredFailure.stage, 'media'); assert.equal(expiredFailure.faultCode, 'MEDIA_URL_EXPIRED');
+    });
+    await check(`${provider.source} HLS HTTP 429 remains terminal even when its media address has expired`, async () => {
+      let lookups = 0, remuxes = 0;
+      const h = harness(async () => { lookups++; return playInfo('/fresh.m3u8'); }, {
+        ...overrides, './src/native/hls-media': { remuxHls: async () => {
+          remuxes++; throw Object.assign(new Error('HLS rate limited'), { mediaStatus: 429 });
+        } },
+      });
+      const expired = { ...playInfo('/limited.m3u8'), format: 'hls', expiresAt: Date.now() - 1000 };
+      expired.candidates = [{ ...playInfo('/fresh.m3u8'), format: 'hls' }];
+      await assert.rejects(h.context.withMediaRecovery(provider.vid, provider.sid, { playInfo: expired },
+        (value, signal) => h.context.prepareHlsFile(value, path.join(root, `limited-hls-${provider.source}.mp4`), { signal })),
+      error => error.faultCode === 'API_RATE_LIMITED' && error.mediaRetryable === false);
+      assert.equal(lookups, 0); assert.equal(remuxes, 1);
     });
     await check(`${provider.source} refreshed access denial stops before another media transfer`, async () => {
       let lookups = 0, transfers = 0;
@@ -371,6 +472,43 @@ function load(fetchPlayUrlSingle, overrides = {}) {
     await assert.rejects(h.context.withMediaRecovery(provider.vid, provider.sid, { playInfo: denied },
       value => h.context.prepareHlsFile(value, path.join(root, 'refused.mp4'))), /HLS refused/);
     assert.equal(lookups, 0); assert.equal(remuxes, 1);
+  });
+  for (const status of [401, 403, 429]) await check(`Hongguo HLS HTTP ${status} remains a terminal media refusal`, async () => {
+    let lookups = 0, remuxes = 0;
+    const denied = { ...info('/refused.m3u8'), format: 'hls', expiresAt: Date.now() + 60000 };
+    if (status === 429) denied.expiresAt = Date.now() - 1000;
+    denied.candidates = [{ ...info('/backup.m3u8'), format: 'hls' }];
+    const h = harness(async () => { lookups++; return denied; }, {
+      './src/native/hls-media': { remuxHls: async () => { remuxes++; throw Object.assign(new Error('HLS refused'), { response: { status } }); } },
+    });
+    const result = await h.handlers['prepare-online-play']({}, { vid: '11', seriesId: '1' });
+    assert.equal(result.success, false);
+    assert.equal(result.stage, 'media');
+    assert.equal(result.faultCode, status === 429 ? 'API_RATE_LIMITED' : 'API_FORBIDDEN');
+    assert.equal(lookups, 1, 'explicit refusal must not refresh the provider');
+    assert.equal(remuxes, 1, 'explicit refusal must not try a backup');
+  });
+  await check('Hongguo HLS expired address refreshes once and keeps the failure at the media layer', async () => {
+    const calls = []; let remuxes = 0, expiredFailure;
+    const h = harness(async (_vid, _sid, options) => {
+      calls.push(options);
+      return { ...info(calls.length === 1 ? '/expired.m3u8' : '/fresh.m3u8'), format: 'hls', expiresAt: Date.now() + (calls.length === 1 ? -1000 : 60000) };
+    }, {
+      './src/native/hls-media': { remuxHls: async ({ output }) => {
+        if (++remuxes === 1) {
+          expiredFailure = Object.assign(new Error('expired HLS address'), { mediaStatus: 403 });
+          throw expiredFailure;
+        }
+        fs.writeFileSync(output, 'complete-media');
+      } },
+    });
+    const result = await h.handlers['prepare-online-play']({}, { vid: '11', seriesId: '1' });
+    assert.equal(result.success, true, result.error);
+    assert.equal(calls.length, 2); assert.equal(calls[1].force, true);
+    assert.equal(remuxes, 2);
+    assert.equal(expiredFailure.stage, 'media');
+    assert.equal(expiredFailure.faultCode, 'MEDIA_URL_EXPIRED');
+    assert.equal(await (await h.protocols['hongguo-stream'](new Request(result.url))).text(), 'complete-media');
   });
   await check('unknown provider identities never acquire automatic refresh', async () => {
     let lookups = 0;

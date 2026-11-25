@@ -1,8 +1,8 @@
 {
   "name": "hongguo-downloader",
-  "version": "6.33.0",
+  "version": "6.34.0",
   "description": "红果短剧播放与下载",
-  "main": "main.js",
+  "main": "src/native/app-entry.cjs",
   "license": "GPL-3.0",
   "scripts": {
     "start": "electron .",
@@ -22,6 +22,7 @@
     "test": "node scripts/test.cjs"
   },
   "dependencies": {
+    "@xmldom/xmldom": "0.8.15",
     "anime4k-webgpu": "1.0.0",
     "axios": "1.21.1",
     "electron-updater": "6.8.11"
@@ -80,7 +81,7 @@
       "!**/*.map"
     ],
     "asar": true,
-    "artifactName": "hongguo-downloader-6.33-${os}-${arch}.${ext}",
+    "artifactName": "hongguo-downloader-6.34-${os}-${arch}.${ext}",
     "win": {
       "target": [
         {
@@ -125,15 +126,16 @@
       ]
     },
     "portable": {
-      "artifactName": "${productName}-6.33-便携版.${ext}"
+      "artifactName": "${productName}-6.34-便携版.${ext}"
     },
     "nsis": {
+      "include": "build/account-uninstall.nsh",
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "红果短剧下载器",
-      "artifactName": "hongguo-downloader-6.33-win-x64-setup.${ext}"
+      "artifactName": "hongguo-downloader-6.34-win-x64-setup.${ext}"
     },
     "mac": {
       "target": [

@@ -90,9 +90,10 @@ if (process.argv[2] !== 'main') {
     const ui = mount({ props: { target: { seriesId: 'A', vidIndex: 1, ts: 1 } } });
     try {
       await ui.flush(); assert.equal(ui.prepares[0].quality, '1080p');
+      assert.equal(ui.prepares[0].allowLowerQuality, true, 'automatic playback must authorize the native verified public fallback');
       assert.match(text(select(ui)), /1080[Pp]/);
       ui.metadata(); await ui.flush();
-      assert(ui.prepares.some(p => p.prefetch && p.quality === '1080p'));
+      assert(ui.prepares.some(p => p.prefetch && p.quality === '1080p' && p.allowLowerQuality === true));
     } finally { ui.unmount(); }
   });
   await check('online diagnostics distinguish source, media data, decode and submitted first frame', async () => {
@@ -122,6 +123,7 @@ if (process.argv[2] !== 'main') {
     } finally { ui.unmount(); }
   });
   await check('failed online playback retains only sanitized, collapsible route diagnostics', async () => {
+    let downloads = 0;
     const diagnostics = {
       source: 'app', stage: 'source', code: 'EMPTY_RESPONSE',
       routes: [{ source: 'web', attempted: true, status: 'failed', code: 'PREVIEW_ONLY',
@@ -132,7 +134,7 @@ if (process.argv[2] !== 'main') {
     };
     const ui = mount({ props: { target: { seriesId: 'A', vidIndex: 1, ts: 1 } },
       prepare: async () => ({ success: false, error: '当前内容暂时无法播放，请稍后重试。', code: 'SOURCE_UNAVAILABLE', diagnostics }),
-      apiOverrides: { downloadSingleEpisode: async () => ({ success: false, error: 'private filesystem detail' }) } });
+      apiOverrides: { downloadSingleEpisode: async () => { downloads++; return { success: false, error: 'private filesystem detail' }; } } });
     try {
       await ui.flush();
       const details = ui.find(n => n.type === 'details' && n.props.className === 'player-diagnostics');
@@ -140,7 +142,9 @@ if (process.argv[2] !== 'main') {
       assert.match(text(details), /官网公开播放：失败/);
       assert.match(text(details), /App 播放接口：失败/);
       assert.doesNotMatch(ui.text(), /private\.invalid|signature=secret|token=secret|private filesystem detail/);
-      assert.match(text(alert(ui)), /备用下载任务未能提交/);
+      assert.match(text(alert(ui)), /官方播放接口返回空响应/);
+      assert.equal(downloads, 0, 'an empty API response cannot be repaired by submitting the same episode as a download');
+      assert.equal(ui.prepares.length, 1, 'the native resolver already owns empty-response recovery');
     } finally { ui.unmount(); }
   });
   for (const failure of ['response', 'throw']) await check(`${failure} 1080 preparation failure automatically selects 720 without downloading`, async () => {
@@ -306,7 +310,8 @@ if (process.argv[2] !== 'main') {
   await check('remembered explicit quality skips unverified files and third-party keeps automatic playback',async()=>{
     const storage=new Map([['hongguo:online-quality','1080p']]);
     const ui=mount({local:true,storage}); await ui.flush();
-    assert.equal(ui.prepares.at(-1)?.quality,'1080p'); ui.unmount();
+    assert.equal(ui.prepares.at(-1)?.quality,'1080p');
+    assert.equal(ui.prepares.at(-1)?.allowLowerQuality,false,'manual quality must remain strict'); ui.unmount();
     const third=mount({local:true,storage,seriesId:'xifan:A'}); await third.flush();
     assert(select(third).props.disabled); assert.equal(select(third).props.value,'auto');
     assert.equal(third.find(n=>n.type==='video').props.src,'file:///mock-1.mp4'); third.unmount();
@@ -357,6 +362,20 @@ if (process.argv[2] !== 'main') {
       assert.deepEqual(Array.from(h.calls,c=>c[2].quality),['auto','720p','1080p']); assert.equal(h.run('onlineCache.size'),3);
       assert.equal((await h.handlers['prepare-online-play']({}, {vid:'11',quality:'bogus'})).success,false);
       assert.equal((await h.handlers['prepare-online-play']({}, {vid:'xifan:11',quality:'1080p'})).success,false);
+      h.context.clearOnlineCache();
+    });
+    await check('automatic preferred-quality IPC passes fallback policy and cannot reuse the strict-quality cache', async () => {
+      const h = fixture();
+      const base = { vid: '11', seriesId: '1', vidIndex: 1, quality: '1080p', prefetch: true };
+      const results = await Promise.all([
+        h.handlers['prepare-online-play']({}, base),
+        h.handlers['prepare-online-play']({}, { ...base, allowLowerQuality: true }),
+      ]);
+      assert.ok(results.every(result => result.success));
+      assert.equal(h.calls.length, 2, 'strict and automatic jobs must remain separate');
+      assert.deepEqual(Array.from(h.calls, call => call[2].allowLowerQuality).sort(), [false, true]);
+      assert.equal(h.run("onlineCache.get('11:1080p').quality"), '1080p');
+      assert.equal(h.run("onlineCache.get('11:1080p:lower-quality').quality"), 'auto', 'automatic refresh must retain public-source eligibility');
       h.context.clearOnlineCache();
     });
     await check('explicit-quality complete cache survives upstream failure during download fallback',async()=>{

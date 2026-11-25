@@ -41,7 +41,9 @@
 
 Windows x64 NSIS 安装版检查 GitHub 正式版本。自 6.32 起，下载完成并核对官方文件大小、SHA-256 和 SHA-512 后，由你选择何时重启安装；旧客户端继续使用各自原有的更新流程。开发版、预览版和便携版可从 GitHub 发布页手动下载安装。详见 [应用内更新指南](docs/AUTO_UPDATE.md)。
 
-6.32 已正式发布，增加更新安装包的 GH-Proxy 备用下载、断点续传与下载线路显示；GitHub 官方线路仍优先，元数据继续从官方获取。两个 GH-Proxy 域名属于同一服务，验证范围见 [6.32 发行记录](docs/release-6.32.md)。
+6.33 已正式发布，完成桌面运行环境与配套依赖维护，继续保留 GitHub 官方优先、GH-Proxy 备用下载和完整性校验。两个 GH-Proxy 域名属于同一服务，网络验证范围见 [6.32 发行记录](docs/release-6.32.md)。
+
+当前源码目标为 6.34，新增统一账号与播放调度、有限故障恢复和设置页「播放诊断」。App 播放接口空响应仍在复现；新增官网线路仅接受官方明确公开且完整时长校验通过的分集。真实验收进度与限制见 [播放稳定性记录](docs/playback-stability.md)，尚未完成的桌面验收不作为正式发行结论。
 
 | 平台 | 发现与搜索 | 播放与本地剧库 | 下载和 NAS 导出 | 应用内更新 |
 |---|---|---|---|---|
@@ -53,9 +55,9 @@ Windows x64 NSIS 安装版检查 GitHub 正式版本。自 6.32 起，下载完�
 
 <!-- github-release:start -->
 
-**[v6.32](https://github.com/yuchen0x1/HongGuo-PC/releases/tag/v6.32)** · 2026-11-25
+**[v6.33](https://github.com/yuchen0x1/HongGuo-PC/releases/tag/v6.33)** · 2026-11-25
 
-优化应用内更新下载：GitHub 官方连接失败、超时或持续低速时，自动尝试 GH-Proxy 备用线路；更新窗口显示当前下载线路。
+本次更新维护桌面运行环境、渲染框架和更新组件，解决依赖升级中的配套兼容问题。继续支持 Windows x64 安装版应用内更新，默认浅色及已保存的主题偏好保持不变。
 
 [全部发行记录](https://github.com/yuchen0x1/HongGuo-PC/releases)
 
@@ -66,6 +68,8 @@ Windows x64 NSIS 安装版检查 GitHub 正式版本。自 6.32 起，下载完�
 ### 故障排查
 
 设置 → 配置文件位置中提供“导出诊断信息”。导出的 JSON 只包含版本、运行状态、任务统计、存储状态、代理模式和 FFmpeg 可用性；不会包含代理密码、签名媒体地址或本地绝对路径。提交前仍请检查文件内容并移除你不希望分享的业务信息。
+
+6.34 源码另在设置中提供独立「播放诊断」，可检查账号、测试播放连接并导出脱敏报告；取源、媒体加载和首帧播放分别记账。报告不包含完整 Cookie、账号和设备标识、签名密钥或完整媒体地址。
 
 维护状态与路线图见 [维护看板](docs/maintenance.md) 和 [升级清单](UPGRADE_ROADMAP.md)。开发者可查看 [贡献指南](CONTRIBUTING.md)、[架构审计](PROJECT_AUDIT.md) 与 [竞品研究](COMPETITOR_ANALYSIS.md)。
 
@@ -270,7 +274,7 @@ npm run build:installer       # 构建 Windows x64 NSIS 安装程序
 <details>
 <summary><b>发版记录</b></summary>
 
-每个版本的变更、验证范围与已知限制见 `docs/release-*.md`；当前正式发行见 [release-6.32.md](docs/release-6.32.md)。
+每个版本的变更、验证范围与已知限制见 `docs/release-*.md`；当前正式发行见 [release-6.33.md](docs/release-6.33.md)，6.34 开发验收见 [播放稳定性记录](docs/playback-stability.md)。
 
 </details>
 

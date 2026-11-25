@@ -9,14 +9,16 @@ const videoEnhancementStub = {
   useVideoEnhancement: () => ({ mode: 'original', strength: 50, update() {}, status: {}, setStatus() {} }),
 };
 const shortcutSource = transformSync(fs.readFileSync(path.join(__dirname, '../src/shortcuts.js'), 'utf8'), { loader: 'js', format: 'cjs' }).code;
+const recoverySource = transformSync(fs.readFileSync(path.join(__dirname, '../src/components/playbackRecovery.mjs'), 'utf8'), { loader: 'js', format: 'cjs' }).code;
 const source = transformSync(fs.readFileSync(path.join(__dirname, '../src/components/Player.jsx'), 'utf8'), { loader: 'jsx', format: 'cjs' }).code;
 
-function mount({ local = false, localIndexes = [], localQuality, saved = null, transcode, prepare, props = {}, episodeCount = 2, storage = new Map(), seriesId = 'A', settings = {}, lockedIndexes = [], apiOverrides = {}, now = () => Date.now() } = {}) {
+function mount({ local = false, localIndexes = [], localQuality, saved = null, transcode, prepare, props = {}, episodeCount = 2, storage = new Map(), seriesId = 'A', settings = {}, lockedIndexes = [], apiOverrides = {}, now = () => Date.now(), networkOnline = true } = {}) {
   // Playback fixtures model an explicit play command; target:null exercises passive library entry.
   props = { setEpisodesOpen() {}, ...((local || saved) ? { target: { seriesId, resume: true, ts: 1 } } : {}), ...props };
   const slots = [], effects = [], cleanups = [], saves = [], prepares = [], transcodes = [], cancelled = [];
   const releases = [], settingsSaved = [], historyListeners = new Set();
   const playbackDiagnosticListeners = new Set();
+  const reports = [], navigator = { onLine: networkOnline };
   const events = new Map(), mediaEvents = new Map(), timers = new Map();
   const listenerOptions = new Map(), mediaCalls = { play: 0, pause: 0 };
   const documentEvents = new Map();
@@ -68,6 +70,7 @@ function mount({ local = false, localIndexes = [], localQuality, saved = null, t
     getSeriesEpisodes: async () => ({ success: true, data: { series_id: seriesId, series_title: '测试剧', total: episodeCount, episodes } }),
     getPlaybackPosition: async () => saved,
     savePlaybackPosition: async (...args) => saves.push(args),
+    reportPlaybackState: async payload => reports.push(payload),
     onWatchHistoryUpdated: listener => { historyListeners.add(listener); return () => historyListeners.delete(listener); },
     prepareOnlinePlay: async p => { prepares.push(p); return prepare ? prepare(p) : { success: true, url: `hongguo-stream://mock-${prepares.length}` }; },
     onOnlinePlayDiagnostics: listener => {
@@ -93,8 +96,11 @@ function mount({ local = false, localIndexes = [], localQuality, saved = null, t
   const popupDocument = { ...document, defaultView: floatingWindow };
   const shortcutModule = { exports: {} };
   vm.runInNewContext(shortcutSource, { module: shortcutModule, exports: shortcutModule.exports, window, Event });
+  const RecoveryDate = class extends Date { static now() { return now(); } };
+  const recoveryModule = { exports: {} };
+  vm.runInNewContext(recoverySource, { module: recoveryModule, exports: recoveryModule.exports, Date: RecoveryDate });
   const setTimer = (fn, delay) => { const id = ++timerId; timers.set(id, { fn, delay }); return id; };
-  const context = { module: { exports: {} }, Date: class extends Date { static now() { return now(); } }, require: n => n === 'react-dom' ? { createPortal: children => children } : n === './useFloatingPlayer' ? { __esModule: true, default: () => ({ host: {}, attachSlot() {}, floating, toggle() { floating = !floating; stage.ownerDocument = floating ? popupDocument : document; render(); } }) } : n === 'react' ? react : n === './useDialogKeyboard' ? () => {} : n === '../shortcuts' ? shortcutModule.exports : n === './VideoEnhancement' ? videoEnhancementStub : n === './danmakuSource.mjs' ? { useDanmakuSource: () => 'official', writeDanmakuSource() {} } : n === './OfficialDanmaku' ? { useOfficialDanmaku: ({ preferences, active }) => ({ ...preferences, active }) } : n === './CommentDanmaku' ? { useCommentDanmaku: () => ({ enabled: false, settings: {}, comments: [] }) } : {}, window, document, navigator: {}, crypto: require('node:crypto').webcrypto, setTimeout: setTimer, clearTimeout: id => timers.delete(id), setInterval: setTimer, clearInterval: id => timers.delete(id), requestAnimationFrame: fn => setTimer(fn, 0), cancelAnimationFrame: id => timers.delete(id), console };
+  const context = { module: { exports: {} }, Date: RecoveryDate, require: n => n === 'react-dom' ? { createPortal: children => children } : n === './useFloatingPlayer' ? { __esModule: true, default: () => ({ host: {}, attachSlot() {}, floating, toggle() { floating = !floating; stage.ownerDocument = floating ? popupDocument : document; render(); } }) } : n === 'react' ? react : n === './useDialogKeyboard' ? () => {} : n === '../shortcuts' ? shortcutModule.exports : n === './playbackRecovery.mjs' ? recoveryModule.exports : n === './VideoEnhancement' ? videoEnhancementStub : n === './danmakuSource.mjs' ? { useDanmakuSource: () => 'official', writeDanmakuSource() {} } : n === './OfficialDanmaku' ? { useOfficialDanmaku: ({ preferences, active }) => ({ ...preferences, active }) } : n === './CommentDanmaku' ? { useCommentDanmaku: () => ({ enabled: false, settings: {}, comments: [] }) } : {}, window, document, navigator, crypto: require('node:crypto').webcrypto, setTimeout: setTimer, clearTimeout: id => timers.delete(id), setInterval: setTimer, clearInterval: id => timers.delete(id), requestAnimationFrame: fn => setTimer(fn, 0), cancelAnimationFrame: id => timers.delete(id), console };
   context.exports = context.module.exports;
   vm.runInNewContext(source, context);
   const nodes = () => { const out = []; const walk = n => { if (!n || typeof n !== 'object') return; out.push(n); n.children?.forEach(walk); }; walk(tree); return out; };
@@ -109,7 +115,7 @@ function mount({ local = false, localIndexes = [], localQuality, saved = null, t
     else for (const slot of slots) if (slot?.current === media) slot.current = null;
     effects.splice(0).forEach(fn => fn()); return tree;
   };
-  const flush = async () => { for (let i = 0; i < 30; i++) { await Promise.resolve(); render(); } };
+  const flush = async () => { for (let i = 0; i < 60; i++) { await Promise.resolve(); render(); } };
   const metadata = () => { media.readyState = 1; media.currentSrc = media.src; find(n => n.type === 'video')?.props.onLoadedMetadata?.({ currentTarget: media }); mediaEvents.get('loadedmetadata')?.(); };
   // Follow DOM propagation order; targetAction models a focused control's own listener.
   const dispatchKey = (type, init, targetAction) => {
@@ -126,7 +132,7 @@ function mount({ local = false, localIndexes = [], localQuality, saved = null, t
   };
   render();
   return { props, render, flush, find, media, metadata, saves, prepares, transcodes, cancelled, events, timers, listenerOptions, mediaCalls, document, dispatchKey,
-    releases, settingsSaved, stage, scrollArea, mediaEvents,
+    releases, reports, navigator, settingsSaved, stage, scrollArea, mediaEvents,
     text: () => text(tree),
     presentFrame: () => {
       const first = frameCallbacks.entries().next().value;

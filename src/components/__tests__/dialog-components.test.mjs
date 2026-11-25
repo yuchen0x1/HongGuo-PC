@@ -73,8 +73,14 @@ const role = (ui, value) => ui.find(node => node.props.role === value);
 test('player and download confirmation dialogs start on Cancel instead of an operation', () => {
   for (const name of ['Player', 'DownloadManager']) {
     const source = fs.readFileSync(new URL(`../${name}.jsx`, import.meta.url), 'utf8');
-    const cancelActions = [...source.matchAll(/<button[^>]*data-dialog-initial-focus/g)];
-    assert.equal(cancelActions.length, 2, `${name}: merge and confirmation dialogs direct initial focus to Cancel`);
+    const footers = [...source.matchAll(/<div className="player-confirm-foot">([\s\S]*?)<\/div>/g)];
+    assert.equal(footers.length, 2, `${name}: merge and confirmation dialogs retain their action groups`);
+    for (const [, footer] of footers) {
+      const initialActions = [...footer.matchAll(/<button\b[\s\S]*?<\/button>/g)]
+        .map(([button]) => button).filter(button => button.includes('data-dialog-initial-focus'));
+      assert.equal(initialActions.length, 1, `${name}: each confirmation has exactly one initial focus target`);
+      assert.match(initialActions[0], />\s*取消\s*<\/button>$/, `${name}: initial focus targets Cancel instead of an operation`);
+    }
   }
 });
 

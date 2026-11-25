@@ -6,9 +6,10 @@ function createMediaAccess(devUrl) {
   const devOrigin = devUrl ? new URL(devUrl).origin : '';
   const allowed = origin => origin === 'null' || origin === 'file://' || (!!devOrigin && origin === devOrigin);
   return {
-    localUrl(file) {
+    localUrl(file, { refresh = false } = {}) {
       const resolved = path.resolve(String(file));
-      if (!ids.has(resolved)) { const id = randomUUID(); ids.set(resolved, id); files.set(id, resolved); }
+      // Keep existing capabilities valid for readers while an explicit retry gets a fresh resource.
+      if (refresh || !ids.has(resolved)) { const id = randomUUID(); ids.set(resolved, id); files.set(id, resolved); }
       return `hongguo-local://f/${ids.get(resolved)}`;
     },
     resolveLocal(value) {

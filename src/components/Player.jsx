@@ -11,7 +11,10 @@ import CommunityPanel from './CommunityPanel';
 import SequelFinder from './SequelFinder';
 import NasDownload from './NasDownload';
 import CastPanel from './CastPanel';
+import AccountManagement from './AccountManagement';
 import VideoEnhancement, { useVideoEnhancement } from './VideoEnhancement';
+import { PLAYBACK_FAULT_CODES, playbackFaultCode, playbackFaultMessage, stopsPlaybackRecovery, allowsQualityFallback,
+  createPlaybackRecovery, remainingPlaybackRecovery, claimPlaybackRecovery, shouldOfferAccountLogin } from './playbackRecovery.mjs';
 import './Player.css';
 import { Play, Film, Download, Check, RefreshCw, Layers, X, Trash2, ChevronDown, Zap } from './icons';
 
@@ -24,13 +27,13 @@ const PREFETCH_AHEAD = 2;
 const AUTO_ONLINE_QUALITIES = ['1080p', '720p', 'auto'];
 const PLAYBACK_PREFERENCES_KEY = 'hongguo:playback-preferences';
 const PLAYBACK_SOURCES = new Set(['web', 'app', 'api', 'xifan', 'custom']);
-const PLAYBACK_STAGES = new Set(['source', 'media', 'decode', 'first-frame']);
+const PLAYBACK_STAGES = new Set(['source', 'media', 'decrypt', 'decode', 'first-frame']);
 const PLAYBACK_ROUTE_STATUSES = new Set(['skipped', 'failed', 'address-found', 'media-failed', 'ready']);
 const PLAYBACK_CODES = new Set(['ACCOUNT_REQUIRED', 'ABORT_ERR', 'BUSINESS_REJECTED', 'DEVICE_REGISTRATION_FAILED',
   'EMPTY_RESPONSE', 'ERR_CANCELED', 'ERR_NETWORK', 'ERR_WEB_MEDIA_ADDRESS', 'INVALID_RESPONSE',
   'LOCAL_MEDIA_TOOL_ERROR', 'MEDIA_DECODE_ERROR', 'MEDIA_TOO_LARGE', 'MEDIA_TRANSFER_ERROR', 'MISSING_MODEL',
   'NETWORK_ERROR', 'NO_COMPATIBLE_SOURCE', 'NO_PLAYABLE_SOURCE', 'PREVIEW_ONLY', 'QUALITY_UNAVAILABLE', 'TRANSCODE_FAILED',
-  'SECURITY_BLOCKED', 'SOURCE_REMOVED', 'SOURCE_UNAVAILABLE', 'TIMEOUT']);
+  'SECURITY_BLOCKED', 'SOURCE_REMOVED', 'SOURCE_UNAVAILABLE', 'TIMEOUT', ...PLAYBACK_FAULT_CODES]);
 const PLAYBACK_SOURCE_LABELS = {
   web: '官网公开播放', app: 'App 播放接口', api: '旧播放接口', xifan: '西饭来源',
   custom: '自定义来源', unknown: '未知来源',
@@ -39,7 +42,7 @@ const PLAYBACK_STATUS_LABELS = {
   skipped: '未尝试', failed: '失败', 'address-found': '已取得媒体地址',
   'media-failed': '媒体读取失败', ready: '媒体可用',
 };
-const PLAYBACK_STAGE_LABELS = { source: '取源', media: '媒体读取', decode: '解码', 'first-frame': '首帧' };
+const PLAYBACK_STAGE_LABELS = { source: '取源', media: '媒体读取', decrypt: '解密', decode: '解码', 'first-frame': '首帧' };
 const PLAYBACK_CHECK_LABELS = { 'not-tested': '未确认', passed: '通过', failed: '失败' };
 const PLAYBACK_READ_LABELS = {
   'not-requested': '尚未读取', partial: '已读取部分媒体', complete: '媒体读取完成',
@@ -75,7 +78,8 @@ function normalizePlaybackDiagnostics(value) {
   const mediaRead = Object.hasOwn(PLAYBACK_READ_LABELS, value.mediaRead) ? value.mediaRead : 'not-requested';
   const check = item => PLAYBACK_CHECK_LABELS[item] ? item : 'not-tested';
   const code = PLAYBACK_CODES.has(value.code) || /^HTTP_[345]\d{2}$/.test(value.code || '') ? value.code : '';
-  return { stage, source, mediaRead, mediaDecoded: check(value.mediaDecoded), firstFrame: check(value.firstFrame), code, routes };
+  const faultCode = playbackFaultCode(value);
+  return { stage, source, mediaRead, mediaDecoded: check(value.mediaDecoded), firstFrame: check(value.firstFrame), code, faultCode, routes };
 }
 function updateRendererPlaybackDiagnostics(value, fields = {}, routeFields = {}) {
   const current = normalizePlaybackDiagnostics(value);
@@ -101,6 +105,7 @@ function playbackDiagnosticDetails(diagnostics) {
     <div>媒体读取：{PLAYBACK_READ_LABELS[value.mediaRead] || '未知'}</div>
     <div>解码：{PLAYBACK_CHECK_LABELS[value.mediaDecoded] || '未确认'} · 首帧：{PLAYBACK_CHECK_LABELS[value.firstFrame] || '未确认'}</div>
     {value.code && <div>状态码：{value.code}</div>}
+    {value.faultCode && value.faultCode !== value.code && <div>故障类型：{value.faultCode}</div>}
     {value.routes.length > 0 && <ul>
       {value.routes.map((route, index) => <li key={`${route.source}-${index}`}>
         {PLAYBACK_SOURCE_LABELS[route.source] || PLAYBACK_SOURCE_LABELS.unknown}：{PLAYBACK_STATUS_LABELS[route.status] || '未知'}
@@ -210,6 +215,9 @@ function Player({ target, onNavigate, onSeriesSelected, onFloatingChange, active
   const [decodeFailed, setDecodeFailed] = useState(false);    // 当前集解不出画面
   const [playbackError, setPlaybackError] = useState('');
   const [playbackDiagnostics, setPlaybackDiagnostics] = useState(null);
+  const [accountLoginPrompt, setAccountLoginPrompt] = useState(null);
+  const accountPromptedRef = useRef(new Set());
+  const accountResumeRef = useRef(null);
   const [playbackVersion, setPlaybackVersion] = useState(0);
   const [playbackRequested, setPlaybackRequested] = useState(false);
   const [compatCache, setCompatCache] = useState({ files: 0, bytes: 0 });
@@ -271,6 +279,17 @@ function Player({ target, onNavigate, onSeriesSelected, onFloatingChange, active
   const fallbackRef = useRef(null);
   const fallbackAttemptRef = useRef(null);
   const rejectedLocalRef = useRef(null);
+  const recoveryBudgetRef = useRef(null);
+  const networkResumeRef = useRef(null);
+  const nativeFailureHandlerRef = useRef(null);
+  const [waitingForNetwork, setWaitingForNetwork] = useState(false);
+  const reportPlaybackState = useCallback((fields, request = onlineRequestRef.current) => {
+    if (!request?.requestId) return;
+    try {
+      Promise.resolve(window.electronAPI.reportPlaybackState?.({ requestId: request.requestId,
+        streamId: request.streamId, recoveryCount: recoveryBudgetRef.current?.attempts || 0, ...fields })).catch(() => {});
+    } catch {}
+  }, []);
   const updatePlaybackDiagnostics = useCallback((fields = {}, routeFields = {}) => {
     setPlaybackDiagnostics(previous => updateRendererPlaybackDiagnostics(previous, fields, routeFields));
   }, []);
@@ -321,6 +340,7 @@ function Player({ target, onNavigate, onSeriesSelected, onFloatingChange, active
   const releaseOnline = useCallback(() => {
     const request = onlineRequestRef.current;
     onlineRequestRef.current = null;
+    request?.cancelWait?.();
     if (request) return window.electronAPI.releaseOnlinePlay({ requestId: request.requestId, streamId: request.streamId }).catch(() => {});
   }, []);
 
@@ -335,6 +355,30 @@ function Player({ target, onNavigate, onSeriesSelected, onFloatingChange, active
     prefetchFailureRef.current.clear();
     for (const request of requests) releasePrefetchRequest(request);
   }, [releasePrefetchRequest]);
+
+  const waitForPrepared = useCallback((operation, request) => new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (done, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (request.cancelWait === cancel) delete request.cancelWait;
+      done(value);
+    };
+    const cancel = () => finish(reject, Object.assign(new Error('已取消播放'), { code: 'ERR_CANCELED' }));
+    const timer = setTimeout(() => {
+      window.electronAPI.releaseOnlinePlay({ requestId: request.requestId, streamId: request.streamId }).catch(() => {});
+      finish(reject, Object.assign(new Error('播放准备超时'), { faultCode: 'NETWORK_TIMEOUT' }));
+    }, Math.max(1, remainingPlaybackRecovery(recoveryBudgetRef.current)));
+    request.cancelWait = cancel;
+    Promise.resolve(operation).then(result => {
+      if (settled) {
+        if (result?.streamId) window.electronAPI.releaseOnlinePlay({ requestId: request.requestId, streamId: result.streamId }).catch(() => {});
+        return;
+      }
+      finish(resolve, result);
+    }, error => finish(reject, error));
+  }), []);
 
   const prunePrefetchAfter = useCallback((seriesId, vidIndex, quality, consumed = null) => {
     const kept = [];
@@ -360,6 +404,8 @@ function Player({ target, onNavigate, onSeriesSelected, onFloatingChange, active
 
   const resetPlayback = useCallback((autoplay = true, preservePrefetch = false) => {
     fallbackRef.current = null;
+    networkResumeRef.current = null;
+    setWaitingForNetwork(false);
     setPlaybackRequested(true);
     pendingAutoplayRef.current = autoplay && activeRef.current && !bossHiddenRef.current;
     setAutoAdvancing(false);
@@ -395,6 +441,48 @@ function Player({ target, onNavigate, onSeriesSelected, onFloatingChange, active
     setPlaybackError(message);
   };
 
+  const endFailedPlayback = useCallback((message, diagnostics = null, faultCode = '') => {
+    const seekTo = currentPosition();
+    accountResumeRef.current = { seekTo,
+      autoplay: loadedMediaRef.current ? !loadedMediaRef.current.element.paused : pendingAutoplayRef.current };
+    reportPlaybackState({ event: 'failure', stage: diagnostics?.stage || 'media',
+      mediaStatus: 'failed', faultCode });
+    resetPlayback(false);
+    pendingSeekRef.current = seekTo;
+    setWaitingFor(null);
+    setPlaybackError(playbackFaultMessage(faultCode, message));
+    setPlaybackDiagnostics(normalizePlaybackDiagnostics({ ...(diagnostics || {}), faultCode }));
+  }, [currentPosition, resetPlayback, reportPlaybackState]);
+
+  useEffect(() => {
+    if (!playbackError || !playbackActive || !activeSeriesId || waitingFor != null || onlineProgress) return;
+    const key = `${selectionVersion.current}:${activeSeriesId}:${currentIndex}`;
+    if (accountPromptedRef.current.has(key)) return;
+    let cancelled = false;
+    const version = mediaVersion.current;
+    const failure = { ...playbackDiagnostics, seriesId: activeSeriesId };
+    Promise.resolve(window.electronAPI.getAccountStatus?.()).then(account => {
+      if (cancelled || version !== mediaVersion.current || !shouldOfferAccountLogin(failure, account)) return;
+      accountPromptedRef.current.add(key);
+      setAccountLoginPrompt({ seriesId: activeSeriesId, vidIndex: currentIndex, version, navigation: navigationVersion.current,
+        ...(accountResumeRef.current || { seekTo: currentPosition(), autoplay: false }) });
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [playbackError, playbackDiagnostics, playbackActive, activeSeriesId, currentIndex, waitingFor, onlineProgress, currentPosition]);
+
+  useEffect(() => {
+    setAccountLoginPrompt(null);
+    accountResumeRef.current = null;
+  }, [activeSeriesId, currentIndex]);
+
+  useDialogKeyboard(!!accountLoginPrompt, () => setAccountLoginPrompt(null), '.account-playback-login-dialog', stageRef.current?.ownerDocument);
+
+  const claimRecovery = useCallback((expectedKey = '') => {
+    const key = expectedKey || `${selectedSeriesRef.current}:${stateRef.current.currentIndex}`;
+    if (recoveryBudgetRef.current?.key !== key) recoveryBudgetRef.current = createPlaybackRecovery(key);
+    return claimPlaybackRecovery(recoveryBudgetRef.current);
+  }, []);
+
   useEffect(() => () => {
     persistPosition(true);
     selectionVersion.current++;
@@ -413,6 +501,10 @@ function Player({ target, onNavigate, onSeriesSelected, onFloatingChange, active
     if (toastTimer.current) clearTimeout(toastTimer.current);
     toastTimer.current = setTimeout(() => setToast(null), 3000);
   }, []);
+
+  useEffect(() => window.electronAPI.onAccountUpdated?.(status => {
+    if (status?.faultCode === 'ACCOUNT_EXPIRED') showToast(playbackFaultMessage('ACCOUNT_EXPIRED'), 'error');
+  }), [showToast]);
 
   const savePlaybackPreferences = useCallback(() => {
     try { window.localStorage.setItem(PLAYBACK_PREFERENCES_KEY, JSON.stringify({ rate: preferredRateRef.current, volume: volumeRef.current, muted: mutedRef.current })); }
@@ -450,10 +542,10 @@ function Player({ target, onNavigate, onSeriesSelected, onFloatingChange, active
   }, []);
 
   // 载入某剧的分集状态
-  const loadDetail = useCallback(async (seriesId) => {
+  const loadDetail = useCallback(async (seriesId, options) => {
     if (!seriesId) return null;
     const version = selectionVersion.current;
-    const res = await window.electronAPI.getSeriesEpisodes(seriesId)
+    const res = await window.electronAPI.getSeriesEpisodes(seriesId, options)
       .catch(error => ({ success: false, error: error.message }));
     if (version !== selectionVersion.current || String(seriesId) !== selectedSeriesRef.current) return null;
     if (!res?.success) {
@@ -483,7 +575,16 @@ function Player({ target, onNavigate, onSeriesSelected, onFloatingChange, active
     && intent.selection === selectionVersion.current && intent.media === mediaVersion.current
     && intent.seriesId === selectedSeriesRef.current && intent.vidIndex === stateRef.current.currentIndex, []);
 
-  const recoverOnlineFailure = useCallback(async (ep, message, diagnostics = null) => {
+  const recoverOnlineFailure = useCallback(async (ep, message, diagnostics = null, failure = null) => {
+    const faultCode = playbackFaultCode(failure || diagnostics);
+    if (stopsPlaybackRecovery(faultCode) || faultCode && !allowsQualityFallback({ faultCode })) {
+      endFailedPlayback(message, diagnostics, faultCode);
+      return;
+    }
+    if (!claimRecovery(`${selectedSeriesRef.current}:${ep.vid_index}`)) {
+      endFailedPlayback('本集自动恢复次数或等待时间已达上限，请手动重试。', diagnostics, faultCode);
+      return;
+    }
     const seekTo = currentPosition();
     const autoplay = loadedMediaRef.current ? !loadedMediaRef.current.element.paused : pendingAutoplayRef.current;
     resetPlayback(autoplay);
@@ -526,7 +627,7 @@ function Player({ target, onNavigate, onSeriesSelected, onFloatingChange, active
       fallbackRef.current = null;
       setWaitingFor(null); setPlaybackError(`${message}；备用下载任务未能提交，请稍后在下载管理中查看或重试。`);
     }
-  }, [currentPosition, resetPlayback, loadDetail, isCurrentFallback, usableLocal, resumeLocal]);
+  }, [currentPosition, resetPlayback, loadDetail, isCurrentFallback, usableLocal, resumeLocal, endFailedPlayback, claimRecovery]);
 
   const refreshOnlineCacheInfo = useCallback(async () => {
     try {
@@ -688,7 +789,9 @@ function Player({ target, onNavigate, onSeriesSelected, onFloatingChange, active
       const request = onlineRequestRef.current;
       if (!request || !request.prepared
         || data.requestId !== request.requestId || data.streamId !== request.streamId) return;
-      setPlaybackDiagnostics(normalizePlaybackDiagnostics(data.diagnostics));
+      const diagnostics = normalizePlaybackDiagnostics({ ...data.diagnostics, faultCode: data.faultCode || data.diagnostics?.faultCode });
+      setPlaybackDiagnostics(diagnostics);
+      if (diagnostics?.faultCode) nativeFailureHandlerRef.current?.(diagnostics);
     });
   }, []);
 
@@ -830,15 +933,30 @@ function Player({ target, onNavigate, onSeriesSelected, onFloatingChange, active
 
   useEffect(() => {
     const video = videoRef.current;
-    if (!video || !canPlay || !isOnlinePlaying || videoSrc !== onlineUrl
+    const request = onlineRequestRef.current;
+    if (loading || !video || !canPlay
       || playbackVersion !== mediaVersion.current || !video.requestVideoFrameCallback) return undefined;
     const version = playbackVersion;
     const frame = video.requestVideoFrameCallback(() => {
       if (version !== mediaVersion.current || videoRef.current !== video || video.currentSrc !== videoSrc) return;
+      if (request?.prepared && onlineRequestRef.current !== request) return;
+      // Healthy playback ends the initial load deadline; actual recovery keeps its shared budget.
+      if (recoveryBudgetRef.current?.attempts === 0) recoveryBudgetRef.current = null;
+      if (!request?.prepared) return;
       updatePlaybackDiagnostics({ stage: 'first-frame', firstFrame: 'passed' }, { status: 'ready', firstFrame: 'passed' });
+      if (!request.firstFrameReported) {
+        request.firstFrameReported = true;
+        reportPlaybackState({ event: 'playback-success', stage: 'first-frame', mediaStatus: video.paused ? 'ready' : 'playing',
+          decoderStatus: compatUrl ? 'compat' : 'native' }, request);
+      }
+      if (compatUrl) {
+        reportPlaybackState({ event: 'media-state', stage: 'decode', mediaStatus: video.paused ? 'ready' : 'playing', decoderStatus: 'compat' }, request);
+        releaseOnline();
+      }
     });
     return () => video.cancelVideoFrameCallback?.(frame);
-  }, [canPlay, isOnlinePlaying, onlineUrl, videoSrc, playbackVersion, updatePlaybackDiagnostics]);
+  }, [loading, canPlay, isOnlinePlaying, onlineUrl, videoSrc, playbackVersion, compatUrl,
+    updatePlaybackDiagnostics, reportPlaybackState, releaseOnline]);
 
   // 缓冲遮罩只在 canplay/playing 时清除；长时间无响应时提示并给出重试入口，避免用户只能取消。
   useEffect(() => {
@@ -847,16 +965,49 @@ function Player({ target, onNavigate, onSeriesSelected, onFloatingChange, active
     return () => clearTimeout(timer);
   }, [mediaBuffering]);
 
+  useEffect(() => {
+    if (!mediaBuffering || onlineProgress || compatProgress || waitingForNetwork || !isOnlinePlaying) return;
+    const version = mediaVersion.current;
+    const timer = setTimeout(() => {
+      if (version !== mediaVersion.current) return;
+      nativeFailureHandlerRef.current?.({ stage: 'media',
+        faultCode: navigator.onLine === false ? 'NETWORK_DISCONNECTED' : 'CDN_UNAVAILABLE' });
+    }, 20000);
+    return () => clearTimeout(timer);
+  }, [mediaBuffering, onlineProgress, compatProgress, waitingForNetwork, isOnlinePlaying, playbackVersion]);
+
+  useEffect(() => {
+    if (!onlineProgress && !mediaBuffering && !compatProgress && !waitingForNetwork
+      && !(waitingFor != null && fallbackRef.current)) return;
+    const key = `${activeSeriesId}:${currentIndex}`;
+    if (recoveryBudgetRef.current?.key !== key) recoveryBudgetRef.current = createPlaybackRecovery(key);
+    const version = mediaVersion.current;
+    const timer = setTimeout(() => {
+      if (version !== mediaVersion.current) return;
+      const message = waitingFor != null ? '自动恢复已超时，下载任务会继续；可在下载管理查看后重试播放。'
+        : '本集播放准备或自动恢复已超时，请检查网络后重试。';
+      endFailedPlayback(message, playbackDiagnostics, waitingFor != null ? '' : 'NETWORK_TIMEOUT');
+    }, Math.max(1, remainingPlaybackRecovery(recoveryBudgetRef.current)));
+    return () => clearTimeout(timer);
+  }, [onlineProgress, mediaBuffering, compatProgress, waitingForNetwork, waitingFor, activeSeriesId,
+    currentIndex, playbackVersion, playbackDiagnostics, endFailedPlayback]);
+
   const playableCount = episodes.filter((e) => e.status === 'completed').length;
 
   /** 转码当前集为 H.264 后播放（解决本机无法解码 HEVC 的黑屏问题） */
   const startCompatPlay = useCallback(
-    async (vidIndex, force = false) => {
+    async (vidIndex, force = false, automatic = false) => {
       const ep = episodes.find((e) => e.vid_index === vidIndex);
       if (!ep || ep.locked) return;
       const request = { requestId: crypto.randomUUID(), seriesId: String(activeSeriesId), vidIndex,
         quality: onlineRequestRef.current?.playbackQuality || (onlineQuality === 'compat' ? 'auto' : onlineQuality), version: mediaVersion.current };
       if (compatRequestRef.current?.version === request.version && compatRequestRef.current?.vidIndex === vidIndex) return;
+      if (automatic) {
+        if (!claimRecovery(`${activeSeriesId}:${vidIndex}`)) {
+          endFailedPlayback('本集自动恢复次数或等待时间已达上限，请手动重试。', playbackDiagnostics, 'PLAYER_DECODE_FAILED');
+          return;
+        }
+      } else recoveryBudgetRef.current = createPlaybackRecovery(`${activeSeriesId}:${vidIndex}`);
       autoCompatAttemptRef.current = { version: request.version, force };
       pendingSeekRef.current = currentPosition();
       if (loadedMediaRef.current) pendingAutoplayRef.current = !loadedMediaRef.current.element.paused;
@@ -873,6 +1024,8 @@ function Player({ target, onNavigate, onSeriesSelected, onFloatingChange, active
       compatRequestRef.current = request;
       setCompatError('');
       setCompatProgress({ vidIndex, percent: 0 });
+      reportPlaybackState({ event: 'recovery', stage: 'decode', mediaStatus: 'loading', decoderStatus: 'compat',
+        faultCode: 'PLAYER_DECODE_FAILED' });
       try {
         const res = await window.electronAPI.transcodeForPlayback({
           requestId: request.requestId,
@@ -899,6 +1052,11 @@ function Player({ target, onNavigate, onSeriesSelected, onFloatingChange, active
         } else {
           setCompatProgress(null);
           if (res?.code === 'MEDIA_TOO_LARGE') showToast(res.error, 'error');
+          const faultCode = playbackFaultCode(res);
+          if (faultCode && !['PLAYER_DECODE_FAILED', 'CODEC_UNSUPPORTED'].includes(faultCode)) {
+            endFailedPlayback(res.error, res.diagnostics || playbackDiagnostics, faultCode);
+            return;
+          }
           if (autoCompat && !res?.cancelled && reconnectOnce()) return;
           const message = '本机未能生成兼容视频，请重新连接片源或稍后重试。';
           const diagnostics = playbackDiagnostics
@@ -934,7 +1092,8 @@ function Player({ target, onNavigate, onSeriesSelected, onFloatingChange, active
         showToast(message, 'error');
       }
     },
-    [episodes, activeSeriesId, onlineQuality, autoCompat, reconnectOnce, showToast, currentPosition, persistPosition, holdVideoFrame, recoverOnlineFailure]
+    [episodes, activeSeriesId, onlineQuality, autoCompat, reconnectOnce, showToast, currentPosition, persistPosition,
+      holdVideoFrame, recoverOnlineFailure, claimRecovery, endFailedPlayback, reportPlaybackState]
   );
 
   const tryAutoCompat = useCallback((vidIndex) => {
@@ -945,7 +1104,7 @@ function Player({ target, onNavigate, onSeriesSelected, onFloatingChange, active
       if (stateRef.current.onlineQuality === 'auto') reconnectOnce();
       return;
     }
-    startCompatPlay(vidIndex, force);
+    startCompatPlay(vidIndex, force, true);
   }, [autoCompat, compatMap, startCompatPlay, reconnectOnce]);
 
   useEffect(() => {
@@ -974,10 +1133,15 @@ function Player({ target, onNavigate, onSeriesSelected, onFloatingChange, active
     // 就永久跳过预取和断点保存；下面的解码判定仍要求状态已经对齐。
     if (!media.played) {
       media.played = true;
+      media.stableFrom = element.currentTime;
       persistPosition(true);
+      reportPlaybackState({ event: 'media-state', stage: 'media', mediaStatus: 'playing',
+        decoderStatus: compatMap[currentIndex] ? 'compat' : element.videoWidth > 0 ? 'native' : 'pending' });
     }
     if (playbackVersion !== mediaVersion.current || !canPlay) return;
     if (element.currentSrc && videoSrc && element.currentSrc !== videoSrc) return;
+    if (!element.requestVideoFrameCallback && element.videoWidth > 0 && element.videoHeight > 0
+      && recoveryBudgetRef.current?.attempts === 0) recoveryBudgetRef.current = null;
     setAutoAdvancing(false);
     setDecodeFailed(false);
     setMediaBuffering(false);
@@ -990,18 +1154,21 @@ function Player({ target, onNavigate, onSeriesSelected, onFloatingChange, active
       if (!v) return;
       if (v.videoWidth === 0 && !v.paused && v.currentTime > 0.3) {
         setDecodeFailed(true);
+        updatePlaybackDiagnostics({ stage: 'decode', mediaDecoded: 'failed', faultCode: 'PLAYER_DECODE_FAILED' });
+        reportPlaybackState({ event: 'failure', stage: 'decode', mediaStatus: 'playing',
+          decoderStatus: 'failed', faultCode: 'PLAYER_DECODE_FAILED' });
         tryAutoCompat(idx);
       }
     }, 2600);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentIndex, tryAutoCompat, playbackVersion, canPlay, videoSrc, persistPosition]);
+  }, [currentIndex, tryAutoCompat, playbackVersion, canPlay, videoSrc, persistPosition, reportPlaybackState, updatePlaybackDiagnostics]);
 
   /**
    * 在线播放：明文片源按需加载，加密片源准备后返回播放地址。
    * 不占用下载目录；加密片源的准备文件会自动清理。
    */
   const startOnlinePlay = useCallback(
-    async (vidIndex, resumeAt, force = false, autoplay = true, qualityIndex = 0) => {
+    async (vidIndex, resumeAt, force = false, autoplay = true, qualityIndex = 0, automatic = false) => {
       const ep = episodes.find((e) => e.vid_index === vidIndex);
       if (ep?.locked) { showToast('这一集需在来源平台解锁'); return; }
       if (!ep || !ep.vid) {
@@ -1011,6 +1178,9 @@ function Player({ target, onNavigate, onSeriesSelected, onFloatingChange, active
       const quality = stateRef.current.onlineQuality;
       const qualities = quality === 'auto' && !/^(xifan|custom):/.test(activeSeriesId)
         ? AUTO_ONLINE_QUALITIES : [quality === 'compat' ? 'auto' : quality];
+      if (!automatic || recoveryBudgetRef.current?.key !== `${activeSeriesId}:${vidIndex}`) {
+        recoveryBudgetRef.current = createPlaybackRecovery(`${activeSeriesId}:${vidIndex}`);
+      }
       onlineSourceRef.current = `${activeSeriesId}:${vidIndex}`;
       const seekTo = resumeAt ?? (vidIndex === stateRef.current.currentIndex ? currentPosition() : 0);
       const prefetched = force === false
@@ -1039,20 +1209,23 @@ function Player({ target, onNavigate, onSeriesSelected, onFloatingChange, active
       setOnlineVid(ep.vid);
       setOnlineUrl('');
       try {
-        let res = prefetched ? await prefetched.promise : null;
+        let res = prefetched ? await waitForPrepared(prefetched.promise, request) : null;
         if (onlineRequestRef.current !== request) return;
-        for (let index = qualityIndex; !res?.success && index < qualities.length; index++) {
+        for (let index = qualityIndex; !res?.success && (!res || allowsQualityFallback(res)) && index < qualities.length; index++) {
+          if (index > qualityIndex && !claimRecovery(`${activeSeriesId}:${vidIndex}`)) break;
           usedPrefetch = false;
           request.qualityIndex = index;
           request.playbackQuality = qualities[index];
           setOnlineProgress({ vid: ep.vid, percent: 0, phase: 'preparing' });
           try {
-            res = await window.electronAPI.prepareOnlinePlay({
+            res = await waitForPrepared(window.electronAPI.prepareOnlinePlay({
               requestId: request.requestId, vid: ep.vid, seriesId: activeSeriesId, vidIndex,
-              quality: qualities[index], force,
-            });
-          } catch (error) { res = { success: false, error: error.message }; }
+              quality: qualities[index], allowLowerQuality: quality === 'auto', force,
+              recoveryCount: recoveryBudgetRef.current?.attempts || 0,
+            }), request);
+          } catch (error) { res = { success: false, code: error.code, faultCode: error.faultCode, error: error.message }; }
           if (onlineRequestRef.current !== request) break;
+          if (!res?.success && !allowsQualityFallback(res)) break;
           if (!res?.success && index + 1 < qualities.length) {
             showToast(`${qualities[index].toUpperCase()} 暂不可用，正在尝试${qualities[index + 1] === 'auto' ? '兼容片源' : qualities[index + 1].toUpperCase()}`);
           }
@@ -1062,8 +1235,18 @@ function Player({ target, onNavigate, onSeriesSelected, onFloatingChange, active
           return;
         }
         if (!res || !res.success) {
+          if (playbackFaultCode(res) === 'NETWORK_DISCONNECTED' && navigator.onLine === false
+            && claimRecovery(`${activeSeriesId}:${vidIndex}`)) {
+            reportPlaybackState({ event: 'recovery', stage: 'source', mediaStatus: 'buffering', faultCode: 'NETWORK_DISCONNECTED' }, request);
+            releaseOnline();
+            networkResumeRef.current = { key: `${activeSeriesId}:${vidIndex}`, version: mediaVersion.current,
+              vidIndex, seekTo, autoplay: pendingAutoplayRef.current, qualityIndex: request.qualityIndex || 0 };
+            setWaitingForNetwork(true);
+            setOnlineProgress({ vid: ep.vid, phase: 'waiting-network' });
+            return;
+          }
           if (res?.code === 'MEDIA_TOO_LARGE') showToast(res.error, 'error');
-          await recoverOnlineFailure(ep, (res && res.error) || '当前内容暂时无法播放，请稍后重试。', res?.diagnostics);
+          await recoverOnlineFailure(ep, (res && res.error) || '当前内容暂时无法播放，请稍后重试。', res?.diagnostics, res);
           return;
         }
         request.streamId = res.streamId;
@@ -1073,34 +1256,91 @@ function Player({ target, onNavigate, onSeriesSelected, onFloatingChange, active
         if (!usedPrefetch && !res.cached) setMediaBuffering(true);
         setOnlineUrl(res.url);
         setOnlineProgress(null);
+        reportPlaybackState({ event: 'media-state', stage: 'media', mediaStatus: 'loading', decoderStatus: 'pending', activate: true }, request);
         // Playback cache changes do not need a synchronous scan of all download directories.
         refreshOnlineCacheInfo();
       } catch (e) {
         if (onlineRequestRef.current !== request) return;
-        await recoverOnlineFailure(ep, '当前内容暂时无法播放，请稍后重试。');
+        await recoverOnlineFailure(ep, '当前内容暂时无法播放，请稍后重试。', null, e);
       }
     },
-    [episodes, activeSeriesId, showToast, refreshOnlineCacheInfo, resetPlayback, releaseOnline, currentPosition, recoverOnlineFailure, prunePrefetchAfter]
+    [episodes, activeSeriesId, showToast, refreshOnlineCacheInfo, resetPlayback, releaseOnline, currentPosition,
+      recoverOnlineFailure, prunePrefetchAfter, waitForPrepared, claimRecovery, reportPlaybackState]
   );
 
-  function reconnectOnce() {
+  function reconnectOnce(faultCode = '') {
     const key = `${activeSeriesId}:${currentIndex}`;
+    if (!current?.vid || current.locked || stopsPlaybackRecovery(faultCode)) return false;
+    if (navigator.onLine === false) {
+      if (networkResumeRef.current) return true;
+      if (!claimRecovery(key)) return false;
+      const autoplay = loadedMediaRef.current ? !loadedMediaRef.current.element.paused : pendingAutoplayRef.current;
+      networkResumeRef.current = { key, version: mediaVersion.current, vidIndex: currentIndex,
+        seekTo: currentPosition(), autoplay, qualityIndex: onlineRequestRef.current?.qualityIndex || 0 };
+      reportPlaybackState({ event: 'recovery', stage: 'media', mediaStatus: 'buffering',
+        faultCode: 'NETWORK_DISCONNECTED' });
+      persistPosition(true);
+      holdVideoFrame();
+      videoRef.current?.pause();
+      releaseOnline();
+      setWaitingForNetwork(true);
+      setMediaBuffering(true);
+      return true;
+    }
+    if (faultCode === 'MEDIA_URL_EXPIRED') {
+      const refreshKey = `${key}:expired:${onlineRequestRef.current?.playbackQuality || 'auto'}`;
+      if (reconnectAttemptRef.current === refreshKey || !claimRecovery(key)) return false;
+      reconnectAttemptRef.current = refreshKey;
+      reportPlaybackState({ event: 'recovery', stage: 'media', mediaStatus: 'loading', faultCode });
+      startOnlinePlay(currentIndex, currentPosition(), true,
+        loadedMediaRef.current ? !loadedMediaRef.current.element.paused : pendingAutoplayRef.current,
+        onlineRequestRef.current?.qualityIndex || 0, true);
+      return true;
+    }
     if (stateRef.current.onlineQuality === 'auto' && !/^(xifan|custom):/.test(activeSeriesId)
       && onlineSourceRef.current === key) {
       const next = (onlineRequestRef.current?.qualityIndex ?? 0) + 1;
-      if (!current?.vid || current.locked || next >= AUTO_ONLINE_QUALITIES.length) return false;
+      if (next >= AUTO_ONLINE_QUALITIES.length || !claimRecovery(key)) return false;
+      reportPlaybackState({ event: 'recovery', stage: 'media', mediaStatus: 'loading', faultCode });
       showToast(`正在自动切换到${AUTO_ONLINE_QUALITIES[next] === 'auto' ? '兼容片源' : AUTO_ONLINE_QUALITIES[next].toUpperCase()}…`);
       startOnlinePlay(currentIndex, currentPosition(), true,
-        loadedMediaRef.current ? !loadedMediaRef.current.element.paused : pendingAutoplayRef.current, next);
+        loadedMediaRef.current ? !loadedMediaRef.current.element.paused : pendingAutoplayRef.current, next, true);
       return true;
     }
-    if (!current?.vid || current.locked || reconnectAttemptRef.current === key) return false;
+    if (reconnectAttemptRef.current === key || !claimRecovery(key)) return false;
     reconnectAttemptRef.current = key;
     if (onlineSourceRef.current !== key && current.status === 'completed') rejectedLocalRef.current = localMediaKey(String(activeSeriesId), current);
     showToast('正在重新获取本集片源…');
-    startOnlinePlay(currentIndex, currentPosition(), true, loadedMediaRef.current ? !loadedMediaRef.current.element.paused : pendingAutoplayRef.current);
+    reportPlaybackState({ event: 'recovery', stage: 'media', mediaStatus: 'loading', faultCode });
+    startOnlinePlay(currentIndex, currentPosition(), true, loadedMediaRef.current ? !loadedMediaRef.current.element.paused : pendingAutoplayRef.current, 0, true);
     return true;
   }
+
+  useEffect(() => {
+    const resume = () => {
+      const pending = networkResumeRef.current;
+      if (!pending || navigator.onLine === false || !activeRef.current || bossHiddenRef.current
+        || pending.version !== mediaVersion.current || pending.key !== `${selectedSeriesRef.current}:${stateRef.current.currentIndex}`) return;
+      networkResumeRef.current = null;
+      setWaitingForNetwork(false);
+      if (!remainingPlaybackRecovery(recoveryBudgetRef.current)) {
+        endFailedPlayback('网络恢复等待已超时，请重试本集。', playbackDiagnostics, 'NETWORK_TIMEOUT');
+        return;
+      }
+      startOnlinePlay(pending.vidIndex, pending.seekTo, true, pending.autoplay, pending.qualityIndex, true);
+    };
+    window.addEventListener('online', resume);
+    return () => window.removeEventListener('online', resume);
+  }, [startOnlinePlay, endFailedPlayback, playbackDiagnostics]);
+
+  nativeFailureHandlerRef.current = diagnostics => {
+    const faultCode = playbackFaultCode(diagnostics);
+    if (stopsPlaybackRecovery(faultCode) || ['MEDIA_DECRYPT_FAILED', 'API_EMPTY_RESPONSE'].includes(faultCode)) {
+      endFailedPlayback('', diagnostics, faultCode);
+    } else if (['MEDIA_URL_EXPIRED', 'CDN_UNAVAILABLE', 'NETWORK_TIMEOUT', 'NETWORK_DISCONNECTED'].includes(faultCode)) {
+      if (!reconnectOnce(faultCode)) endFailedPlayback('', diagnostics, faultCode);
+    }
+  };
 
   // 切集
   const goToEpisode = useCallback(
@@ -1109,6 +1349,7 @@ function Player({ target, onNavigate, onSeriesSelected, onFloatingChange, active
       if (!ep || ep.locked) return;
       fallbackAttemptRef.current = null;
       reconnectAttemptRef.current = null;
+      recoveryBudgetRef.current = createPlaybackRecovery(`${activeSeriesId}:${vidIndex}`);
       if (!usableLocal(ep, String(activeSeriesId))) {
         startOnlinePlay(vidIndex, resumeAt);
         return;
@@ -1127,9 +1368,10 @@ function Player({ target, onNavigate, onSeriesSelected, onFloatingChange, active
   const retryPlayback = async () => {
     const version = mediaVersion.current, selection = selectionVersion.current, navigation = navigationVersion.current;
     let data;
-    try { data = await loadDetail(activeSeriesId); } catch (_) {}
+    try { data = await loadDetail(activeSeriesId, { refreshLocalIndex: currentIndex }); } catch (_) {}
     if (!activeRef.current || navigation !== navigationVersion.current || version !== mediaVersion.current || selection !== selectionVersion.current) return;
     const latest = data?.episodes.find(ep => ep.vid_index === currentIndex && ep.vid === current?.vid);
+    recoveryBudgetRef.current = createPlaybackRecovery(`${activeSeriesId}:${currentIndex}`);
     if (usableLocal(latest, String(activeSeriesId))) { resumeLocal(latest, currentPosition()); return; }
     setCompatMap(prev => { const next = { ...prev }; delete next[currentIndex]; return next; });
     if (onlineSourceRef.current === `${activeSeriesId}:${currentIndex}` || current?.status !== 'completed') {
@@ -1206,7 +1448,8 @@ function Player({ target, onNavigate, onSeriesSelected, onFloatingChange, active
         vidIndex: episode.vid_index, quality: onlineQuality, ready: false };
       prefetchRef.current = [...prefetchRef.current, request];
       request.promise = window.electronAPI.prepareOnlinePlay({ ...request,
-        quality: onlineQuality === 'compat' ? 'auto' : onlineQuality === 'auto' && supportsOnlineQuality ? '1080p' : onlineQuality, prefetch: true })
+        quality: onlineQuality === 'compat' ? 'auto' : onlineQuality === 'auto' && supportsOnlineQuality ? '1080p' : onlineQuality,
+        allowLowerQuality: onlineQuality === 'auto', prefetch: true })
         .catch(error => ({ success: false, error: error?.message || String(error) }))
         .then(result => {
           request.ready = result?.success === true;
@@ -1308,6 +1551,9 @@ function Player({ target, onNavigate, onSeriesSelected, onFloatingChange, active
     pendingAutoplayRef.current = false;
     pendingTargetRef.current = null;
     fallbackRef.current = null;
+    setAccountLoginPrompt(null);
+    networkResumeRef.current = null;
+    setWaitingForNetwork(false);
     setWaitingFor(null);
     setAutoAdvancing(false);
     const video = videoRef.current;
@@ -1322,12 +1568,14 @@ function Player({ target, onNavigate, onSeriesSelected, onFloatingChange, active
     v.defaultPlaybackRate = playbackRateRef.current;
     v.playbackRate = playbackRateRef.current;
     const seekTo = Math.max(0, Number(pendingSeekRef.current) || 0);
-    if (seekTo > 0 && (!Number.isFinite(v.duration) || seekTo < v.duration - 3)) {
-      v.currentTime = seekTo;
-      showToast(`从 ${Math.floor(seekTo / 60)}:${String(Math.floor(seekTo % 60)).padStart(2, '0')} 继续播放`);
+    const resumeTime = Number.isFinite(v.duration) && v.duration > 0
+      ? Math.min(seekTo, Math.max(0, v.duration - 0.1)) : seekTo;
+    if (resumeTime > 0) {
+      v.currentTime = resumeTime;
+      showToast(`从 ${Math.floor(resumeTime / 60)}:${String(Math.floor(resumeTime % 60)).padStart(2, '0')} 继续播放`);
     }
     pendingSeekRef.current = 0;
-    if (compatMap[currentIndex]) releaseOnline();
+    if (compatMap[currentIndex] && !v.requestVideoFrameCallback) releaseOnline();
     if (activeRef.current && pendingAutoplayRef.current) v.play().catch(() => { if (playbackVersion === mediaVersion.current) setAutoAdvancing(false); });
   };
 
@@ -1991,7 +2239,17 @@ function Player({ target, onNavigate, onSeriesSelected, onFloatingChange, active
                 ...(v.videoWidth > 0 && v.videoHeight > 0 ? { mediaDecoded: 'passed' } : {}),
               });
             }}
-            onTimeUpdate={prepareNextEpisode}
+            onTimeUpdate={event => {
+              const media = loadedMediaRef.current;
+              if (media?.played && media.version === mediaVersion.current && media.element === event.currentTarget
+                && !event.currentTarget.paused && event.currentTarget.currentTime - media.stableFrom >= 15) {
+                recoveryBudgetRef.current = null;
+                reconnectAttemptRef.current = null;
+                autoCompatAttemptRef.current = null;
+                media.stableFrom = event.currentTarget.currentTime;
+              }
+              prepareNextEpisode(event);
+            }}
             onPlay={(event) => {
               const media = loadedMediaRef.current;
               if (bossHiddenRef.current || !activeRef.current || !canPlay || playbackVersion !== mediaVersion.current || !media || media.version !== mediaVersion.current || media.element !== event.currentTarget) {
@@ -2024,12 +2282,22 @@ function Player({ target, onNavigate, onSeriesSelected, onFloatingChange, active
               if (event.currentTarget.currentSrc && event.currentTarget.currentSrc !== videoSrc) return;
               const errorCode = event.currentTarget.error?.code;
               const diagnosticsBeforeError = playbackDiagnostics;
+              const nativeFault = playbackFaultCode(diagnosticsBeforeError);
+              if (stopsPlaybackRecovery(nativeFault) || nativeFault === 'MEDIA_DECRYPT_FAILED') {
+                endFailedPlayback('', diagnosticsBeforeError, nativeFault);
+                return;
+              }
               // Chromium also reports an unavailable HTTP stream as unsupported source (4).
               const unavailableOnline = errorCode === 4 && videoSrc === onlineUrl;
-              if (unavailableOnline && reconnectOnce()) return;
-              const failedDecode = [3, 4].includes(errorCode);
+              const failedDecode = errorCode === 3 || errorCode === 4 && !unavailableOnline;
+              const faultCode = nativeFault || (failedDecode ? errorCode === 4 ? 'CODEC_UNSUPPORTED' : 'PLAYER_DECODE_FAILED'
+                : errorCode === 2 ? navigator.onLine === false ? 'NETWORK_DISCONNECTED' : 'CDN_UNAVAILABLE'
+                  : unavailableOnline ? 'CDN_UNAVAILABLE' : '');
+              reportPlaybackState({ event: 'failure', stage: failedDecode ? 'decode' : 'media',
+                mediaStatus: 'failed', decoderStatus: failedDecode ? 'failed' : 'pending', faultCode });
+              if (unavailableOnline && reconnectOnce(faultCode)) return;
               if (isOnlinePlaying && failedDecode && onlineQuality === 'auto' && !autoCompat && reconnectOnce()) return;
-              if (!failedDecode && errorCode === 2 && reconnectOnce()) return;
+              if (!failedDecode && errorCode === 2 && reconnectOnce(faultCode)) return;
               if (isOnlinePlaying && (errorCode === 2 || unavailableOnline)) {
                 recoverOnlineFailure(current, '在线播放失败，正在尝试本地文件或下载');
                 return;
@@ -2043,7 +2311,7 @@ function Player({ target, onNavigate, onSeriesSelected, onFloatingChange, active
                 const fields = {
                   stage: failedDecode ? 'decode' : 'media',
                   ...(failedDecode ? { mediaDecoded: 'failed' } : {}),
-                  code,
+                  code, faultCode,
                 };
                 const routeFields = { status: 'media-failed', ...(failedDecode ? { mediaDecoded: 'failed' } : {}), code };
                 setPlaybackDiagnostics(updateRendererPlaybackDiagnostics(diagnosticsBeforeError, fields, routeFields));
@@ -2084,6 +2352,10 @@ function Player({ target, onNavigate, onSeriesSelected, onFloatingChange, active
               <><Film size={34} /><p role="alert">{playbackError}</p><div className="player-placeholder-actions">
                 <button className="btn btn-primary" onClick={retryPlayback}>{current?.status === 'completed' ? '重试本集' : '重试本集（在线播放）'}</button>
                 {current?.vid && <button className="btn btn-outline" onClick={() => startOnlinePlay(currentIndex, undefined, true)}>重新连接片源</button>}
+                {supportsOnlineQuality && playbackDiagnostics?.stage === 'source' && <button className="btn btn-outline" onClick={() => setAccountLoginPrompt({
+                  seriesId: activeSeriesId, vidIndex: currentIndex, version: mediaVersion.current, navigation: navigationVersion.current,
+                  ...(accountResumeRef.current || { seekTo: currentPosition(), autoplay: false }),
+                })}>扫码登录后重试</button>}
                 {current?.vid && !current.locked && (decodeFailed || current?.status === 'completed') && !fallbackRef.current?.submitting && <button className="btn btn-outline" onClick={() => startCompatPlay(currentIndex, true)}>转码后播放</button>}
               </div>
               {playbackDiagnosticDetails(playbackDiagnostics)}
@@ -2091,12 +2363,12 @@ function Player({ target, onNavigate, onSeriesSelected, onFloatingChange, active
             ) : onlineProgress && onlineProgress.vid && (!current || current.vid === onlineProgress.vid) ? (
               <>
                 <RefreshCw size={30} className="spin" />
-                <p>{onlineProgress.phase === 'preparing' ? '正在连接片源…' : onlineProgress.phase === 'transcoding' ? '正在转换为可播放格式…' : onlineProgress.phase === 'decrypting' ? '正在准备播放…' : '正在缓冲在线播放…'}</p>
-                {onlineProgress.phase !== 'preparing' && <div className="player-wait-bar">
+                <p>{onlineProgress.phase === 'waiting-network' ? '网络已断开，等待恢复后继续播放…' : onlineProgress.phase === 'preparing' ? '正在连接片源…' : onlineProgress.phase === 'transcoding' ? '正在转换为可播放格式…' : onlineProgress.phase === 'decrypting' ? '正在准备播放…' : '正在缓冲在线播放…'}</p>
+                {!['preparing', 'waiting-network'].includes(onlineProgress.phase) && <div className="player-wait-bar">
                   <div className="player-wait-fill" style={{ width: `${onlineProgress.percent || 0}%` }} />
                 </div>}
                 <span className="player-placeholder-sub">
-                  {onlineProgress.phase === 'preparing' ? '获取可播放地址' : `${onlineProgress.percent || 0}%`}
+                  {onlineProgress.phase === 'waiting-network' ? '网络恢复后重新获取片源' : onlineProgress.phase === 'preparing' ? '获取可播放地址' : `${onlineProgress.percent || 0}%`}
                   {onlineProgress.total && onlineProgress.phase !== 'transcoding' ? ` · ${(onlineProgress.received / 1048576).toFixed(1)} / ${(onlineProgress.total / 1048576).toFixed(1)} MB` : ''}
                   {' · 不写入下载目录'}
                 </span>
@@ -2161,7 +2433,7 @@ function Player({ target, onNavigate, onSeriesSelected, onFloatingChange, active
 
         {canPlay && mediaBuffering && !compatProgress && (
           <div className="compat-overlay" role="status">
-            <RefreshCw size={26} className="spin" /><p>{bufferingHint ? '加载时间较长，片源可能无响应' : '正在加载视频…'}</p>
+            <RefreshCw size={26} className="spin" /><p>{waitingForNetwork ? '网络已断开，等待恢复后继续播放…' : bufferingHint ? '加载时间较长，片源可能无响应' : '正在加载视频…'}</p>
             {bufferingHint && (
               <button className="btn btn-outline" onClick={() => { setBufferingHint(false); setMediaBuffering(false); retryPlayback(); }}>重试本集</button>
             )}
@@ -2325,6 +2597,25 @@ function Player({ target, onNavigate, onSeriesSelected, onFloatingChange, active
       {toast && (toast.type === 'error'
         ? <div className="dm-toast dm-toast-error" role="alert" aria-atomic="true" onClick={() => setToast(null)}>{toast.text}</div>
         : <div className="dm-toast dm-toast-success" role="status" aria-live="polite" aria-atomic="true" onClick={() => setToast(null)}>{toast.text}</div>)}
+
+      {accountLoginPrompt && createPortal(<div className="account-playback-login-mask" onClick={() => setAccountLoginPrompt(null)}>
+        <section className="account-playback-login-dialog" role="dialog" aria-modal="true" aria-labelledby="playback-account-login-title"
+          aria-describedby="playback-account-login-description" onClick={event => event.stopPropagation()}>
+          <div className="account-playback-login-heading">
+            <h2 id="playback-account-login-title">登录红果账号</h2>
+            <button className="icon-btn" type="button" aria-label="关闭登录窗口" title="关闭" data-dialog-initial-focus onClick={() => setAccountLoginPrompt(null)}><X size={18} /></button>
+          </div>
+          <p id="playback-account-login-description">本集暂未能播放。扫码确认后将重新取源；实际可播放内容以红果官方授权为准。</p>
+          <AccountManagement loginOnly autoLogin onSignedIn={() => {
+            const prompt = accountLoginPrompt;
+            setAccountLoginPrompt(null);
+            if (!activeRef.current || prompt.navigation !== navigationVersion.current
+              || prompt.version !== mediaVersion.current || prompt.seriesId !== selectedSeriesRef.current
+              || prompt.vidIndex !== stateRef.current.currentIndex) return;
+            startOnlinePlay(prompt.vidIndex, prompt.seekTo, true, prompt.autoplay);
+          }} />
+        </section>
+      </div>, stageRef.current?.ownerDocument.fullscreenElement || stageRef.current?.ownerDocument.body || document.body)}
 
       {/* 合并格式选择 */}
       {mergeAsk && (

@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
 const { createHash, randomUUID } = require('node:crypto');
+const { DOMParser } = require('@xmldom/xmldom');
 const axios = require('axios');
 const { seasonTitle } = require('./watch-history');
 const { fetchPublicDetails } = require('./public-details');
@@ -151,10 +152,29 @@ function writeNasIndex(file, seriesId, episodes) {
 }
 
 function hasHongguoIdentity(value, id) {
-  const uniqueIds = [...String(value).replace(/<!--[\s\S]*?-->/g, '').matchAll(/<uniqueid\b([^>]*)>([\s\S]*?)<\/uniqueid\s*>/gi)]
-    .filter(match => /\btype\s*=\s*(?:"hongguo"|'hongguo')/i.test(match[1]))
-    .map(match => match[2].trim());
-  return uniqueIds.length === 1 && uniqueIds[0] === xml(id);
+  let invalid = false, document;
+  const reject = () => { invalid = true; };
+  try {
+    document = new DOMParser({ errorHandler: { warning: reject, error: reject, fatalError: reject } })
+      .parseFromString(String(value), 'application/xml');
+  } catch (_) { return false; }
+  const root = document?.documentElement;
+  if (invalid || !root || document.doctype || root.namespaceURI || !['tvshow', 'episodedetails'].includes(root.nodeName.toLowerCase())) return false;
+  for (let node = document.firstChild; node; node = node.nextSibling) {
+    if (node === root || node.nodeType === 7 || node.nodeType === 8 || node.nodeType === 3 && !node.data.trim()) continue;
+    return false;
+  }
+  // NFO ownership comes from real root-level elements, never prose, comments or CDATA in a plot.
+  const uniqueIds = [];
+  for (let node = root.firstChild; node; node = node.nextSibling) {
+    if (node.nodeType !== 1 || node.namespaceURI || node.nodeName.toLowerCase() !== 'uniqueid'
+        || String(node.getAttribute('type')).toLowerCase() !== 'hongguo') continue;
+    for (let child = node.firstChild; child; child = child.nextSibling) {
+      if (child.nodeType !== 3 && child.nodeType !== 4) return false;
+    }
+    uniqueIds.push(node.textContent.trim());
+  }
+  return uniqueIds.length === 1 && uniqueIds[0] === String(id);
 }
 
 function indexStatus(index, episode) {

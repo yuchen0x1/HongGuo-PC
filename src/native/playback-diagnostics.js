@@ -1,3 +1,4 @@
+const { FAULT_CODES, isPlaybackFault, classifyPlaybackError, playbackRecoveryPolicy } = require('./playback-errors');
 const SOURCES = new Set(['web', 'app', 'api', 'xifan', 'custom']);
 const ROUTE_STATUSES = new Set(['skipped', 'failed', 'address-found', 'media-failed', 'ready']);
 const INITIALIZATION = new Set(['not-required', 'attempted', 'completed', 'failed', 'unknown']);
@@ -5,6 +6,7 @@ const ANONYMOUS_ACCESS = new Set(['explicitly-allowed', 'request-accepted', 'den
 const MEDIA_READ = new Set(['not-requested', 'partial', 'complete', 'failed', 'unknown']);
 const CHECK_STATUS = new Set(['not-tested', 'passed', 'failed']);
 const SAFE_CODES = new Set([
+  ...FAULT_CODES,
   'ACCOUNT_REQUIRED', 'ABORT_ERR', 'BUSINESS_REJECTED', 'DEVICE_REGISTRATION_FAILED',
   'EACCES', 'EBUSY', 'ECONNABORTED', 'ECONNRESET', 'EDQUOT', 'EEXIST', 'EFBIG', 'EIO',
   'EISDIR', 'EMFILE', 'EMLINK', 'ENAMETOOLONG', 'ENETUNREACH', 'ENFILE', 'ENOENT',
@@ -50,7 +52,7 @@ function sanitizePlaybackDiagnostics(value = {}) {
     ? (value.routes || value.sourceTrace).map(route => routeDiagnostic(route?.source, route))
     : [];
   const source = SOURCES.has(value.source) ? value.source : routes.find(route => route.status === 'address-found' || route.status === 'ready')?.source || '';
-  const stage = ['source', 'media', 'decode', 'first-frame'].includes(value.stage) ? value.stage : 'source';
+  const stage = ['source', 'media', 'decrypt', 'decode', 'first-frame'].includes(value.stage) ? value.stage : 'source';
   return {
     stage,
     source,
@@ -58,6 +60,7 @@ function sanitizePlaybackDiagnostics(value = {}) {
     mediaDecoded: CHECK_STATUS.has(value.mediaDecoded) ? value.mediaDecoded : 'not-tested',
     firstFrame: CHECK_STATUS.has(value.firstFrame) ? value.firstFrame : 'not-tested',
     ...(safeCode(value.code) ? { code: safeCode(value.code) } : {}),
+    ...(isPlaybackFault(value.faultCode) ? { faultCode: value.faultCode } : {}),
     routes,
   };
 }
@@ -78,6 +81,9 @@ function updatePlaybackRoute(value, source, updates = {}, fields = {}) {
 }
 
 function playbackFailureMessage(error = {}) {
+  if (isPlaybackFault(error.faultCode) || isPlaybackFault(error.code)) {
+    return playbackRecoveryPolicy(isPlaybackFault(error.faultCode) ? error.faultCode : error.code).message;
+  }
   const code = safeCode(error.code);
   const sourceCodes = (Array.isArray(error.sources) ? error.sources : [])
     .map(source => safeCode(source?.code)).filter(Boolean);
@@ -105,4 +111,180 @@ function playbackFailureMessage(error = {}) {
   return '当前内容暂时无法播放，请稍后重试。';
 }
 
-module.exports = { routeDiagnostic, safeCode, sanitizePlaybackDiagnostics, updatePlaybackRoute, playbackFailureMessage };
+const DIAGNOSTIC_SOURCES = new Set([...SOURCES, 'local']);
+const ACCOUNT_STATES = new Set(['signed-in', 'signed-out', 'expired', 'unauthorized', 'unknown']);
+const SESSION_STATES = new Set(['valid', 'expired', 'invalid', 'unchecked', 'checking', 'unavailable', 'none']);
+const DEVICE_STATES = new Set(['uninitialized', 'registering', 'ready', 'expired', 'failed', 'unknown']);
+const MEDIA_STATES = new Set(['idle', 'resolving', 'loading', 'ready', 'playing', 'paused', 'buffering', 'ended', 'failed', 'cancelled']);
+const DECODER_STATES = new Set(['idle', 'pending', 'native', 'compat', 'unsupported', 'failed']);
+const EVENTS = new Set(['source-start', 'source-attempt', 'source-success', 'source-failure', 'recovery', 'media-state', 'playback-success', 'failure', 'cancelled']);
+const STAGES = new Set(['source', 'media', 'hls', 'decrypt', 'decode', 'first-frame', 'player']);
+
+function boundedNumber(value, maximum) {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= maximum ? Math.round(value) : null;
+}
+
+function createPlaybackDiagnostics({ appVersion = '', now = Date.now } = {}) {
+  // Profile identifiers come from the shipped configuration, never from request URLs or remote error text.
+  const profile = require('./playback-profiles').getPlaybackProfile();
+  const { OFFICIAL_WEB_PROFILE } = require('./official-web-playback');
+  const knownProfiles = new Map([
+    [profile.id, { version: profile.version, source: 'app' }],
+    [OFFICIAL_WEB_PROFILE.id, { version: OFFICIAL_WEB_PROFILE.version, source: 'web' }],
+  ]);
+  const knownRoutes = new Map([
+    ...profile.routes.map(route => [route.id, 'app']),
+    [OFFICIAL_WEB_PROFILE.routeId, 'web'],
+  ]);
+  const version = /^\d{1,3}\.\d{1,3}\.\d{1,3}(?:-[a-z]{1,12}\.\d{1,3})?$/.test(appVersion) ? appVersion : 'unknown';
+  const state = {
+    appVersion: version, accountState: 'unknown', sessionValidity: 'unchecked', deviceState: 'uninitialized',
+    playbackAuthorization: 'unverified', accountDeviceAssociation: 'unlinked',
+    profileId: profile.id, profileVersion: profile.version, sourceRoute: '', routeId: '',
+    lastSourceAt: null, lastSuccessAt: null, lastErrorCode: '', recoveryCount: 0,
+    requestDurationMs: null, mediaStatus: 'idle', decoderStatus: 'idle', stage: 'source',
+  };
+  const counts = { sourceAttempts: 0, sourceSuccesses: 0, sourceFailures: 0, playbackSuccesses: 0, recoveries: 0 };
+  const routeCounts = Object.fromEntries([...DIAGNOSTIC_SOURCES].map(source => [source, { attempts: 0, successes: 0, failures: 0 }]));
+  const requestRoutes = Object.fromEntries([...knownRoutes.keys()].map(routeId => [routeId,
+    { attempts: 0, modelsAccepted: 0, failures: 0, lastFaultCode: '', lastRequestDurationMs: null }]));
+  const faultCounts = Object.fromEntries(FAULT_CODES.map(code => [code, 0]));
+  const events = [];
+  let foregroundRequestId = '';
+  const validRequestId = value => typeof value === 'string' && /^[a-zA-Z0-9_-]{1,128}$/.test(value);
+  const isForeground = requestId => !!foregroundRequestId && requestId === foregroundRequestId;
+  const tick = () => {
+    const value = now();
+    return Number.isSafeInteger(value) && value >= 0 && value <= 8640000000000000 ? value : Date.now();
+  };
+
+  function record(value = {}) {
+    if (!value || typeof value !== 'object') return;
+    const providerRequest = value.type === 'source-request';
+    const event = providerRequest ? 'source-attempt' : EVENTS.has(value.event) ? value.event : EVENTS.has(value.type) ? value.type : '';
+    if (!event) return;
+    const at = tick();
+    const sourceRoute = DIAGNOSTIC_SOURCES.has(value.sourceRoute) ? value.sourceRoute
+      : providerRequest && value.sourceRoute === undefined ? 'app' : '';
+    const routeId = knownRoutes.get(value.routeId) === sourceRoute ? value.routeId : '';
+    const suppliedProfile = knownProfiles.get(value.profileId);
+    const validProfile = !!suppliedProfile && suppliedProfile.version === value.profileVersion && suppliedProfile.source === sourceRoute;
+    const current = !foregroundRequestId || isForeground(value.requestId);
+    const faultCode = isPlaybackFault(value.faultCode) ? value.faultCode
+      : providerRequest ? classifyPlaybackError({ code: value.code, status: value.status }) : '';
+    const requestDurationMs = boundedNumber(providerRequest ? value.elapsedMs : value.requestDurationMs, 600000);
+    const recoveryCount = Number.isSafeInteger(value.recoveryCount) && value.recoveryCount >= 0
+      && value.recoveryCount <= 1000000 ? value.recoveryCount : null;
+    if (current) {
+      if (sourceRoute && state.sourceRoute !== sourceRoute) {
+        state.routeId = '';
+        if (knownProfiles.get(state.profileId)?.source !== sourceRoute) {
+          state.profileId = '';
+          state.profileVersion = '';
+        }
+      }
+      if (sourceRoute) state.sourceRoute = sourceRoute;
+      if (routeId) state.routeId = routeId;
+      if (validProfile) { state.profileId = value.profileId; state.profileVersion = value.profileVersion; }
+      if (STAGES.has(value.stage)) state.stage = value.stage;
+      if (MEDIA_STATES.has(value.mediaStatus)) state.mediaStatus = value.mediaStatus;
+      if (DECODER_STATES.has(value.decoderStatus)) state.decoderStatus = value.decoderStatus;
+      if (requestDurationMs !== null) state.requestDurationMs = requestDurationMs;
+      if (event === 'source-start') {
+        state.mediaStatus = 'resolving';
+        state.decoderStatus = 'pending';
+        state.stage = 'source';
+      }
+    }
+    if (event === 'source-attempt') {
+      counts.sourceAttempts++;
+      if (sourceRoute) routeCounts[sourceRoute].attempts++;
+    }
+    if (providerRequest && routeId) {
+      const row = requestRoutes[routeId];
+      row.attempts++;
+      if (value.modelValid === true) row.modelsAccepted++;
+      else row.failures++;
+      row.lastFaultCode = faultCode;
+      row.lastRequestDurationMs = requestDurationMs;
+    }
+    if (event === 'source-success') {
+      if (current) { state.lastSourceAt = at; state.mediaStatus = 'loading'; }
+      counts.sourceSuccesses++;
+      if (sourceRoute) routeCounts[sourceRoute].successes++;
+    }
+    if (event === 'source-failure') {
+      if (current) state.mediaStatus = 'failed';
+      counts.sourceFailures++;
+      if (sourceRoute) routeCounts[sourceRoute].failures++;
+    }
+    if (event === 'recovery') {
+      if (current && recoveryCount === null) state.recoveryCount++;
+      counts.recoveries++;
+    }
+    if (current && recoveryCount !== null) state.recoveryCount = recoveryCount;
+    if (event === 'playback-success') {
+      if (current) {
+        state.lastSuccessAt = at;
+        state.mediaStatus = MEDIA_STATES.has(value.mediaStatus) ? value.mediaStatus : 'playing';
+        state.stage = 'first-frame';
+      }
+      counts.playbackSuccesses++;
+    }
+    if (current && event === 'failure') state.mediaStatus = 'failed';
+    if (current && event === 'cancelled') state.mediaStatus = 'cancelled';
+    if (faultCode) {
+      if (current) state.lastErrorCode = faultCode;
+      if (event === 'source-failure' || event === 'failure') faultCounts[faultCode]++;
+    }
+    events.push({ at, event, ...(sourceRoute ? { sourceRoute } : {}), ...(routeId ? { routeId } : {}),
+      ...(faultCode ? { faultCode } : {}), ...(STAGES.has(value.stage) ? { stage: value.stage } : {}),
+      ...(requestDurationMs !== null ? { requestDurationMs } : {}) });
+    if (events.length > 40) events.shift();
+  }
+
+  function snapshot({ account, device, profile: selectedProfile } = {}) {
+    if (account && typeof account === 'object') {
+      state.accountState = ACCOUNT_STATES.has(account.accountState) ? account.accountState
+        : account.signedIn === true ? 'signed-in' : account.signedIn === false ? 'signed-out' : 'unknown';
+      const sessionValidity = account.sessionValidity === 'anonymous' ? 'none'
+        : account.sessionValidity === 'unverified' ? 'unchecked' : account.sessionValidity;
+      if (SESSION_STATES.has(sessionValidity)) state.sessionValidity = sessionValidity;
+      if (account.checking === true) state.sessionValidity = 'checking';
+      if (state.sessionValidity === 'expired') state.accountState = 'expired';
+      if (['unverified', 'supported', 'unsupported'].includes(account.playbackAuthorization)) state.playbackAuthorization = account.playbackAuthorization;
+      state.accountDeviceAssociation = account.deviceAssociation?.status === 'linked' ? 'linked' : 'unlinked';
+    }
+    if (DEVICE_STATES.has(device?.state)) state.deviceState = device.state;
+    const configuredProfile = knownProfiles.get(selectedProfile?.id);
+    if (configuredProfile && (!state.sourceRoute || state.sourceRoute === configuredProfile.source)
+      && configuredProfile.version === selectedProfile.version) {
+      state.profileId = selectedProfile.id;
+      state.profileVersion = selectedProfile.version;
+    }
+    return {
+      schemaVersion: 1, generatedAt: tick(), ...state,
+      redaction: { credentials: 'omitted', accountIdentifiers: 'omitted', deviceIdentifiers: 'omitted',
+        mediaUrls: 'omitted', signatures: 'omitted', keys: 'omitted', rawErrors: 'omitted', localPaths: 'omitted' },
+      counts: { ...counts },
+      routes: Object.entries(routeCounts).map(([source, value]) => ({ source, ...value,
+        successRate: value.attempts ? Math.min(1, value.successes / value.attempts) : null })),
+      requestRoutes: Object.entries(requestRoutes).map(([routeId, value]) => ({ routeId, ...value,
+        modelAcceptanceRate: value.attempts ? value.modelsAccepted / value.attempts : null })),
+      faults: { ...faultCounts }, events: events.map(value => ({ ...value })),
+    };
+  }
+
+  return {
+    record, snapshot, isForeground,
+    setForeground(requestId) {
+      if (requestId !== '' && !validRequestId(requestId)) return false;
+      foregroundRequestId = requestId;
+      return true;
+    },
+    resetMedia() { state.mediaStatus = 'idle'; state.decoderStatus = 'idle'; state.recoveryCount = 0; },
+  };
+}
+
+module.exports = { routeDiagnostic, safeCode, sanitizePlaybackDiagnostics, updatePlaybackRoute, playbackFailureMessage,
+  createPlaybackDiagnostics, classifyPlaybackError, playbackRecoveryPolicy };

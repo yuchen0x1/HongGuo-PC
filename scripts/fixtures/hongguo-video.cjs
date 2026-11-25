@@ -2,6 +2,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { randomInt, createHash } = require('node:crypto');
+const { execFileSync } = require('node:child_process');
 const axios = require('axios');
 const { browseList, readRouterData } = require('../../src/native/catalog');
 const hongguo = require('../../src/native/hongguo');
@@ -20,6 +21,47 @@ async function requestPublic(url, responseType, maxContentLength) {
 }
 
 async function downloadTestMedia(directory) {
+  if (process.env.HONGGUO_VIDEO_FIXTURE) {
+    const source = path.resolve(process.env.HONGGUO_VIDEO_FIXTURE);
+    const manifestFile = path.resolve(process.env.HONGGUO_VIDEO_FIXTURE_MANIFEST || path.join(path.dirname(source), 'manifest.json'));
+    const manifest = JSON.parse(fs.readFileSync(manifestFile, 'utf8'));
+    const record = manifest.episodes?.find(episode => typeof episode.file === 'string'
+      && path.resolve(path.dirname(manifestFile), episode.file) === source);
+    if (!(Number.isSafeInteger(manifest.selectedRandomlyFrom) && manifest.selectedRandomlyFrom > 1)
+      || record?.source !== 'web' || record.profileId !== 'hongguo-official-web-public-v1'
+      || record.routeId !== 'official-web-public-fallback' || !Number.isFinite(record.duration) || record.duration <= 15
+      || !/^[a-f0-9]{64}$/i.test(record.sha256 || '')) throw new Error('External official video provenance is invalid');
+    const bytes = fs.readFileSync(source);
+    const sha256 = createHash('sha256').update(bytes).digest('hex');
+    if (bytes.length !== record.bytes || bytes.length <= 100 * 1024 || bytes.subarray(4, 8).toString() !== 'ftyp'
+      || sha256 !== record.sha256.toLowerCase()) throw new Error('External official video does not match its recorded bytes');
+    const ffprobe = process.env.HONGGUO_FFPROBE, ffmpeg = process.env.HONGGUO_FFMPEG;
+    if (!ffprobe || !ffmpeg) throw new Error('External official video requires explicit FFmpeg and ffprobe');
+    let metadata;
+    try {
+      metadata = JSON.parse(execFileSync(ffprobe, ['-v', 'error', '-show_entries',
+        'stream=codec_type,width,height:format=duration', '-of', 'json', source],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 20000 }));
+      execFileSync(ffmpeg, ['-v', 'error', '-xerror', '-nostdin', '-i', source,
+        '-map', '0:v:0', '-map', '0:a?', '-f', 'null', '-'],
+      { stdio: ['ignore', 'pipe', 'pipe'], timeout: 180000 });
+    } catch (_) { throw new Error('External official video failed probing or complete silent decoding'); }
+    const duration = Number(metadata.format?.duration);
+    if (!metadata.streams?.some(stream => stream.codec_type === 'video' && stream.width > 0 && stream.height > 0)
+      || !Number.isFinite(duration) || Math.abs(duration - record.duration) > 0.15) {
+      throw new Error('External official video does not match its recorded complete duration');
+    }
+    fs.mkdirSync(directory, { recursive: true });
+    const video = path.join(directory, 'hongguo-source.mp4');
+    fs.copyFileSync(source, video, fs.constants.COPYFILE_EXCL);
+    fs.chmodSync(video, 0o600);
+    const provenance = { source: 'externally-supplied-official-complete', bytes: bytes.length, sha256,
+      duration, selectedRandomlyFrom: manifest.selectedRandomlyFrom, wholeEpisodeSilentDecode: 'passed',
+      limitation: 'Local media regression; does not establish current network playback or account authorization.' };
+    fs.writeFileSync(path.join(directory, 'hongguo-source.json'), JSON.stringify(provenance, null, 2) + '\n', { mode: 0o600 });
+    console.log('Hongguo external real-media fixture: provenance, bytes, duration and complete silent decode verified');
+    return video;
+  }
   const catalog = await browseList({ category: 'real-drama', page: 1, allowTrustedDns: true });
   if (!catalog.success || !catalog.results?.length) throw new Error('无法读取红果真实测试素材目录');
   const candidates = [...catalog.results];

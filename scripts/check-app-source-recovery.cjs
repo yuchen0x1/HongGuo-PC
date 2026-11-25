@@ -22,12 +22,15 @@ function load(axios, { realDevice = false, getPlaybackDevice, registerPlaybackDe
       if (name === './download-quality') return require('../src/native/download-quality');
       if (name === './playback-signature') return require('../src/native/playback-signature');
       if (name === './playback-v5') return require('../src/native/playback-v5');
+      if (name === './playback-profiles') return require('../src/native/playback-profiles');
       if (name === './request-signal') return require('../src/native/request-signal');
       if (name === './playback-device') return getPlaybackDevice || registerPlaybackDevice ? {
+        createPlaybackIdentityManager: require('../src/native/playback-device').createPlaybackIdentityManager,
         getPlaybackDevice: getPlaybackDevice || (async () => ({ device_id: '1000000000000001', iid: '1000000000000002', cdid: 'fixture' })),
         registerPlaybackDevice: registerPlaybackDevice || (async () => ({ device_id: '1000000000000001', iid: '1000000000000002', cdid: 'fixture' })),
       } : realDevice ? require('../src/native/playback-device')
         : {
+          createPlaybackIdentityManager: require('../src/native/playback-device').createPlaybackIdentityManager,
           getPlaybackDevice: async () => ({ device_id: '1000000000000001', iid: '1000000000000002', cdid: 'fixture' }),
           registerPlaybackDevice: async () => ({ device_id: '1000000000000001', iid: '1000000000000002', cdid: 'fixture' }),
         };
@@ -121,21 +124,21 @@ function row(definition, width, height, suffix) {
     if (recoveryRegistrations > 1) renewals++;
     return identities[recoveryRegistrations - 1];
   } });
-  assert.equal((await recovery.fetchAppPlayUrl(vid)).url, plain.main_url, 'empty model response renews the device and recovers');
-  assert.equal(recoverCalls, 4, 'one empty response walks the ladder (both hosts, video_tab GET) before a renewed identity recovers');
-  assert.equal(renewals, 1);
+  await assert.rejects(recovery.fetchAppPlayUrl(vid), { code: 'EMPTY_RESPONSE' });
+  assert.equal(recoverCalls, 3, 'one empty response walks the compatibility ladder once');
+  assert.equal(renewals, 0, 'empty responses alone do not prove that a device identity has expired');
   for (const status of [200, 403, 404]) {
     let calls = 0, registrations = 0;
     const unavailable = load(async () => { calls++; return { status, headers: {}, data: '' }; },
       { registerPlaybackDevice: async () => identities[registrations++] });
     await assert.rejects(unavailable.fetchAppPlayUrl(vid), error => status === 200 ? error.code === 'EMPTY_RESPONSE' : error.status === status);
-    assert.equal(calls, status === 200 ? 15 : 1, 'each empty round walks POST, alternate host and video_tab before renewing');
-    assert.equal(registrations, status === 200 ? 5 : 1, `registration count for HTTP ${status}`);
+    assert.equal(calls, status === 200 ? 3 : 1, 'empty replies permit one compatibility ladder; refusals stop immediately');
+    assert.equal(registrations, 1, `registration count for HTTP ${status}`);
   }
   let cooldownCalls = 0;
   await assert.rejects(load(async () => { cooldownCalls++; return { status: 200, headers: {}, data: '' }; },
     { getPlaybackDevice: async () => identities[0] }).fetchAppPlayUrl(vid), error => error.code === 'EMPTY_RESPONSE');
-  assert.equal(cooldownCalls, 15, 'the ladder stays bounded across renewed V5 identities');
+  assert.equal(cooldownCalls, 3, 'the ladder stays bounded without cycling identities');
   let clock = Date.now(), slowCalls = 0;
   const slowRegistration = load(async config => {
     slowCalls++;
@@ -171,13 +174,13 @@ function row(definition, width, height, suffix) {
   assert.equal((await direct.fetchAppPlayUrl(vid, { quality: '1080p' })).width, 1080);
 
   let registrations = 0;
-  const oneUseDevice = load(async config => inlineResponse([plain]), {
-    getPlaybackDevice: async () => assert.fail('playback model must not reuse the cached device'),
+  const stableDevice = load(async config => inlineResponse([plain]), {
+    getPlaybackDevice: async () => assert.fail('playback model must use its separate identity lifetime'),
     registerPlaybackDevice: async () => ({ device_id: String(++registrations), iid: '2', cdid: 'fixture' }),
   });
-  await oneUseDevice.fetchAppPlayUrl(vid);
-  await oneUseDevice.fetchAppPlayUrl(vid);
-  assert.equal(registrations, 2, 'each model request registers a device because the upstream may allow one request per identity');
+  await stableDevice.fetchAppPlayUrl(vid);
+  await stableDevice.fetchAppPlayUrl(vid);
+  assert.equal(registrations, 1, 'successful playback keeps one identity until explicit expiry evidence');
 
   // Encode a synthetic Spade key, so the real decoder is exercised without captured credentials.
   const keyHex = '0123456789abcdef0123456789abcdef';
@@ -216,7 +219,7 @@ function row(definition, width, height, suffix) {
     return inlineResponse([plain]);
   }, { realDevice: true });
   const simultaneous = await Promise.all([registered.fetchAppPlayUrl(vid), registered.fetchAppPlayUrl(vid)]);
-  assert.equal(registrations, 2, 'each model request uses a separately registered device');
+  assert.equal(registrations, 1, 'concurrent model requests retain one registered playback identity');
   assert.equal(modelCalls, 2);
   assert.ok(simultaneous.every(result => result.url === plain.main_url));
   assert.doesNotMatch(JSON.stringify(simultaneous), /synthetic-unused-token/);

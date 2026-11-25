@@ -60,7 +60,9 @@ function load() {
     module: { exports: {} },
     require(name) {
       if (name === 'axios') return axios;
-      if (name === './playback-device') return { registerPlaybackDevice: async () => identity };
+      if (name === './playback-device') return { createPlaybackIdentityManager: require(path.join(nativeDir, 'playback-device')).createPlaybackIdentityManager,
+        registerPlaybackDevice: async () => identity };
+      if (name === './playback-profiles') return require(path.join(nativeDir, 'playback-profiles'));
       if (name === './sm3') return require(path.join(nativeDir, 'sm3'));
       if (name === './download-quality') return require(path.join(nativeDir, 'download-quality'));
       if (name === './playback-signature') return require(path.join(nativeDir, 'playback-signature'));

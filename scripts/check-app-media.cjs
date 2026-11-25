@@ -71,6 +71,15 @@ function load(url, mode = 'ok', key = contentKey) {
     assert.equal(h.children.length, 1, 'encrypted preparation must start ffmpeg');
     await h.handlers['release-online-play']({}, { requestId: 'cancel' });
     assert.equal((await pending).success, false); assert.equal(h.children[0].killed, true);
+    assert.ok(vm.runInContext('onlineWork.size', h.context) > 0, 'native cleanup must remain registered after cancellation returns');
+    let cleanupTimer;
+    try {
+      await Promise.race([
+        vm.runInContext('Promise.allSettled([...onlineWork].map(job => job.promise))', h.context),
+        new Promise((_, reject) => { cleanupTimer = setTimeout(() => reject(new Error('native cleanup exceeded its shutdown budget')), 3000); }),
+      ]);
+    } finally { clearTimeout(cleanupTimer); }
+    assert.equal(vm.runInContext('onlineWork.size', h.context), 0, 'completed cleanup must leave no registered work');
     assert.deepEqual(fs.readdirSync(h.dir), []);
   });
   await check('native failure does not expose keys or retain partial output', async () => {

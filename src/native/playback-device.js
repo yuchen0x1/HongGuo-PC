@@ -6,8 +6,9 @@
 // Changes: fixed anonymous phone profile; process-only identity; no cookies or tokens.
 const crypto = require('node:crypto');
 const { gzipSync } = require('node:zlib');
+const { DEVICE_REGISTRATION, getPlaybackProfile } = require('./playback-profiles');
 
-const REGISTER_URL = 'https://log5-applog-lf.fqnovel.com/service/2/device_register/?tt_data=a&cronet_version=8d40f833_2026-03-03&ttnet_version=4.2.243.31-douyin&use_store_region_cookie=1';
+const REGISTER_URL = DEVICE_REGISTRATION.endpoint;
 const KDF_SALT = Buffer.from('4dd4c2e6b83162090e52b3c7a6733ba41cb2462b829ab58a196b39db57177524f49baf7f08e8d68d26a72e37c1a95a2f1f05a51892aef2949732b62a38aadd58', 'hex');
 let registration;
 let refreshAfter = 0;
@@ -39,26 +40,17 @@ function registrationSignal(parent, timeout) {
 }
 
 async function registerPlaybackDevice(requestJson, options = {}) {
-    const request = registrationSignal(options?.signal, 8000);
+    const timeout = Math.max(1, Math.min(getPlaybackProfile().timeout.registrationMs, Number(options.timeoutMs) || Infinity));
+    const request = registrationSignal(options?.signal, timeout);
     try {
+            if (request.signal.aborted) throw Object.assign(new Error('Cancelled registration'), { code: 'ERR_CANCELED' });
             const now = Date.now();
             const cdid = crypto.randomUUID();
             const header = {
-                display_name: '红果免费短剧', update_version_code: 73932, manifest_version_code: 73932,
-                app_version_minor: '7.3.9.32', aid: 8662, channel: 'update_64', package: 'com.phoenix.read',
-                app_version: '7.3.9.32', version_code: 73932, sdk_version: '3.7.0-rc.34-fanqie-xiaoshuo',
-                sdk_target_version: 29, git_hash: '3a88f4e', os: 'Android', os_version: '16', os_api: 36,
-                device_model: '25053RT47C', device_brand: 'Redmi', device_manufacturer: 'Redmi',
-                cpu_abi: 'arm64-v8a', release_build: 'b5e187f', density_dpi: 520, display_density: 'mdpi',
-                resolution: '1280x2772', language: 'zh', timezone: 8, access: 'wifi', not_request_sender: 0,
-                carrier: 'CHINA MOBILE', mcc_mnc: '46000', rom: 'eng.root.20231116.160340',
-                rom_version: 'W528JS release-keys', cdid,
-                sig_hash: '56a962410c494bbaf0b58dba20cae56f', openudid: crypto.randomBytes(8).toString('hex'),
-                clientudid: crypto.randomUUID(), ipv6_list: [], region: 'CN', tz_name: 'Asia/Shanghai',
-                tz_offset: 28800, sim_region: 'cn', sim_serial_number: [], oaid_may_support: false,
+                ...DEVICE_REGISTRATION.profile, cdid, openudid: crypto.randomBytes(8).toString('hex'),
+                clientudid: crypto.randomUUID(),
                 req_id: crypto.randomUUID(), device_platform: 'android',
-                custom: { account_region_src: 'fallback', account_region: 'cn', host_bit: 64, dragon_device_type: 'phone' }, pre_installed_channel: '',
-                apk_first_install_time: now, is_system_app: 0, sdk_flavor: 'china', guest_mode: 0,
+                apk_first_install_time: now,
             };
             const compressed = gzipSync(Buffer.from(JSON.stringify({ magic_tag: 'ss_app_log', header, _gen_time: now })));
             const random = crypto.randomBytes(32);
@@ -71,15 +63,11 @@ async function registerPlaybackDevice(requestJson, options = {}) {
             const response = await requestJson(REGISTER_URL, {
                 method: 'POST',
                 headers: {
-                    'User-Agent': 'com.phoenix.read/72232 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3)',
-                    Accept: 'application/json', 'Content-Type': 'application/octet-stream;tt-data=a',
-                    'log-encode-type': 'gzip', 'x-ss-dp': '8662', 'x-ss-req-ticket': String(now),
-                    'x-vc-bdturing-sdk-version': '4.0.3.cn', lc: '101', 'sdk-version': '2',
-                    'passport-sdk-version': '5051452', 'x-neptune': '-8|50:51:59:30:40:47:49:39',
+                    ...DEVICE_REGISTRATION.headers, 'x-ss-req-ticket': String(now),
                     'x-ss-stub': crypto.createHash('md5').update(data).digest('hex').toUpperCase(),
                 },
                 data,
-            }, Date.now() + 8000, request.signal);
+            }, Date.now() + timeout, request.signal);
             const device_id = responseId(response, 'device_id');
             const iid = responseId(response, 'install_id');
             if (Number(response?.code ?? response?.Code ?? 0) !== 0) throw Object.assign(new Error('Registration rejected'), { code: 'BUSINESS_REJECTED' });
@@ -132,4 +120,83 @@ function getPlaybackDevice(requestJson, rejectedDevice) {
     return registration;
 }
 
-module.exports = { getPlaybackDevice, registerPlaybackDevice };
+function createPlaybackIdentityManager({ register = registerPlaybackDevice, now = Date.now } = {}) {
+    let identity = null, pending = null, registeredAt = 0, refreshAfter = 0, retryAfter = 0;
+    let renewals = 0, state = 'uninitialized', lastFailure = null;
+    const cancelled = signal => Object.assign(new Error(signal?.reason?.name === 'TimeoutError' ? 'App 片源请求超时' : '已取消 App 片源请求'), {
+        code: signal?.reason?.name === 'TimeoutError' ? 'ETIMEDOUT' : 'ERR_CANCELED',
+    });
+    function join(operation, signal) {
+        const subscriber = {};
+        operation.subscribers.add(subscriber);
+        return new Promise((resolve, reject) => {
+            let done = false;
+            const finish = (callback, value) => {
+                if (done) return;
+                done = true;
+                signal?.removeEventListener('abort', abort);
+                operation.subscribers.delete(subscriber);
+                callback(value);
+            };
+            const abort = () => {
+                finish(reject, cancelled(signal));
+                if (!operation.subscribers.size) operation.controller.abort();
+            };
+            operation.promise.then(value => finish(resolve, value), error => finish(reject, error));
+            if (signal?.aborted) abort();
+            else signal?.addEventListener('abort', abort, { once: true });
+        });
+    }
+    return {
+        acquire(requestJson, { signal, rejectedDevice, reason, timeoutMs } = {}) {
+            if (signal?.aborted) return Promise.reject(cancelled(signal));
+            // Empty 200 bodies alone do not establish that a device has expired.
+            // Only an explicit expiry classification can replace a live identity.
+            const expired = rejectedDevice === identity && reason === 'DEVICE_IDENTITY_EXPIRED';
+            if (expired && now() < refreshAfter) {
+                identity = null;
+                state = 'expired';
+                retryAfter = refreshAfter;
+                lastFailure = Object.assign(new Error('播放设备已失效，请稍后重新初始化'), { code: 'DEVICE_IDENTITY_EXPIRED' });
+                return Promise.reject(lastFailure);
+            }
+            if (expired && !pending) {
+                identity = null;
+                refreshAfter = now() + DEVICE_REGISTRATION.refreshCooldownMs;
+                renewals++;
+            }
+            if (identity) return Promise.resolve(identity);
+            if (pending?.controller.signal.aborted) pending = null;
+            if (!pending) {
+                if (now() < retryAfter) {
+                    return Promise.reject(lastFailure || Object.assign(new Error('播放设备初始化暂不可用，请稍后重试'), { code: 'DEVICE_REGISTRATION_FAILED' }));
+                }
+                const operation = { controller: new AbortController(), subscribers: new Set(), promise: null };
+                pending = operation;
+                state = 'registering';
+                operation.promise = Promise.resolve().then(() => register(requestJson, { signal: operation.controller.signal, timeoutMs })).then(value => {
+                    if (operation.controller.signal.aborted) throw cancelled(operation.controller.signal);
+                    if (pending === operation) { identity = value; registeredAt = now(); retryAfter = 0; lastFailure = null; state = 'ready'; }
+                    return value;
+                }).catch(error => {
+                    if (pending === operation) {
+                        state = operation.controller.signal.aborted ? 'uninitialized' : 'failed';
+                        if (!operation.controller.signal.aborted) {
+                            retryAfter = now() + DEVICE_REGISTRATION.failureCooldownMs;
+                            const code = ['DEVICE_REGISTRATION_FAILED', 'DEVICE_IDENTITY_EXPIRED', 'ETIMEDOUT', 'ERR_CANCELED'].includes(error.code)
+                                ? error.code : 'DEVICE_REGISTRATION_FAILED';
+                            const reason = ['TIMEOUT', 'NETWORK_ERROR', 'EMPTY_RESPONSE', 'INVALID_RESPONSE', 'BUSINESS_REJECTED', 'SECURITY_BLOCKED'].includes(error.registrationFailure)
+                                || /^HTTP_[345]\d{2}$/.test(error.registrationFailure || '') ? error.registrationFailure : 'UNKNOWN';
+                            lastFailure = Object.assign(new Error('播放设备初始化暂不可用，请稍后重试'), { code, registrationFailure: reason });
+                        }
+                    }
+                    throw error;
+                }).finally(() => { if (pending === operation) pending = null; });
+            }
+            return join(pending, signal);
+        },
+        status: () => ({ state, registeredAt, renewals, pending: !!pending }),
+    };
+}
+
+module.exports = { getPlaybackDevice, registerPlaybackDevice, createPlaybackIdentityManager };

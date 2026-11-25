@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const root = path.join(__dirname, '..');
+const sourceRequire = require('node:module').createRequire(path.join(root, 'src/native/catalog.js'));
 const read = name => fs.readFileSync(path.join(__dirname, 'fixtures/rankings', `${name}.html`), 'utf8');
 
 async function main() {
@@ -11,7 +12,7 @@ async function main() {
   const context = { module: { exports: {} }, require: name => name === 'axios' ? { get: async (url, options) => {
     calls.push({ url, options });
     return { data: response ?? read(url.split('/rank/')[1].replace('?page=2', '-page-2')) };
-  } } : name === './web-media-guard' ? { webMediaRequestOptions: () => ({}) } : require(name), AbortController, setTimeout, clearTimeout, URL };
+  } } : name === './web-media-guard' ? { webMediaRequestOptions: () => ({}) } : sourceRequire(name), AbortController, setTimeout, clearTimeout, URL };
   vm.runInNewContext(fs.readFileSync(path.join(root, 'src/native/catalog.js'), 'utf8'), context);
   const { browseList } = context.module.exports;
   for (const [category, id, title, heat] of [

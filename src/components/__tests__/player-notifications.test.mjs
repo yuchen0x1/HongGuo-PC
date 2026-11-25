@@ -116,8 +116,7 @@ test('merge dialog is named by its visible title, and both confirmations keep ca
 
 test('the shared hook returns focus to the player page only after the confirm button submits', () => {
   const source = fs.readFileSync(new URL('../Player.jsx', import.meta.url), 'utf8');
-  const call = source.slice(source.indexOf('useDialogKeyboard('));
-  assert.match(call.slice(0, 400),
+  assert.match(source,
     /useDialogKeyboard\(active && !!\(confirmAsk \|\| mergeAsk\),[\s\S]*?'\.player-confirm',\s*undefined,\s*\(\) => \{ if \(!confirmReturnToPage\.current\) return null; confirmReturnToPage\.current = false; return document\.querySelector\('main\[data-page="player"\]'\); \}\)/,
     '对话框控制器保留默认初始焦点，第五参 null 时回落到触发按钮');
 
@@ -127,7 +126,14 @@ test('the shared hook returns focus to the player page only after the confirm bu
   assert.ok(body.indexOf('confirmReturnToPage.current = true;') > 0, '提交前标记需要回焦播放页');
   assert.ok(body.indexOf('confirmReturnToPage.current = true;') < body.indexOf('setConfirmAsk(null);'),
     '标志必须在关闭对话框之前置位，取消路径不得标记');
-  assert.equal((source.match(/data-dialog-initial-focus/g) || []).length, 2, '两个取消按钮仍是唯一的初始焦点标记');
+  const footers = [...source.matchAll(/<div className="player-confirm-foot">([\s\S]*?)<\/div>/g)];
+  assert.equal(footers.length, 2, '保留合并和通用确认两组操作');
+  for (const [, footer] of footers) {
+    const initialActions = [...footer.matchAll(/<button\b[\s\S]*?<\/button>/g)]
+      .map(([button]) => button).filter(button => button.includes('data-dialog-initial-focus'));
+    assert.equal(initialActions.length, 1, '每个确认框仅有一个初始焦点标记');
+    assert.match(initialActions[0], />\s*取消\s*<\/button>$/, '确认框的唯一初始焦点仍是取消按钮');
+  }
 });
 
 // 关键文案不再靠关键词猜测分类：确认错误分支是显式传入 type。

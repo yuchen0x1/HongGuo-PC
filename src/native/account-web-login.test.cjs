@@ -16,3 +16,17 @@ test('multiple cookie events share verification and closed windows receive no su
   observer.close(); gate.resolve(); await first;
   assert.equal(maximum, 1); assert.equal(success, 0);
 });
+test('web login forwards official Cookie expiry metadata and excludes unrelated or malformed cookies', async () => {
+  let received;
+  const cookies = [
+    { name: 'sessionid', value: 'private-fixture', domain: '.hongguoduanju.com', expirationDate: Date.now() / 1000 + 3600, secure: true, path: '/' },
+    { name: 'other', value: 'unrelated-secret', domain: 'unrelated.example' },
+    { name: 'bad', value: 'injected\r\nHeader: secret', domain: 'hongguoduanju.com' },
+    { name: 'expired', value: 'expired-secret', domain: 'hongguoduanju.com', expirationDate: Date.now() / 1000 - 60 },
+  ];
+  const observer = createWebLoginObserver({ readCookies: async () => cookies,
+    complete: async (header, metadata) => { received = { header, metadata }; return { status: 'signed-in' }; }, cancel: () => {}, onSignedIn: () => {} });
+  await observer.inspect();
+  assert.equal(received.header, 'sessionid=private-fixture');
+  assert.deepEqual(received.metadata.cookies, [cookies[0]]);
+});

@@ -6,6 +6,7 @@ const { EventEmitter } = require('node:events');
 const { Readable } = require('node:stream');
 const root = path.join(__dirname, '..');
 const file = path.join(root, 'src/native/catalog.js');
+const sourceRequire = require('node:module').createRequire(file);
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 const html = (category = 'real-drama', page = 1, list) => `<script>_ROUTER_DATA = ${JSON.stringify({ loaderData: { 'category_$': {
@@ -42,7 +43,7 @@ async function checkRankingRoutes() {
             signal.addEventListener('abort', () => { clearTimeout(timer); reject(new Error('canceled')); }, { once: true });
           });
         } };
-        return require(name);
+        return sourceRequire(name);
       } };
     vm.runInNewContext(fs.readFileSync(file, 'utf8'), context, { filename: file });
     const result = await context.module.exports.browseList({ category: 'hot-drama', allowTrustedDns });
@@ -104,7 +105,7 @@ async function checkBrowserTransport() {
     } } };
     if (name === 'axios') return { get: async () => { if (axiosHtml) return { data: axiosHtml }; throw Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' }); } };
     if (name === './web-media-guard') return { webMediaRequestOptions: () => ({}) };
-    return require(name);
+    return sourceRequire(name);
   }, Buffer, AbortController, URL, setTimeout: (fn, ms) => setTimeout(fn, ms === 10000 ? 80 : ms === 3000 ? 20 : ms), clearTimeout };
   vm.runInNewContext(fs.readFileSync(file, 'utf8'), context, { filename: file });
   const { browseList } = context.module.exports;
@@ -181,7 +182,7 @@ async function main() {
   let response = (url) => url.endsWith('/comic') ? comic.promise : Promise.resolve({ data: html('real-drama', url.includes('page=2') ? 2 : 1) });
   const context = { module: { exports: {} }, require: name => name === 'axios' ? { get: (url, options) => {
     calls.push({ url, options }); return response(url);
-  } } : name === './web-media-guard' ? { webMediaRequestOptions: () => ({}) } : require(name), AbortController, setTimeout: (fn, ms) => setTimeout(fn, ms === 10000 ? 80 : ms === 3000 ? 20 : ms), clearTimeout, URL, console };
+  } } : name === './web-media-guard' ? { webMediaRequestOptions: () => ({}) } : sourceRequire(name), AbortController, setTimeout: (fn, ms) => setTimeout(fn, ms === 10000 ? 80 : ms === 3000 ? 20 : ms), clearTimeout, URL, console };
   vm.runInNewContext(fs.readFileSync(file, 'utf8'), context, { filename: file });
   const { browseList } = context.module.exports;
   const slowComic = browseList({ category: 'comic' });

@@ -19,9 +19,11 @@ const checks = [
       return value;
     }, ipcMain: { handle: (name, fn) => handlers[name] = fn },
       hongguo: { fetchEpisodeList: async () => ({ episodes: [{ vid: 'xifan:huabo:a:2', vid_index: 2, locked: true }] }) },
+      onlineSessions: new Map(),
       compatPreparing: new Map(), compatRequests: new Map(), compatClearing: null, compatPathFor: () => 'cached',
       fs: { existsSync: () => { cacheReads++; return true; }, statSync: () => ({ size: 200000 }), utimesSync() {} },
       localPlayUrl: () => 'file:///cached.mp4' };
+    vm.runInNewContext(extract('foregroundPlaybackRequestId'), context);
     vm.runInNewContext(extract('transcodeForPlayback'), context);
     const start = source.indexOf("ipcMain.handle('transcode-for-playback'");
     vm.runInNewContext(source.slice(start, source.indexOf('\n});', start) + 4), context);

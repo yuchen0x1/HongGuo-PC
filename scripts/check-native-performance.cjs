@@ -25,12 +25,11 @@ function fixture({ web = true, api = false, app = false, blockedVids = [], html 
       if (!state.web || blockedVids.some(vid => url.endsWith(`/${vid}`))) throw new Error('web unavailable');
       return { data: html };
     },
-    async post(url, body) {
+    async post(url) {
       state.post++;
+      assert.ok(url.includes('multi_video_detail'), 'only the existing episode-list API may use this legacy transport');
       if (!state.api) return { status: 200, headers: {}, data: Buffer.alloc(0) };
-      const data = url.includes('multi_video_detail')
-        ? { '1': { video_data: { series_title: '测试剧', video_list: [{ vid: '11', vid_index: 1 }] } } }
-        : { [body.mixed_video_id_map['1004'][0]]: { video_model: JSON.stringify({ video_list: [{ main_url: 'https://media.example/encrypted.mp4', encrypt_info: { spade_a: 'test-key' } }] }) } };
+      const data = { '1': { video_data: { series_title: '测试剧', video_list: [{ vid: '11', vid_index: 1 }] } } };
       return { status: 200, headers: {}, data: Buffer.from(JSON.stringify({ code: 0, data })) };
     },
   };
@@ -100,22 +99,23 @@ const checks = [
     await assert.rejects(native.fetchEpisodeList('1'));
     assert.equal(state.get, 6, '网页失败后应各用可信/普通 DNS 重新竞速 player 与 detail');
     assert.equal((await native.fetchPlayUrlSingle('11', '1')).url, null);
-    assert.equal(state.post, 2, '分集与播放地址空响应各只尝试一次');
+    assert.equal(state.post, 1, '分集空响应只尝试一次，播放不得调用未经验证的旧接口');
     assert.equal(state.waits, 0, '空响应不进入退避');
     state.web = true;
     assert.equal((await native.fetchEpisodeList('1')).total, 2);
     assert.equal((await native.fetchPlayUrlSingle('11', '1')).source, 'web');
   }],
-  ['网页失败仍可回退分集 API 和加密播放源', async () => {
-    const { native, state } = fixture({ web: false, api: true });
+  ['网页失败仍可回退分集 API 和统一 App 加密播放源', async () => {
+    const { native, state } = fixture({ web: false, api: true, app: true });
     assert.equal((await native.fetchEpisodeList('1')).total, 1);
     const play = await native.fetchPlayUrlSingle('11', '1');
-    assert.equal(play.source, 'api');
-    assert.equal(play.spadeA, 'test-key');
+    assert.equal(play.source, 'app');
+    assert.equal(play.contentKey, '01'.repeat(16));
     assert.ok(state.get > 0, '优先尝试网页源');
-    assert.equal(state.post, 2);
+    assert.equal(state.post, 1, '分集保留旧 API，播放由统一 App 引擎处理');
+    assert.equal(state.appCalls, 1);
   }],
-  ['网页可用范围与后续集数错误，仍保留 API 回退', async () => {
+  ['网页可用范围与后续集数错误，仍保留统一 App 回退', async () => {
     const { native, state } = fixture({
       html: page.replace('"vid_list"', '"accessible_episode_cnt":1,"vid_list"'),
       blockedVids: ['11', '12'],
@@ -129,10 +129,11 @@ const checks = [
     assert.equal(unavailable.code, 'SOURCE_UNAVAILABLE');
     assert.doesNotMatch(unavailable.error, /前 1 集.*第 2 集/);
     assert.doesNotMatch(unavailable.error, /付费|会员/);
-    state.api = true;
+    state.app = true;
     const restored = await native.fetchPlayUrlSingle('12', '1');
-    assert.equal(restored.source, 'api');
-    assert.equal(restored.spadeA, 'test-key');
+    assert.equal(restored.source, 'app');
+    assert.equal(restored.contentKey, '01'.repeat(16));
+    assert.equal(state.post, 0, '后续播放请求不会访问旧播放 API');
   }],
 ];
 

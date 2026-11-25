@@ -1,6 +1,8 @@
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
-const { routeDiagnostic, safeCode, sanitizePlaybackDiagnostics, updatePlaybackRoute, playbackFailureMessage } = require('./playback-diagnostics');
+const { routeDiagnostic, safeCode, sanitizePlaybackDiagnostics, updatePlaybackRoute, playbackFailureMessage, createPlaybackDiagnostics } = require('./playback-diagnostics');
+const { getPlaybackProfile } = require('./playback-profiles');
+const { OFFICIAL_WEB_PROFILE } = require('./official-web-playback');
 
 test('route diagnostics preserve only known source and playback-stage fields', () => {
   const diagnostic = sanitizePlaybackDiagnostics({
@@ -99,4 +101,184 @@ test('only known diagnostic codes cross the renderer boundary', () => {
   assert.equal(safeCode('API_TOKEN:TOP_SECRET'), '');
   assert.equal(safeCode('https://signed.invalid'), '');
   assert.equal(sanitizePlaybackDiagnostics({ code: 'API_TOKEN:TOP_SECRET' }).code, undefined);
+});
+
+test('diagnostic report omits credentials, identities, raw errors and signed addresses in every supplied field', () => {
+  let now = 1000;
+  const collector = createPlaybackDiagnostics({ appVersion: '6.33.0', now: () => now });
+  const secret = 'PRIVATE_SENTINEL_8675309';
+  const supplied = Object.fromEntries(['cookie', 'ck', 'password', 'token', 'sessionid', 'device_id', 'iid', 'cdid', 'url', 'headers', 'signature', 'key', 'message', 'path'].map(key => [key, secret]));
+  collector.record({ event: 'source-start', ...supplied });
+  collector.record({ event: 'source-attempt', sourceRoute: 'app', routeId: 'preload-primary', ...supplied });
+  collector.record({ event: 'source-failure', sourceRoute: 'app', faultCode: 'API_EMPTY_RESPONSE', requestDurationMs: 312, ...supplied });
+  collector.record({ event: secret, sourceRoute: 'app', faultCode: 'API_EMPTY_RESPONSE' });
+  collector.record({ event: 'failure', sourceRoute: secret, routeId: secret, profileId: secret, profileVersion: secret, faultCode: secret, ...supplied });
+  const result = collector.snapshot({ account: { signedIn: true, sessionValidity: 'valid', account: { id: secret, nickname: secret }, ...supplied },
+    device: { state: 'ready', ...supplied }, profile: { id: secret, version: secret, ...supplied } });
+  assert.doesNotMatch(JSON.stringify(result), new RegExp(secret));
+  assert.equal(result.accountState, 'signed-in');
+  assert.equal(result.sessionValidity, 'valid');
+  assert.equal(result.deviceState, 'ready');
+  assert.equal(result.counts.sourceAttempts, 1);
+  assert.equal(result.counts.sourceFailures, 1);
+  assert.equal(result.lastErrorCode, 'API_EMPTY_RESPONSE');
+  assert.equal(result.requestDurationMs, 312);
+  assert.equal(result.profileId, getPlaybackProfile().id);
+  assert.equal(result.events.length, 4);
+});
+
+test('address discovery never counts as decoded playback and recovery count survives new source requests', () => {
+  let now = 1000;
+  const collector = createPlaybackDiagnostics({ appVersion: '6.33.0', now: () => now });
+  collector.record({ event: 'source-start' });
+  collector.record({ event: 'source-attempt', sourceRoute: 'app' });
+  collector.record({ event: 'source-success', sourceRoute: 'app' });
+  assert.equal(collector.snapshot().lastSourceAt, 1000);
+  assert.equal(collector.snapshot().lastSuccessAt, null);
+  assert.equal(collector.snapshot().decoderStatus, 'pending');
+  now = 2000;
+  collector.record({ event: 'recovery', faultCode: 'CDN_UNAVAILABLE' });
+  collector.record({ event: 'source-start' });
+  assert.equal(collector.snapshot().recoveryCount, 1);
+  collector.record({ event: 'playback-success', decoderStatus: 'native' });
+  assert.equal(collector.snapshot().lastSuccessAt, 2000);
+  assert.equal(collector.snapshot().mediaStatus, 'playing');
+  assert.equal(collector.snapshot().decoderStatus, 'native');
+  assert.equal(collector.snapshot().counts.playbackSuccesses, 1);
+  collector.resetMedia();
+  assert.equal(collector.snapshot().recoveryCount, 0);
+  assert.equal(collector.snapshot().counts.recoveries, 1);
+});
+
+test('diagnostics keep a bounded detached event history and normalize account manager validity without leaking identities', () => {
+  const collector = createPlaybackDiagnostics({ appVersion: 'cookie=private' });
+  for (let i = 0; i < 90; i++) collector.record({ event: 'media-state', mediaStatus: 'buffering', decoderStatus: 'native' });
+  const first = collector.snapshot({ account: { signedIn: false, sessionValidity: 'anonymous' } });
+  assert.equal(first.appVersion, 'unknown');
+  assert.equal(first.sessionValidity, 'none');
+  assert.equal(first.events.length, 40);
+  first.events[0].event = 'private'; first.counts.sourceAttempts = 500;
+  assert.equal(collector.snapshot().events[0].event, 'media-state');
+  assert.equal(collector.snapshot().counts.sourceAttempts, 0);
+  assert.equal(collector.snapshot({ account: { signedIn: true, sessionValidity: 'unverified' } }).sessionValidity, 'unchecked');
+  assert.equal(collector.snapshot({ account: { signedIn: true, sessionValidity: 'valid', checking: true } }).sessionValidity, 'checking');
+  const expired = collector.snapshot({ account: { signedIn: false, sessionValidity: 'expired' } });
+  assert.equal(expired.accountState, 'expired');
+  assert.equal(expired.playbackAuthorization, 'unverified');
+});
+
+test('switching provider clears a stale App subroute instead of attributing it to website or local media', () => {
+  const collector = createPlaybackDiagnostics();
+  collector.record({ event: 'source-success', sourceRoute: 'app', routeId: 'preload-primary' });
+  assert.equal(collector.snapshot().routeId, 'preload-primary');
+  collector.record({ event: 'source-success', sourceRoute: 'web' });
+  assert.equal(collector.snapshot().routeId, '');
+  collector.record({ event: 'media-state', sourceRoute: 'local', routeId: 'preload-primary' });
+  assert.equal(collector.snapshot().routeId, '');
+});
+
+test('versioned provider observations retain bounded per-route outcomes without claiming media success', () => {
+  const collector = createPlaybackDiagnostics();
+  const profile = getPlaybackProfile();
+  collector.record({ type: 'source-request', profileId: profile.id, profileVersion: profile.version,
+    routeId: 'preload-primary', code: 'EMPTY_RESPONSE', elapsedMs: 212, status: 200, modelValid: false,
+    url: 'https://signed.invalid/?token=private' });
+  collector.record({ type: 'source-request', routeId: 'preload-alternate', code: '', elapsedMs: 300, status: 200, modelValid: true });
+  const snapshot = collector.snapshot();
+  assert.equal(snapshot.counts.sourceAttempts, 2);
+  assert.equal(snapshot.counts.sourceSuccesses, 0);
+  assert.equal(snapshot.lastSuccessAt, null);
+  assert.equal(snapshot.requestRoutes[0].lastFaultCode, 'API_EMPTY_RESPONSE');
+  assert.equal(snapshot.requestRoutes[0].failures, 1);
+  assert.equal(snapshot.requestRoutes[1].modelAcceptanceRate, 1);
+  assert.equal(snapshot.requestRoutes[1].lastRequestDurationMs, 300);
+  assert.equal(snapshot.routeId, 'preload-alternate');
+  assert.doesNotMatch(JSON.stringify(snapshot), /signed\.invalid|token=private/);
+});
+
+test('current recovery budgets replace the display count without erasing cumulative recoveries', () => {
+  const collector = createPlaybackDiagnostics();
+  collector.record({ event: 'recovery', recoveryCount: 2 });
+  assert.equal(collector.snapshot().recoveryCount, 2);
+  collector.record({ event: 'source-start' });
+  assert.equal(collector.snapshot().recoveryCount, 2);
+  collector.record({ event: 'media-state', recoveryCount: 0 });
+  assert.equal(collector.snapshot().recoveryCount, 0);
+  assert.equal(collector.snapshot().counts.recoveries, 1);
+  for (const recoveryCount of [-1, 0.5, Infinity, '4']) collector.record({ event: 'media-state', recoveryCount });
+  assert.equal(collector.snapshot().recoveryCount, 0);
+});
+
+test('official public website observations keep their profile and metrics after an App configuration snapshot', () => {
+  const collector = createPlaybackDiagnostics({ now: () => 1200 });
+  const web = { sourceRoute: 'web', routeId: OFFICIAL_WEB_PROFILE.routeId,
+    profileId: OFFICIAL_WEB_PROFILE.id, profileVersion: OFFICIAL_WEB_PROFILE.version };
+  collector.record({ event: 'source-start' });
+  collector.record({ type: 'source-request', ...web, elapsedMs: 320, status: 200, modelValid: true });
+  collector.record({ event: 'source-success', ...web, requestDurationMs: 330 });
+  const snapshot = collector.snapshot({ profile: getPlaybackProfile() });
+  assert.equal(snapshot.sourceRoute, 'web');
+  assert.equal(snapshot.routeId, web.routeId);
+  assert.equal(snapshot.profileId, web.profileId);
+  assert.equal(snapshot.profileVersion, web.profileVersion);
+  assert.equal(snapshot.routes.find(route => route.source === 'web').attempts, 1);
+  assert.equal(snapshot.routes.find(route => route.source === 'web').successes, 1);
+  assert.equal(snapshot.routes.find(route => route.source === 'app').attempts, 0);
+  assert.equal(snapshot.requestRoutes.find(route => route.routeId === web.routeId).modelsAccepted, 1);
+  assert.equal(snapshot.lastSourceAt, 1200);
+  assert.equal(snapshot.lastSuccessAt, null);
+  assert.equal(snapshot.counts.playbackSuccesses, 0);
+  assert.equal(snapshot.decoderStatus, 'pending');
+  assert.equal(snapshot.mediaStatus, 'loading');
+});
+
+test('profile pairs and subroutes cannot be attributed to another provider', () => {
+  const collector = createPlaybackDiagnostics();
+  const app = getPlaybackProfile();
+  collector.record({ type: 'source-request', sourceRoute: 'web', routeId: 'preload-primary',
+    profileId: app.id, profileVersion: OFFICIAL_WEB_PROFILE.version, status: 200, modelValid: true });
+  const snapshot = collector.snapshot({ profile: { id: OFFICIAL_WEB_PROFILE.id, version: app.version } });
+  assert.equal(snapshot.sourceRoute, 'web');
+  assert.equal(snapshot.routeId, '');
+  assert.equal(snapshot.profileId, '');
+  assert.equal(snapshot.profileVersion, '');
+  assert.equal(snapshot.requestRoutes.find(route => route.routeId === 'preload-primary').attempts, 0);
+});
+
+test('background source work retains aggregate history without overwriting foreground playback state', () => {
+  let now = 1000;
+  const collector = createPlaybackDiagnostics({ now: () => now });
+  const foreground = 'foreground-private-request', background = 'background-private-request';
+  assert.equal(collector.setForeground(foreground), true);
+  assert.equal(collector.isForeground(foreground), true);
+  assert.equal(collector.isForeground(background), false);
+  for (const invalid of [undefined, null, {}, 'bad request', 'a'.repeat(129)]) {
+    assert.equal(collector.setForeground(invalid), false);
+  }
+  const web = { sourceRoute: 'web', routeId: OFFICIAL_WEB_PROFILE.routeId,
+    profileId: OFFICIAL_WEB_PROFILE.id, profileVersion: OFFICIAL_WEB_PROFILE.version };
+  collector.record({ event: 'source-success', requestId: foreground, ...web, requestDurationMs: 123 });
+  collector.record({ event: 'playback-success', requestId: foreground, mediaStatus: 'paused', decoderStatus: 'native', recoveryCount: 2 });
+  const before = collector.snapshot();
+  now = 2000;
+  const app = getPlaybackProfile();
+  collector.record({ event: 'source-start', requestId: background });
+  collector.record({ type: 'source-request', requestId: background, sourceRoute: 'app', routeId: 'preload-primary',
+    profileId: app.id, profileVersion: app.version, elapsedMs: 321, code: 'EMPTY_RESPONSE', status: 200, modelValid: false });
+  collector.record({ event: 'source-failure', requestId: background, sourceRoute: 'app', faultCode: 'API_EMPTY_RESPONSE' });
+  collector.record({ event: 'failure', sourceRoute: 'app', faultCode: 'NETWORK_TIMEOUT' });
+  collector.record({ event: 'recovery', requestId: background, recoveryCount: 9 });
+  const after = collector.snapshot({ profile: app });
+  for (const key of ['sourceRoute', 'routeId', 'profileId', 'profileVersion', 'mediaStatus', 'decoderStatus',
+    'stage', 'lastSourceAt', 'lastSuccessAt', 'lastErrorCode', 'requestDurationMs', 'recoveryCount']) {
+    assert.equal(after[key], before[key], `${key} belongs to the foreground`);
+  }
+  assert.equal(after.counts.sourceAttempts, 1);
+  assert.equal(after.counts.sourceFailures, 1);
+  assert.equal(after.counts.recoveries, 1);
+  assert.equal(after.faults.API_EMPTY_RESPONSE, 1);
+  assert.equal(after.faults.NETWORK_TIMEOUT, 1);
+  assert.equal(after.requestRoutes.find(route => route.routeId === 'preload-primary').failures, 1);
+  assert(after.events.some(event => event.faultCode === 'API_EMPTY_RESPONSE'));
+  assert.doesNotMatch(JSON.stringify(after), /foreground-private-request|background-private-request|requestId/);
 });

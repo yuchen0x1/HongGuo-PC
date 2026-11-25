@@ -1,11 +1,12 @@
 const axios = require('axios');
+const { stripMarkupText } = require('./plain-text');
 
 const API = 'https://xifan-api-cn.youlishipin.com';
 const ID = /^[a-zA-Z0-9_-]{1,200}$/;
 let genreCache;
 
 function plainText(value) {
-  return String(value || '').replace(/<[^>]*>/g, '').trim();
+  return stripMarkupText(String(value || '')).trim();
 }
 
 function parseId(value, episode = false) {
