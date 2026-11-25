@@ -365,9 +365,9 @@ function automaticAppProcess(previousPid) {
     return automaticAppProcess(previousPid);
   });
   const version = pwsh('(Get-Item -LiteralPath $env:HONGGUO_TEST_EXE).VersionInfo.ProductVersion', { HONGGUO_TEST_EXE: exe });
-  assert.equal(version, to.slice(1) + '.0');
   receipt.restartedProcessId = restarted;
   receipt.installedVersion = version;
+  assert.equal(version, to.slice(1) + '.0.0', 'Windows executable must report the exact four-part target version');
   receipt.steps.push('Update installer exited the old app and launched the new installed executable');
 
   process.kill(restarted);
