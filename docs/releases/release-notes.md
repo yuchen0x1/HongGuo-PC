@@ -1,9 +1,9 @@
 # 更新记录
-## 6.34 · 2026-11-25
+## 6.35 · 2026-11-25
 
 ## 📢 版本概述
 
-本次更新集中改造账号与播放底层：保留原有扫码登录和播放器，统一会话检查、取源调度、媒体地址管理及故障恢复，并增加可脱敏导出的播放诊断。官网公开线路已通过两集真实完整下载解码及 Electron 在线自动连播，账号重启恢复和本地播放交互也已验证。App 播放接口的空响应仍存在，官网线路仅处理官方允许公开访问的完整分集。
+本次更新包含播放稳定性改造及 Windows 安装验收修复：保留原有扫码登录和播放器，统一会话检查、取源调度、媒体地址管理及故障恢复，并增加可脱敏导出的播放诊断。修复 Windows 安装包检查器无法按 Windows 路径读取 ASAR 内文件的问题。App 播放接口空响应仍存在，官网公开线路仅处理官方允许公开访问的完整分集。
 
 ## ✨ 新增功能
 
@@ -39,7 +39,7 @@
 
 | 文件名 | 平台 / 架构 | 说明 |
 |---|---|---|
-| `hongguo-downloader-6.34-win-x64-setup.exe` | Windows x64 | 向导式安装版 |
+| `hongguo-downloader-6.35-win-x64-setup.exe` | Windows x64 | 向导式安装版 |
 | `latest.yml` | Windows x64 | 应用内更新清单，无需手动运行 |
 
 - 首次安装：下载安装 EXE 并按向导选择安装目录。
@@ -70,7 +70,7 @@
 
 **问题反馈：** https://github.com/yuchen0x1/HongGuo-PC/issues
 
-**版本下载：** https://github.com/yuchen0x1/HongGuo-PC/releases/tag/v6.34
+**版本下载：** https://github.com/yuchen0x1/HongGuo-PC/releases/tag/v6.35
 
 ## 6.33 · 2026-11-25
 
