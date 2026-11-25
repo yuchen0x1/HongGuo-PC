@@ -12,11 +12,12 @@ const playerPage = (detail, data = {}, before = {}, route = 'player_(series_id)/
   try {
     const seriesRoute = 'player_(series_id)/page';
     axios.get = async () => ({ data: playerPage({ series_id: '123458', series_name: '整剧入口',
-      vid_list: ['31', '32'], series_cover: 'https://img.example/series.jpg', accessible_episode_cnt: 1 }, {}, {}, seriesRoute) });
+      vid_list: ['31', '32'], series_cover: 'https://img.example/series.jpg', series_intro: '官网实际返回的简介字段', accessible_episode_cnt: 1 }, {}, {}, seriesRoute) });
     const seriesPage = await fetchEpisodeListFromWeb('123458');
     assert.deepEqual(seriesPage.episodes.map(item => item.vid), ['31', '32']);
     assert.equal(seriesPage.series_title, '整剧入口');
     assert.equal(seriesPage.cover, 'https://img.example/series.jpg');
+    assert.equal(seriesPage.description, '官网实际返回的简介字段');
     assert.deepEqual(seriesPage.episodes.map(item => item.web_available), [true, false]);
     for (const detail of [{ vid_list: ['31'] }, { series_id: '999', vid_list: ['31'] }]) {
       axios.get = async () => ({ data: playerPage(detail, {}, {}, seriesRoute) });
@@ -62,11 +63,41 @@ const playerPage = (detail, data = {}, before = {}, route = 'player_(series_id)/
 
     axios.get = async () => { throw new Error('web unavailable'); };
     axios.post = async () => ({ status: 200, headers: {}, data: Buffer.from(JSON.stringify({
-      code: 0, data: { '123457': { video_data: { series_title: '本剧', series_id: '123457', video_list: [{ vid: '21', vid_index: 1, series_id: '123457' }] } } },
+      code: 0, data: { '123457': { video_data: { series_title: '本剧', series_intro: 'App详情返回的简介字段', series_id: '123457', video_list: [{ vid: '21', vid_index: 1, series_id: '123457' }] } } },
     })) });
     const api = await fetchEpisodeList('123457');
     assert.deepEqual(api.episodes.map(item => item.vid), ['21']);
     assert.equal(api.series_id, '123457');
+    assert.equal(api.description, 'App详情返回的简介字段');
+
+    const numericSid = '7710000000000000001';
+    let raw = `{"code":0,"data":{"${numericSid}":{"video_data":{"series_id":${numericSid},"series_title":"精确编号",
+      "video_list":[{"vid":7710000000000000006,"vid_index":6,"series_id":${numericSid}},
+      {"vid":"7710000000000000005","vid_index":5,"series_id":"${numericSid}"}]}}}}`;
+    let calls = 0;
+    axios.post = async () => { calls++; return { status: 200, headers: {}, data: Buffer.from(raw) }; };
+    const exact = await fetchEpisodeList(numericSid);
+    assert.equal(calls, 1);
+    assert.equal(exact.series_id, numericSid, 'raw numeric series IDs must remain exact');
+    assert.deepEqual(exact.episodes.map(item => item.vid), ['7710000000000000005', '7710000000000000006'],
+      'quoted and raw numeric episode IDs must remain exact');
+    assert.deepEqual(exact.episodes.map(item => item.vid_index), [5, 6]);
+    assert.ok(exact.episodes.every(item => typeof item.vid_index === 'number'), 'episode indexes must remain numeric');
+    assert.ok(exact.episodes.every(item => item.series_id === numericSid));
+    console.log('PASS App detail IDs: raw numeric and quoted IDs stay exact; numeric code zero and episode indexes remain valid');
+
+    raw = '{"code":403,"data":{}}';
+    await assert.rejects(fetchEpisodeList('7710000000000000002'), /detail API 失败:.*"code":403/,
+      'nonzero business codes must remain numeric refusals');
+    console.log('PASS App detail business code: nonzero numeric code is preserved and refused');
+
+    // An escaped property is not rewritten by the existing field allowlist helper.
+    // Once JSON.parse yields an unsafe Number, reject it instead of inventing lost digits.
+    raw = '{"code":0,"data":{"7710000000000000003":{"video_data":{"series_id":"7710000000000000003",'
+      + '"video_list":[{"\\u0076id":7710000000000000006,"vid_index":6}]}}}}';
+    await assert.rejects(fetchEpisodeList('7710000000000000003'), /分集编号无效或已失去精度/,
+      'already rounded numeric episode IDs must not be converted into plausible strings');
+    console.log('PASS App detail unsafe Number: already rounded episode IDs are rejected');
   } finally {
     axios.get = originalGet; axios.post = originalPost;
   }

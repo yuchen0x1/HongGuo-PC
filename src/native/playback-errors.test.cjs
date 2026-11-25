@@ -48,3 +48,22 @@ test('provider aggregate keeps explicit rejections ahead of retryable network fa
   assert.equal(classifyPlaybackError({ sources: [{ code: 'ETIMEDOUT' }, { code: 'HTTP_429' }] }), 'API_RATE_LIMITED');
   assert.equal(classifyPlaybackError({ sources: [{ code: 'EMPTY_RESPONSE' }, { code: 'HTTP_403' }] }), 'API_FORBIDDEN');
 });
+
+test('website episode unavailability is a bounded stop fault and takes precedence over an App empty response', () => {
+  const code = 'WEB_EPISODE_UNAVAILABLE';
+  const policy = playbackRecoveryPolicy(code);
+  assert.ok(FAULT_CODES.includes(code));
+  assert.equal(classifyPlaybackError({ code }), code);
+  assert.equal(policy.action, 'stop');
+  assert.equal(policy.maxRetries, 0);
+  assert.equal(policy.retryable, false);
+  assert.equal(policy.message, '官网当前播放入口不提供本集，请在官方客户端查看可用播放方式。');
+  assert.doesNotMatch(policy.message, /登录|扫码|付费|DRM|无权|权限/);
+  const app = { source: 'app', code: 'EMPTY_RESPONSE' }, web = { source: 'web', code };
+  for (const sources of [[app, web], [web, app], [app, { source: 'web', sources: [web] }]]) {
+    assert.equal(classifyPlaybackError({ code: 'SOURCE_UNAVAILABLE', sources }), code);
+    assert.equal(classifyPlaybackError({ sources }, { stage: 'media' }), code);
+  }
+  assert.equal(classifyPlaybackError({ sources: [web, { code: 'HTTP_429' }] }), 'API_RATE_LIMITED');
+  assert.equal(classifyPlaybackError({ sources: [web, { code: 'ACCOUNT_SESSION_EXPIRED' }] }), 'ACCOUNT_EXPIRED');
+});

@@ -93,6 +93,7 @@
 .mode-tabs { border-radius: 10px; }
 .mode-tab { border-radius: 7px; transition: color var(--dur-fast) var(--ease-out); }
 .series-title { font-weight: 650; }
+.series-description { margin: 10px 0 0; max-width: 70ch; color: var(--text-secondary); font-size: var(--fs-sm); line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }
 .search-card { border-radius: var(--radius-lg); transition: background var(--dur-fast) var(--ease-out); }
 .episode-card { border-radius: var(--radius); transition: background var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out); }
 .series-cover, .series-cover-placeholder { border-radius: var(--radius-sm); box-shadow: var(--shadow-sm); }

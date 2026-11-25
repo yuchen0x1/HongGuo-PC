@@ -157,6 +157,7 @@
 .browse-drawer-count { font-size: 15px; font-weight: 500; }
 .browse-drawer-count b { color: var(--success); }
 .browse-drawer-sub { margin-top: 5px; font-size: var(--fs-sm); color: var(--text-secondary); }
+.browse-drawer-description { margin: 12px 0 0; color: var(--text-secondary); font-size: var(--fs-sm); line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }
 .browse-range-row { display: flex; gap: 8px; margin-top: 18px; }
 .browse-eps { display: grid; grid-template-columns: repeat(auto-fill, minmax(52px, 1fr)); gap: 8px; padding: 3px; max-height: 300px; overflow: auto; scrollbar-width: thin; scrollbar-color: var(--scroll-thumb) transparent; }
 .browse-eps::-webkit-scrollbar { display: block; width: 8px; }

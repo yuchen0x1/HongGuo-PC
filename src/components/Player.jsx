@@ -14,7 +14,7 @@ import CastPanel from './CastPanel';
 import AccountManagement from './AccountManagement';
 import VideoEnhancement, { useVideoEnhancement } from './VideoEnhancement';
 import { PLAYBACK_FAULT_CODES, playbackFaultCode, playbackFaultMessage, stopsPlaybackRecovery, allowsQualityFallback,
-  createPlaybackRecovery, remainingPlaybackRecovery, claimPlaybackRecovery, shouldOfferAccountLogin } from './playbackRecovery.mjs';
+  PLAYBACK_RECOVERY_TIMEOUT, createPlaybackRecovery, remainingPlaybackRecovery, claimPlaybackRecovery, shouldOfferAccountLogin } from './playbackRecovery.mjs';
 import './Player.css';
 import { Play, Film, Download, Check, RefreshCw, Layers, X, Trash2, ChevronDown, Zap } from './icons';
 
@@ -22,6 +22,7 @@ const localMediaKey = (seriesId, episode) => JSON.stringify([seriesId, episode?.
 const useCommitEffect = React.useLayoutEffect || useEffect;
 // 预取失败后短暂退避，避免 timeupdate 4Hz 反复撞同一个坏节点。
 const PREFETCH_RETRY_MS = 15 * 1000;
+const MAX_PREFETCH_ATTEMPTS = 3;
 // 播放期间最多预取后续两集；跳到更远时再按新位置补齐。
 const PREFETCH_AHEAD = 2;
 const AUTO_ONLINE_QUALITIES = ['1080p', '720p', 'auto'];
@@ -503,8 +504,9 @@ function Player({ target, onNavigate, onSeriesSelected, onFloatingChange, active
   }, []);
 
   useEffect(() => window.electronAPI.onAccountUpdated?.(status => {
+    releasePrefetch();
     if (status?.faultCode === 'ACCOUNT_EXPIRED') showToast(playbackFaultMessage('ACCOUNT_EXPIRED'), 'error');
-  }), [showToast]);
+  }), [showToast, releasePrefetch]);
 
   const savePlaybackPreferences = useCallback(() => {
     try { window.localStorage.setItem(PLAYBACK_PREFERENCES_KEY, JSON.stringify({ rate: preferredRateRef.current, volume: volumeRef.current, muted: mutedRef.current })); }
@@ -1442,15 +1444,18 @@ function Player({ target, onNavigate, onSeriesSelected, onFloatingChange, active
     for (const episode of targets) {
       const key = prefetchKey(activeSeriesId, episode.vid, onlineQuality);
       if (kept.some(request => prefetchKey(request.seriesId, request.vid, request.quality) === key)) continue;
-      const failedAt = prefetchFailureRef.current.get(key);
-      if (failedAt && Date.now() - failedAt < PREFETCH_RETRY_MS) continue;
+      const failure = prefetchFailureRef.current.get(key);
+      if (failure && (failure.terminal || failure.attempts >= MAX_PREFETCH_ATTEMPTS
+        || Date.now() - failure.startedAt >= PLAYBACK_RECOVERY_TIMEOUT
+        || Date.now() - failure.failedAt < PREFETCH_RETRY_MS)) continue;
       const request = { requestId: crypto.randomUUID(), vid: episode.vid, seriesId: activeSeriesId,
         vidIndex: episode.vid_index, quality: onlineQuality, ready: false };
       prefetchRef.current = [...prefetchRef.current, request];
       request.promise = window.electronAPI.prepareOnlinePlay({ ...request,
         quality: onlineQuality === 'compat' ? 'auto' : onlineQuality === 'auto' && supportsOnlineQuality ? '1080p' : onlineQuality,
         allowLowerQuality: onlineQuality === 'auto', prefetch: true })
-        .catch(error => ({ success: false, error: error?.message || String(error) }))
+        .catch(error => ({ success: false, code: error?.code, faultCode: error?.faultCode,
+          diagnostics: error?.diagnostics, error: error?.message || String(error) }))
         .then(result => {
           request.ready = result?.success === true;
           if (prefetchRef.current.includes(request)) {
@@ -1460,7 +1465,12 @@ function Player({ target, onNavigate, onSeriesSelected, onFloatingChange, active
             } else {
               const index = prefetchRef.current.indexOf(request);
               if (index >= 0) prefetchRef.current.splice(index, 1);
-              prefetchFailureRef.current.set(key, Date.now());
+              const faultCode = playbackFaultCode(result);
+              prefetchFailureRef.current.set(key, { failedAt: Date.now(), startedAt: failure?.startedAt ?? Date.now(),
+                attempts: (failure?.attempts || 0) + 1,
+                terminal: stopsPlaybackRecovery(faultCode) || ['API_EMPTY_RESPONSE', 'MEDIA_DECRYPT_FAILED'].includes(faultCode)
+                  || ['PREVIEW_ONLY', 'BUSINESS_REJECTED', 'SECURITY_BLOCKED', 'SOURCE_REMOVED'].includes(result?.code || result?.diagnostics?.code)
+                  || result?.locked === true });
               if (result?.streamId) request.streamId = result.streamId;
               releasePrefetchRequest(request);
             }
@@ -2352,7 +2362,8 @@ function Player({ target, onNavigate, onSeriesSelected, onFloatingChange, active
               <><Film size={34} /><p role="alert">{playbackError}</p><div className="player-placeholder-actions">
                 <button className="btn btn-primary" onClick={retryPlayback}>{current?.status === 'completed' ? '重试本集' : '重试本集（在线播放）'}</button>
                 {current?.vid && <button className="btn btn-outline" onClick={() => startOnlinePlay(currentIndex, undefined, true)}>重新连接片源</button>}
-                {supportsOnlineQuality && playbackDiagnostics?.stage === 'source' && <button className="btn btn-outline" onClick={() => setAccountLoginPrompt({
+                {supportsOnlineQuality && playbackDiagnostics?.stage === 'source'
+                  && playbackFaultCode(playbackDiagnostics) !== 'WEB_EPISODE_UNAVAILABLE' && <button className="btn btn-outline" onClick={() => setAccountLoginPrompt({
                   seriesId: activeSeriesId, vidIndex: currentIndex, version: mediaVersion.current, navigation: navigationVersion.current,
                   ...(accountResumeRef.current || { seekTo: currentPosition(), autoplay: false }),
                 })}>扫码登录后重试</button>}
@@ -2498,7 +2509,7 @@ function Player({ target, onNavigate, onSeriesSelected, onFloatingChange, active
       )}
 
       {detail?.web_accessible_episodes != null && detail.web_accessible_episodes < detail.total && (
-        <p className="player-tips">网页标记前 {detail.web_accessible_episodes} 集可访问；仅有预览或无完整片源时，自动尝试 App 片源。</p>
+        <p className="player-tips">官网标记前 {detail.web_accessible_episodes} 集可公开访问；目录包含后续集数不代表当前环境有完整片源，每集以实际播放结果为准。</p>
       )}
 
       {episodes.some((ep) => ep.locked) && <p className="player-tips">锁定集需在来源平台解锁，本应用不提供解锁；连播会跳过锁定集。</p>}

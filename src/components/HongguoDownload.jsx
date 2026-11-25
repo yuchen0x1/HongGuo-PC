@@ -6,6 +6,7 @@ import useMediaSources from './useMediaSources';
 import { mediaSourceLabel } from './mediaSourcesModel.mjs';
 import { isSubmitKey, parseEpisodeRange } from './episodeRange';
 import SeasonSwitcher from './SeasonSwitcher';
+import { waitForRequest } from './randomDramaModel.mjs';
 
 
 function HongguoDownload({ onNavigate, active = true, seedTerm = '' }) {
@@ -43,6 +44,12 @@ function HongguoDownload({ onNavigate, active = true, seedTerm = '' }) {
   useEffect(() => { if (seedTerm) setTab('search'); }, [seedTerm]);
 
   useEffect(() => () => { resolveRequest.current++; }, []);
+  useEffect(() => {
+    if (active) return;
+    resolveRequest.current++;
+    pendingResolve.current = null;
+    setLoading(false);
+  }, [active]);
   useEffect(() => {
     resolveRequest.current++; pendingResolve.current = null; setLoading(false);
     setSeriesData(current => current?.series_id?.startsWith('custom:') ? null : current);
@@ -143,11 +150,11 @@ function HongguoDownload({ onNavigate, active = true, seedTerm = '' }) {
     setSelectedVids(new Set());
 
     try {
-      const res = await window.electronAPI.hongguoResolve(value);
+      const res = await waitForRequest(window.electronAPI.hongguoResolve(value), { message: '分集加载超时，请重试本剧' });
       if (request !== resolveRequest.current) return;
       if (res?.success && res.data) {
         setSeriesData(res.data);
-        // 默认全选，网页未提供的集数自动尝试 App 片源。
+        // 默认选择未标记锁定的集数；实际可用范围以官方授权和返回为准。
         const allVids = new Set(res.data.episodes.filter((ep) => !ep.locked).map((ep) => ep.vid));
         setSelectedVids(allVids);
         setSuccessMsg(`解析成功！找到《${res.data.series_title}》共 ${res.data.total} 集`);
@@ -175,11 +182,11 @@ const handleSeasonPick = async (season) => {
   clearTextExport();
   setSelectedVids(new Set());
   try {
-    const res = await window.electronAPI.searchResolve(season.series_id);
+    const res = await waitForRequest(window.electronAPI.searchResolve(season.series_id), { message: '分集加载超时，请重试本剧' });
     if (request !== resolveRequest.current) return;
     if (res?.success && res.data) {
       setSeriesData(res.data);
-      // 默认全选，网页未提供的集数自动尝试 App 片源。
+      // 默认选择未标记锁定的集数；实际可用范围以官方授权和返回为准。
       const allVids = new Set(res.data.episodes.filter((ep) => !ep.locked).map((ep) => ep.vid));
       setSelectedVids(allVids);
       setSuccessMsg(`已切换到《${res.data.series_title}》共 ${res.data.total} 集，可直接播放或提交下载`);
@@ -438,6 +445,7 @@ const handleSeasonPick = async (season) => {
                   <span className="badge">共 {seriesData.total} 集</span>
                   <span className="badge badge-secondary">已选 {selectedVids.size} 集</span>
                 </div>
+                {typeof seriesData.description === 'string' && seriesData.description.trim() && <p className="series-description">{seriesData.description}</p>}
               </div>
             </div>
 
@@ -497,7 +505,7 @@ const handleSeasonPick = async (season) => {
           <p className="settings-hint batch-quality-hint" id="batch-quality-hint">新建下载任务生效；红果片源所选清晰度不可用或下载失败时，自动尝试更低清晰度，并在下载管理中提示。已有文件不自动删除或覆盖。</p>
 
           {seriesData.web_accessible_episodes != null && seriesData.web_accessible_episodes < seriesData.total && (
-            <p className="settings-hint">网页源提供前 {seriesData.web_accessible_episodes} 集，后续集数自动尝试 App 片源。</p>
+            <p className="settings-hint">官网标记前 {seriesData.web_accessible_episodes} 集可访问。完整目录不等于全部可播放；后续集数以官方接口实际授权和返回为准。</p>
           )}
 
           {seriesData.episodes.some((ep) => ep.locked) && <p className="settings-hint">锁定集需在来源平台解锁，本应用不提供解锁；全选和范围选择会自动跳过。</p>}

@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
-import { shouldOfferAccountLogin } from '../playbackRecovery.mjs';
+import { shouldOfferAccountLogin, playbackFaultCode, playbackFaultMessage, stopsPlaybackRecovery,
+  allowsQualityFallback } from '../playbackRecovery.mjs';
 
 const require = createRequire(import.meta.url);
 const { mount } = require('../../../scripts/check-player-resume.cjs');
@@ -55,6 +56,7 @@ for (const faultCode of ['ACCOUNT_EXPIRED', 'ACCOUNT_UNAUTHORIZED']) {
 
 for (const [faultCode, stage] of [
   ['NETWORK_TIMEOUT', 'source'], ['NETWORK_DISCONNECTED', 'source'], ['API_RATE_LIMITED', 'source'],
+  ['WEB_EPISODE_UNAVAILABLE', 'source'],
   ['PLAYER_DECODE_FAILED', 'decode'], ['CODEC_UNSUPPORTED', 'decode'], ['MEDIA_DECRYPT_FAILED', 'decrypt'],
 ]) {
   test(`${faultCode} does not automatically show an account QR`, async () => {
@@ -65,6 +67,39 @@ for (const [faultCode, stage] of [
     finally { ui.unmount(); }
   });
 }
+
+test('a public episode refusal is distinct from account authorization and stops automatic recovery', async () => {
+  const faultCode = 'WEB_EPISODE_UNAVAILABLE';
+  assert.equal(playbackFaultCode({ code: faultCode }), faultCode);
+  assert.equal(playbackFaultCode({ diagnostics: { code: faultCode } }), faultCode);
+  assert.equal(stopsPlaybackRecovery(faultCode), true);
+  assert.equal(allowsQualityFallback({ faultCode }), false);
+  assert.match(playbackFaultMessage(faultCode), /官网.*当前环境.*不能据此判断账号授权/);
+  for (const account of [anonymous, valid]) {
+    let downloads = 0;
+    const ui = mount({ props: { target: { ...target, vidIndex: 6 } }, settings, episodeCount: 68,
+      prepare: async () => ({ success: false, faultCode, diagnostics: { source: 'web', stage: 'source', faultCode } }),
+      apiOverrides: { getAccountStatus: async () => account,
+        getSeriesEpisodes: async () => ({ success: true, data: { series_id: 'A', series_title: '测试剧',
+          total: 68, web_accessible_episodes: 5, episodes: Array.from({ length: 68 }, (_, index) => ({
+            vid_index: index + 1, vid: `v${index + 1}`, locked: false, status: 'missing', web_available: index < 5,
+          })) } }),
+        downloadSingleEpisode: async () => { downloads++; return { success: true }; } } });
+    try {
+      await ui.flush();
+      assert.equal(ui.prepares.length, 1, 'public unavailability cannot be fixed by changing quality');
+      assert.equal(downloads, 0, 'public unavailability cannot enqueue a fallback download');
+      assert.equal(dialog(ui), undefined);
+      assert.equal(ui.button('扫码登录后重试'), undefined, 'do not imply an account refresh unlocks a public route');
+      assert.match(ui.text(), /官网.*当前环境.*不能据此判断账号授权/);
+      assert.match(ui.text(), /官网标记前 5 集可公开访问.*目录包含后续集数不代表当前环境有完整片源/);
+      assert.equal(ui.find(node => node.props['aria-label'] === '第 6 集').props.disabled, false,
+        'a public route refusal must not globally lock the episode');
+      await ui.button('重试本集').props.onClick(); await ui.flush();
+      assert.equal(ui.prepares.length, 2, 'an explicit retry can check the current source again');
+    } finally { ui.unmount(); }
+  }
+});
 
 test('a delayed account lookup from an earlier episode cannot open a QR on the next episode', async () => {
   let resolveStatus, checks = 0;

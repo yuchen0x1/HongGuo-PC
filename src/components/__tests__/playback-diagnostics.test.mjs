@@ -39,6 +39,7 @@ test('diagnostic labels reject raw remote strings and distinguish media connecti
   assert.deepEqual(display.diagnosticCheckRows({ source: 'passed', media: 'partial', decode: 'not-tested' }),
     [['取源', '通过'], ['媒体连接', '已读取部分媒体'], ['视频解码', '未执行解码']]);
   assert.equal(display.diagnosticFaultLabel('API_EMPTY_RESPONSE'), '播放接口空响应');
+  assert.equal(display.diagnosticFaultLabel('WEB_EPISODE_UNAVAILABLE'), '官网未提供本集播放入口');
   const web = display.diagnosticRows({ sourceRoute: 'web', routeId: 'official-web-public-fallback', profileVersion: '2026-11-25.1' });
   assert.deepEqual(web.find(row => row[0] === '当前取源线路'), ['当前取源线路', '红果官网 · 官网公开播放']);
   assert.deepEqual(web.find(row => row[0] === '播放接口版本'), ['播放接口版本', '2026-11-25.1']);

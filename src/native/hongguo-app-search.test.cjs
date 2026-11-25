@@ -7,10 +7,11 @@ const { createRequire, wrap } = require('node:module');
 const { signedSearchRequest: signSearch } = require('./app-source');
 const identity = Object.freeze({ device_id: '7000000000000000001', iid: '7000000000000000002', cdid: '00000000-0000-4000-8000-000000000003' });
 const signedSearchRequest = options => signSearch({ ...options, identity });
-function loadSearch(getPlaybackDevice = async () => identity) {
+function loadSearch(getPlaybackDevice = async () => identity, overrides = {}) {
   const file = path.join(__dirname, 'hongguo-app-search.js'), req = createRequire(file), module = { exports: {} };
   const run = vm.runInThisContext(wrap(fs.readFileSync(file, 'utf8')), { filename: file });
-  run(module.exports, name => name === './playback-device' ? { getPlaybackDevice } : req(name), module, file, __dirname);
+  run(module.exports, name => Object.hasOwn(overrides, name) ? overrides[name]
+    : name === './playback-device' ? { getPlaybackDevice } : req(name), module, file, __dirname);
   return module.exports;
 }
 const { searchApp, parseSearchPayload } = loadSearch();
@@ -61,6 +62,34 @@ test('App search parses titles, ids, covers and cursors', () => {
   assert.equal(result.results[0].episode_count, 88);
   assert.equal(result.hasMore, true);
   assert.deepEqual(result.cursor, { search_id: 'sid-1', passback: 'pb-1', next_offset: 20 });
+});
+
+test('App search never uses rounded numeric series IDs to open a different drama', () => {
+  const result = parseSearchPayload({ ...payload, search_tabs: [{ ...payload.search_tabs[0], data: [
+    { video_data: [{ series_id: 7709790572130618393, title: 'Rounded and unsafe' }] },
+    { video_data: [{ series_id: Number.MAX_SAFE_INTEGER + 1, title: 'Also unsafe' },
+      { series_id: '7709790572130618393', title: 'Exact string ID' }] },
+    { video_data: [{ series_id: 0, title: 'Missing identity' }] },
+    { video_data: [{ series_id: 123456, title: 'Safe integer ID' }] },
+  ] }] });
+  assert.deepEqual(result.results.map(item => item.series_id), ['7709790572130618393', '123456']);
+  assert.equal(result.results[0].series_title, 'Exact string ID');
+});
+
+test('the App search transport preserves large numeric series IDs before JSON parsing', async () => {
+  let calls = 0;
+  const source = require('./app-source');
+  const search = loadSearch(undefined, { './app-source': { ...source,
+    async requestJson(_url, options) {
+      calls++;
+      assert.deepEqual(options.preserveLargeIntegerFields, ['series_id']);
+      const raw = '{"code":0,"search_tabs":[{"tab_type":11,"data":[{"video_data":[{"series_id":7709790572130618393,"title":"Exact ID"}]}]}]}';
+      return JSON.parse(source.preserveLargeJsonIntegers(raw, options.preserveLargeIntegerFields));
+    },
+  } }).searchApp;
+  const result = await search('Exact ID');
+  assert.equal(calls, 1);
+  assert.equal(result.results[0].series_id, '7709790572130618393');
 });
 
 test('HEIC covers become a placeholder instead of a broken image', () => {

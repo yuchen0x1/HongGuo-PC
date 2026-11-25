@@ -26,7 +26,8 @@ function appCover(value) {
 async function defaultRequest(signed, deadline) {
   const remaining = Math.max(1, deadline - Date.now());
   try {
-    return await requestJson(signed.url, { method: 'GET', headers: signed.headers }, deadline, AbortSignal.timeout(remaining));
+    return await requestJson(signed.url, { method: 'GET', headers: signed.headers,
+      preserveLargeIntegerFields: ['series_id'] }, deadline, AbortSignal.timeout(remaining));
   } catch (error) {
     const code = error.code === 'ETIMEDOUT' || error.name === 'AbortError' || error.name === 'TimeoutError' ? 'APP_TIMEOUT'
       : /未返回有效数据|空响应/i.test(error.message) ? 'APP_EMPTY'
@@ -47,7 +48,8 @@ function parseSearchPayload(payload, { page = 1 } = {}) {
   const seen = new Set(), results = [];
   for (const cell of Array.isArray(tab.data) ? tab.data : []) {
     const video = (Array.isArray(cell?.video_data) ? cell.video_data : [])
-      .find(item => /^\d{1,30}$/.test(String(item?.series_id || '')));
+      .find(item => (typeof item?.series_id === 'string' || Number.isSafeInteger(item?.series_id))
+        && /^\d{1,30}$/.test(String(item.series_id)) && /[1-9]/.test(String(item.series_id)));
     // Header/ad/search-suggestion cells have no video_data; their book_id is not a drama.
     if (!video) continue;
     const seriesId = String(video.series_id);

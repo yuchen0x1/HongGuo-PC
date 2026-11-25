@@ -8,6 +8,7 @@ import { isSubmitKey, parseEpisodeRange } from './episodeRange';
 import SeasonSwitcher from './SeasonSwitcher';
 import { rememberCatalogTitles } from '../searchHistory';
 import { readLocalLibrary, saveLocalSeries, subscribeLocalLibrary } from '../localLibrary';
+import { waitForRequest } from './randomDramaModel.mjs';
 
 const PAGE_CACHE_TTL_MS = 60_000;
 const LIST_TIMEOUT_MS = 25_000;
@@ -136,7 +137,9 @@ function Browse({ onNavigate, active = true }) {
   const toggleCardFavorite = useCallback((item) => {
     const id = String(item.series_id);
     try {
-      setLibrary(saveLocalSeries({ id: item.series_id, title: item.series_title, cover: item.cover || '', favorite: !favoriteIds.has(id) }));
+      const saved = saveLocalSeries({ id: item.series_id, title: item.series_title, cover: item.cover || '', favorite: !favoriteIds.has(id) });
+      setLibrary(saved);
+      if (saved.error) { showToast(saved.error, 'error'); return; }
       showToast(favoriteIds.has(id) ? `已取消收藏《${item.series_title}》` : `已收藏《${item.series_title}》，可在「收藏与上新」查看`);
     } catch { showToast('收藏未能保存，请检查本地存储后重试', 'error'); }
   }, [favoriteIds, showToast]);
@@ -427,7 +430,7 @@ function Browse({ onNavigate, active = true }) {
     setRangeInput('');
     setRangeError('');
     try {
-      const res = await window.electronAPI.searchResolve(item.series_id);
+      const res = await waitForRequest(window.electronAPI.searchResolve(item.series_id), { message: '分集加载超时，请重试本剧' });
       if (request !== detailRequest.current) return;
       if (!res || !res.success) {
         showToast((res && res.error) || '拉取分集失败', 'error');
@@ -435,7 +438,7 @@ function Browse({ onNavigate, active = true }) {
       }
       const data = res.data;
       // 合并下载状态
-      const epRes = await window.electronAPI.getSeriesEpisodes(item.series_id);
+      const epRes = await waitForRequest(window.electronAPI.getSeriesEpisodes(item.series_id), { message: '本机分集状态读取超时，请重试本剧' });
       if (request !== detailRequest.current) return;
       const statusMap = {};
       if (epRes && epRes.success) {
@@ -755,8 +758,9 @@ function Browse({ onNavigate, active = true }) {
                       <div className="browse-drawer-count">
                         {mediaSourceLabel(detail.series_id, mediaSources)} · 共 {detail.total} 集 · 已下载 <b>{detail.completedCount}</b> 集
                       </div>
+                      {typeof detail.description === 'string' && detail.description.trim() && <p className="browse-drawer-description">{detail.description}</p>}
                       {detail.web_accessible_episodes != null && detail.web_accessible_episodes < detail.total && (
-                        <div className="browse-drawer-sub">网页源提供前 {detail.web_accessible_episodes} 集，后续集数自动尝试 App 片源。</div>
+                        <div className="browse-drawer-sub">官网标记前 {detail.web_accessible_episodes} 集可访问。完整目录不等于全部可播放；后续集数以官方接口实际授权和返回为准。</div>
                       )}
                       {detail.episodes.some((ep) => ep.locked) && <div className="browse-drawer-sub">标记“锁定”的集数需在来源平台解锁，本应用不提供解锁。</div>}
                       <div className="browse-drawer-sub">选中 {selectedIdx.size} 集待下载</div>
@@ -824,7 +828,7 @@ function Browse({ onNavigate, active = true }) {
       )}
 
       {toast && (
-        <div className={`dm-toast dm-toast-${toast.type}`} onClick={() => setToast(null)}>
+        <div className={`dm-toast dm-toast-${toast.type}`} role={toast.type === 'error' ? 'alert' : 'status'} onClick={() => setToast(null)}>
           {toast.text}
         </div>
       )}

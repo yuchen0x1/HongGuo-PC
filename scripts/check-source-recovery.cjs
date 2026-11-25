@@ -8,7 +8,8 @@ const nativeDir = path.join(__dirname, '../src/native');
 const playbackDevice = Object.freeze({ device_id: '7000000000000000001', iid: '7000000000000000002', cdid: '00000000-0000-4000-8000-000000000003' });
 const media = name => `https://v3-reading.qznovelvod.com/${name}.mp4`;
 const webPage = (vid = '11', sid = '1', extra = {}) => `<script>window._ROUTER_DATA=${JSON.stringify({ loaderData: {
-  'player_(series_id)/(vid)/page': { isSuccess: true, vid, series_id: sid, seriesDetail: { series_id: sid, vid_list: ['11'] },
+  'player_(series_id)/(vid)/page': { isSuccess: true, vid, series_id: sid,
+    seriesDetail: { series_id: sid, vid_list: ['11'], accessible_episode_cnt: 1, pay_type: 0 },
     publicVideoSeo: { available: true, itemId: vid, seriesId: sid }, ...extra },
 } })}</script><script type="application/ld+json">${JSON.stringify({ '@type': 'VideoObject', url: `https://hongguoduanju.com/player/${sid}/${vid}`, contentUrl: media('web') })}</script>`;
 function load(file, dependencies) {

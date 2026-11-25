@@ -9,6 +9,7 @@ const FAULT_MESSAGES = Object.freeze({
   API_EMPTY_RESPONSE: '官方播放接口返回空响应，已用尽本次可用的恢复策略，请稍后重试。',
   API_RATE_LIMITED: '官方播放接口请求过于频繁，请稍后再试。',
   API_FORBIDDEN: '官方播放接口拒绝了本次请求，请在红果官方客户端确认访问权限。',
+  WEB_EPISODE_UNAVAILABLE: '官网在当前环境下未提供本集可用的完整片源，不能据此判断账号授权；请在红果官方客户端确认。',
   NETWORK_TIMEOUT: '播放连接超时，请检查网络后重试。',
   NETWORK_DISCONNECTED: '网络连接已断开，请检查网络后重试。',
   MEDIA_URL_EXPIRED: '视频地址已过期，重新获取片源后可继续播放。',
@@ -43,7 +44,7 @@ export function playbackFaultMessage(code, fallback = '当前内容暂时无法�
 
 export function stopsPlaybackRecovery(faultCode) {
   return ['ACCOUNT_EXPIRED', 'ACCOUNT_UNAUTHORIZED', 'DEVICE_IDENTITY_EXPIRED',
-    'SIGNATURE_INVALID', 'API_RATE_LIMITED', 'API_FORBIDDEN'].includes(faultCode);
+    'SIGNATURE_INVALID', 'API_RATE_LIMITED', 'API_FORBIDDEN', 'WEB_EPISODE_UNAVAILABLE'].includes(faultCode);
 }
 
 export function allowsQualityFallback(value) {

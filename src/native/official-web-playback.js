@@ -23,22 +23,30 @@ function failure(code, status) {
 function publicEpisodePermission(data, vid, seriesId) {
   const id = String(vid || ''), sid = String(seriesId || data?.series_id || '');
   const detail = data?.seriesDetail, seo = data?.publicVideoSeo, req = data?.req;
+  const currentId = String(data?.vid || '');
   if (!/^\d{1,30}$/.test(id) || !/^\d{1,30}$/.test(sid) || data?.isSuccess !== true
-      || String(data.vid) !== id || String(data.series_id) !== sid || String(detail?.series_id) !== sid) {
+      || !/^\d{1,30}$/.test(currentId) || String(data.series_id) !== sid || String(detail?.series_id) !== sid) {
     throw failure('INVALID_RESPONSE');
   }
-  if (req?.pcLoginRequired === true || req?.pcAuthenticatedPlayback === true || req?.encryptedBrowserAllowed === true
+  const rawVids = detail.vid_list;
+  const vids = Array.isArray(rawVids) ? rawVids.map(String) : [];
+  const index = vids.indexOf(id), rawAccessible = detail.accessible_episode_cnt;
+  const accessible = typeof rawAccessible === 'number' || typeof rawAccessible === 'string' && /^\d+$/.test(rawAccessible)
+    ? Number(rawAccessible) : NaN;
+  if (!vids.length || rawVids.some(value => typeof value !== 'string' && !Number.isSafeInteger(value))
+      || vids.some(value => !/^\d{1,30}$/.test(value)) || new Set(vids).size !== vids.length
+      || index < 0 || !vids.includes(currentId) || !Number.isSafeInteger(accessible)
+      || accessible < 0 || accessible > vids.length) throw failure('INVALID_RESPONSE');
+  if (req?.pcLoginRequired === true || req?.pcAuthenticatedPlayback === true
       || detail?.pay_type != null && Number.isFinite(Number(detail.pay_type)) && Number(detail.pay_type) !== 0) {
     throw failure('ACCOUNT_REQUIRED');
   }
+  if (req?.encryptedBrowserAllowed === true || index >= accessible) throw failure('WEB_EPISODE_UNAVAILABLE');
+  // The official site can redirect an unavailable later episode to the first one.
+  // Its valid series window explains the denial, but never authorizes the wrong media.
+  if (currentId !== id) throw failure('INVALID_RESPONSE');
   if (req?.pcLoginRequired !== false || req.pcAuthenticatedPlayback !== false || req.encryptedBrowserAllowed !== false
       || detail?.pay_type == null || Number(detail.pay_type) !== 0) throw failure('PREVIEW_ONLY');
-  const vids = Array.isArray(detail.vid_list) ? detail.vid_list.map(String) : [];
-  const index = vids.indexOf(id), accessible = Number(detail.accessible_episode_cnt);
-  if (!vids.length || vids.some(value => !/^\d{1,30}$/.test(value)) || new Set(vids).size !== vids.length
-      || index < 0 || !Number.isSafeInteger(accessible) || accessible < 1 || index >= accessible) {
-    throw failure('ACCOUNT_REQUIRED');
-  }
   const duration = seo == null ? 0 : Number(seo.durationSeconds);
   if (seo != null && (seo.available !== true || String(seo.itemId) !== id || String(seo.seriesId) !== sid
       || !Number.isFinite(duration) || duration <= 0)) throw failure('INVALID_RESPONSE');

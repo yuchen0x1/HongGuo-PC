@@ -22,11 +22,12 @@ const SEARCH_MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 const cache = new Map();
 
 class HongguoSearchError extends Error {
-  constructor(message, kind, { fallback = false, cause } = {}) {
+  constructor(message, kind, { fallback = false, retryable = true, cause } = {}) {
     super(message, cause ? { cause } : undefined);
     this.name = 'HongguoSearchError';
     this.kind = kind; // timeout | upstream | format | input
     this.fallback = fallback;
+    this.retryable = retryable;
   }
 }
 
@@ -89,8 +90,10 @@ function parseSearchResponse(payload) {
   if (typeof payload !== 'object' || Array.isArray(payload)) {
     throw new HongguoSearchError('搜索返回异常数据', 'format', { fallback: true });
   }
-  if (typeof payload.code === 'string') {
-    throw new HongguoSearchError(`搜索服务暂不可用（${payload.message || payload.code}）`, 'upstream');
+  if (payload.code !== undefined && payload.code !== 0 && payload.code !== '0') {
+    throw new HongguoSearchError('搜索服务暂不可用，请稍后重试', 'upstream', {
+      retryable: ![401, 403, 429].includes(Number(payload.code)),
+    });
   }
   if (!Array.isArray(payload.searchList)) {
     throw new HongguoSearchError('搜索返回异常数据', 'format', { fallback: true });
@@ -140,7 +143,12 @@ function classifyRequestError(error) {
     return new HongguoSearchError('搜索超时，请稍后重试', 'timeout', { cause: error });
   }
   if (status === 429) {
-    return new HongguoSearchError('搜索请求过于频繁，请稍后重试', 'upstream', { cause: error });
+    return new HongguoSearchError('搜索请求过于频繁，请稍后重试', 'upstream', { retryable: false, cause: error });
+  }
+  if (status === 401 || status === 403) {
+    return new HongguoSearchError(`搜索服务拒绝本次请求（HTTP ${status}），请稍后重试或打开官网`, 'upstream', {
+      retryable: false, cause: error,
+    });
   }
   if (status >= 500) {
     return new HongguoSearchError(`搜索服务暂不可用（HTTP ${status}）`, 'upstream', { cause: error });
@@ -171,11 +179,7 @@ async function defaultRequest(keyword, page, { timeout }) {
   } catch (error) {
     throw classifyRequestError(error);
   }
-  const data = response?.data;
-  if (data && typeof data === 'object' && typeof data.code === 'string') {
-    throw new HongguoSearchError(`搜索服务暂不可用（${data.message || data.code}）`, 'upstream');
-  }
-  return data;
+  return response?.data;
 }
 
 function remember(key, value) {
@@ -224,7 +228,7 @@ async function searchHongguo(keyword, options = {}) {
       lastError = error instanceof HongguoSearchError
         ? error
         : new HongguoSearchError(`搜索失败：${error?.message || '未知错误'}`, 'upstream', { cause: error });
-      if (lastError.fallback || attempt === retries) break;
+      if (lastError.fallback || lastError.retryable === false || attempt === retries) break;
       await delay(RETRY_DELAY_MS * (attempt + 1));
     }
   }

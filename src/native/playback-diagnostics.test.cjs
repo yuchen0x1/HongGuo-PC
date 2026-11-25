@@ -103,6 +103,29 @@ test('only known diagnostic codes cross the renderer boundary', () => {
   assert.equal(sanitizePlaybackDiagnostics({ code: 'API_TOKEN:TOP_SECRET' }).code, undefined);
 });
 
+test('website episode unavailability crosses diagnostics as a fixed stop reason without claiming account permissions', () => {
+  const code = 'WEB_EPISODE_UNAVAILABLE';
+  assert.equal(safeCode(code), code);
+  const diagnostic = sanitizePlaybackDiagnostics({ code, faultCode: code,
+    routes: [routeDiagnostic('web', { attempted: true, status: 'failed', code, message: 'token=secret' })],
+    message: 'Cookie=secret', url: 'https://signed.invalid/?token=secret' });
+  assert.equal(diagnostic.code, code);
+  assert.equal(diagnostic.faultCode, code);
+  assert.equal(diagnostic.routes[0].code, code);
+  for (const error of [{ code }, { faultCode: code }, { code: 'SOURCE_UNAVAILABLE',
+    sources: [{ source: 'app', code: 'EMPTY_RESPONSE' }, { source: 'web', code, message: 'Cookie=secret' }] }]) {
+    const message = playbackFailureMessage(error);
+    assert.equal(message, '官网当前播放入口不提供本集，请在官方客户端查看可用播放方式。');
+    assert.doesNotMatch(message, /登录|扫码|付费|DRM|无权|权限|Cookie|secret/);
+  }
+  const collector = createPlaybackDiagnostics();
+  collector.record({ event: 'source-failure', sourceRoute: 'web', faultCode: code, message: 'token=secret' });
+  const snapshot = collector.snapshot();
+  assert.equal(snapshot.lastErrorCode, code);
+  assert.equal(snapshot.faults[code], 1);
+  assert.doesNotMatch(JSON.stringify({ diagnostic, snapshot }), /Cookie|token=|secret|signed\.invalid/);
+});
+
 test('diagnostic report omits credentials, identities, raw errors and signed addresses in every supplied field', () => {
   let now = 1000;
   const collector = createPlaybackDiagnostics({ appVersion: '6.33.0', now: () => now });

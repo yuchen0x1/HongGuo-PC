@@ -810,6 +810,130 @@ async function mount(file, api, props = {}, storage = null) {
     const css = fs.readFileSync(path.join(__dirname, 'Browse.css'), 'utf8');
     assert.match(css, /\.browse-card:focus-within \.browse-hover[^{}]*\{[^}]*opacity:\s*1/);
   });
+  await test('browse favorite write failure keeps the previous state and reports the storage error', async () => {
+    const storage = memoryStorage();
+    storage.setItem = () => { throw new Error('磁盘存储已满'); };
+    const ui = await mount('Browse', {
+      getSeriesList: async () => [], browseCategories: async () => [],
+      browseList: async () => ({ success: true, results: [{ series_id: '1000001', series_title: '收藏写失败测试' }] }),
+    }, {}, storage);
+    await ui.flush();
+    ui.find(node => node.props['aria-label'] === '收藏《收藏写失败测试》').props.onClick({ stopPropagation() {} });
+    await ui.flush();
+    assert.ok(ui.text().includes('未能保存到本机'), ui.text());
+    assert.ok(!ui.text().includes('已收藏《'), 'a rejected write cannot claim a successful favorite');
+    assert.equal(ui.find(node => node.props['aria-label'] === '收藏《收藏写失败测试》').props['aria-pressed'], false);
+    assert.equal(ui.find(node => node.props.className === 'dm-toast dm-toast-error')?.props.role, 'alert');
+    ui.unmount();
+  });
+  await test('search detail timeout permits retry and ignores the late detail response', async () => {
+    const late = deferred(), picked = [];
+    let calls = 0;
+    const ui = await mount('SearchPanel', {
+      getMediaSources: async () => ({ success: true, sources: [{ id: 'hongguo', label: '红果' }] }),
+      searchSeries: async () => ({ success: true, results: [{ series_id: '1000001', series_title: '详情超时测试' }] }),
+      searchResolve: () => ++calls === 1 ? late.promise : Promise.resolve(ok(detail('1000001'))),
+    }, { onSelectSeries: value => picked.push(value) });
+    await ui.flush();
+    ui.find(node => node.props['aria-label'] === '搜索短剧名称').props.onChange({ target: { value: '详情超时' } });
+    ui.render(); ui.button('搜索').props.onClick(); await ui.flush();
+    const card = () => ui.find(node => String(node.props.className || '').startsWith('search-card '));
+    const first = card().props.onClick(); await ui.flush();
+    ui.advanceTimers(26000); await ui.flush(); await first;
+    assert.ok(ui.text().includes('分集加载超时'), ui.text());
+    assert.equal(card().props.disabled, false);
+    late.resolve(ok(detail('1000001'))); await ui.flush();
+    assert.equal(picked.length, 0, 'a detail arriving after the deadline must not navigate');
+    await card().props.onClick(); await ui.flush();
+    assert.equal(picked.length, 1, 'the same result remains retryable');
+    ui.unmount();
+  });
+  await test('browse detail timeout stops loading and never reopens on a late response', async () => {
+    const late = deferred();
+    const ui = await mount('Browse', {
+      getSeriesList: async () => [], browseCategories: async () => [],
+      browseList: async () => ({ success: true, results: [{ series_id: '1000001', series_title: '详情超时测试' }] }),
+      searchResolve: () => late.promise, getSeriesEpisodes: async () => ok(detail('1000001')),
+    });
+    await ui.flush();
+    const loading = ui.find(node => node.props.className === 'browse-card').props.onClick(); await ui.flush();
+    ui.advanceTimers(26000); await ui.flush(); await loading;
+    assert.ok(ui.text().includes('分集加载超时'), ui.text());
+    assert.equal(ui.find(node => node.props.role === 'dialog'), undefined);
+    late.resolve(ok(detail('1000001'))); await ui.flush();
+    assert.equal(ui.find(node => node.props.role === 'dialog'), undefined);
+    ui.unmount();
+  });
+  await test('browse local episode status timeout cannot leave the detail loading forever', async () => {
+    const late = deferred();
+    const ui = await mount('Browse', {
+      getSeriesList: async () => [], browseCategories: async () => [],
+      browseList: async () => ({ success: true, results: [{ series_id: '1000001', series_title: '本机状态超时测试' }] }),
+      searchResolve: async () => ok(detail('1000001')), getSeriesEpisodes: () => late.promise,
+    });
+    await ui.flush();
+    const loading = ui.find(node => node.props.className === 'browse-card').props.onClick(); await ui.flush();
+    ui.advanceTimers(26000); await ui.flush(); await loading;
+    assert.ok(ui.text().includes('本机分集状态读取超时'), ui.text());
+    assert.equal(ui.find(node => node.props.role === 'dialog'), undefined);
+    late.resolve(ok(detail('1000001'))); await ui.flush();
+    assert.equal(ui.find(node => node.props.role === 'dialog'), undefined);
+    ui.unmount();
+  });
+  await test('download detail timeout releases the input and ignores its late response', async () => {
+    const late = deferred();
+    const ui = await mount('HongguoDownload', { hongguoResolve: () => late.promise });
+    ui.button('粘贴链接 / ID').props.onClick(); await ui.flush();
+    ui.find(node => node.props['aria-label'] === '短剧分享链接或剧集 ID').props.onChange({ target: { value: '1000001' } });
+    ui.render(); const loading = ui.button('获取剧集').props.onClick(); await ui.flush();
+    ui.advanceTimers(26000); await ui.flush(); await loading;
+    assert.ok(ui.text().includes('分集加载超时'), ui.text());
+    assert.equal(ui.button('获取剧集').props.disabled, false);
+    late.resolve(ok(detail('1000001'))); await ui.flush();
+    assert.equal(ui.button('立即播放'), undefined, 'late details must not replace the timeout');
+    ui.unmount();
+  });
+  await test('download season timeout stops loading and ignores a late season response', async () => {
+    const late = deferred();
+    const ui = await mount('HongguoDownload', { searchResolve: () => late.promise });
+    ui.find(node => node.props.onSelectSeries).props.onSelectSeries(detail('1000001')); ui.render();
+    const loading = ui.find(node => node.props.seriesId === '1000001' && node.props.onPick).props.onPick({ series_id: '1000002' });
+    await ui.flush(); ui.advanceTimers(26000); await ui.flush(); await loading;
+    assert.ok(ui.text().includes('分集加载超时'), ui.text());
+    assert.equal(ui.button('获取剧集').props.disabled, false);
+    late.resolve(ok(detail('1000002'))); await ui.flush();
+    assert.equal(ui.button('立即播放'), undefined);
+    ui.unmount();
+  });
+  await test('leaving the download page invalidates an unfinished detail request', async () => {
+    const late = deferred();
+    const ui = await mount('HongguoDownload', { hongguoResolve: () => late.promise });
+    ui.button('粘贴链接 / ID').props.onClick(); await ui.flush();
+    ui.find(node => node.props['aria-label'] === '短剧分享链接或剧集 ID').props.onChange({ target: { value: '1000001' } });
+    ui.render(); const loading = ui.button('获取剧集').props.onClick(); await ui.flush();
+    ui.setProps({ active: false }); await ui.flush();
+    late.resolve(ok(detail('1000001'))); await loading; await ui.flush();
+    ui.setProps({ active: true }); await ui.flush();
+    assert.equal(ui.button('立即播放'), undefined);
+    assert.equal(ui.button('获取剧集').props.disabled, false);
+    ui.unmount();
+  });
+  await test('catalog details display only the real description returned by their source', async () => {
+    const data = { ...detail('1000001'), description: '来源提供的真实简介<&>' };
+    for (const component of ['Browse', 'HongguoDownload']) {
+      const ui = await mount(component, {
+        getSeriesList: async () => [], browseCategories: async () => [],
+        browseList: async () => ({ success: true, results: [{ series_id: data.series_id, series_title: data.series_title }] }),
+        searchResolve: async () => ok(data), getSeriesEpisodes: async () => ok(data),
+      });
+      await ui.flush();
+      if (component === 'Browse') { ui.find(node => node.props.className === 'browse-card').props.onClick(); await ui.flush(); }
+      else { ui.find(node => node.props.onSelectSeries).props.onSelectSeries(data); ui.render(); }
+      assert.ok(ui.text().includes(data.description), component);
+      assert.ok(!ui.nodes().some(node => node.props.dangerouslySetInnerHTML), 'source metadata must render as text');
+      ui.unmount();
+    }
+  });
   await test('closing a loading detail ignores its late result', async () => {
     const pending = deferred();
     const ui = await mount('Browse', { getSeriesList: async () => [], browseCategories: async () => [], browseList: async () => ({ success: true, results: [{ series_id: 'A', series_title: 'A' }] }), searchResolve: () => pending.promise, getSeriesEpisodes: async () => ok(detail('A')) });
@@ -895,15 +1019,26 @@ async function mount(file, api, props = {}, storage = null) {
     ui.button('获取剧集').props.onClick(); await ui.flush(); oldSearchResult(detail('A')); ui.render();
     assert.ok(ui.text().includes('《B》')); assert.ok(!ui.text().includes('《A》')); ui.unmount();
   });
-  await test('download includes App fallback episodes by default and bounds enormous ranges', async () => {
+  await test('download preserves later directory episodes with an accurate authorization notice and bounds enormous ranges', async () => {
     const data = detail('A'); data.web_accessible_episodes = 1; data.episodes[0].web_available = true; data.episodes[1].web_available = false;
     const ui = await mount('HongguoDownload', {});
     ui.find(n => n.props.onSelectSeries).props.onSelectSeries(data); ui.render();
-    assert.ok(ui.button('下载选中集数 (2/2)'), 'web-unavailable episodes remain selected for the App fallback');
-    assert.ok(ui.text().includes('网页源提供前 1 集，后续集数自动尝试 App 片源'));
+    assert.ok(ui.button('下载选中集数 (2/2)'), 'later directory episodes remain selectable without assuming playback authorization');
+    assert.ok(ui.text().includes('官网标记前 1 集可访问。完整目录不等于全部可播放；后续集数以官方接口实际授权和返回为准。'));
+    assert.ok(!ui.text().includes('后续集数自动尝试 App 片源'));
     ui.find(n => n.props['aria-label'] === '选择集数范围').props.onChange({ target: { value: '1-999999999' } }); ui.render();
     vm.runInNewContext('apply()', { apply: ui.button('应用').props.onClick }, { timeout: 100 }); ui.render();
-    assert.ok(ui.button('下载选中集数 (2/2)'), 'manual selection must keep the API fallback available'); ui.unmount();
+    assert.ok(ui.button('下载选中集数 (2/2)'), 'manual selection must keep later directory episodes available'); ui.unmount();
+    const browse = await mount('Browse', {
+      getSeriesList: async () => [], browseCategories: async () => [],
+      browseList: async () => ({ success: true, results: [{ series_id: data.series_id, series_title: data.series_title }] }),
+      searchResolve: async () => ok(data), getSeriesEpisodes: async () => ok(data),
+    });
+    await browse.flush(); browse.find(node => node.props.className === 'browse-card').props.onClick(); await browse.flush();
+    assert.ok(browse.text().includes('官网标记前 1 集可访问。完整目录不等于全部可播放；后续集数以官方接口实际授权和返回为准。'));
+    assert.ok(!browse.text().includes('后续集数自动尝试 App 片源'));
+    assert.equal(browse.find(node => node.props.className?.startsWith('ep-chip ') && node.children.some(child => child?.props?.className === 'ep-num' && child.children.includes(2))).props.disabled, false);
+    browse.unmount();
   });
   await test('reselecting active search tab preserves pending search selection', async () => {
     const ui = await mount('HongguoDownload', {});

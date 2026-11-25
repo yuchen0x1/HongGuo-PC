@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+const { preserveLargeJsonIntegers } = require('../src/native/app-source');
 
 const sourcePath = path.join(__dirname, '../src/native/hongguo.js');
 const source = fs.readFileSync(sourcePath, 'utf8');
@@ -35,7 +36,7 @@ function fixture({ web = true, api = false, app = false, blockedVids = [], html 
   };
   const context = {
     module: { exports: {} }, Buffer, AbortController, process: { env: {} },
-    require: name => name === 'axios' ? axios : name === './app-source' ? { fetchAppPlayUrl: async () => { state.appCalls++; if (!state.app) throw Error('app unavailable'); return { url: 'https://media.example/app.mp4', contentKey: '01'.repeat(16), source: 'app' }; } } : require(name.startsWith('.') ? path.join(path.dirname(sourcePath), name) : name),
+    require: name => name === 'axios' ? axios : name === './app-source' ? { preserveLargeJsonIntegers, fetchAppPlayUrl: async () => { state.appCalls++; if (!state.app) throw Error('app unavailable'); return { url: 'https://media.example/app.mp4', contentKey: '01'.repeat(16), source: 'app' }; } } : require(name.startsWith('.') ? path.join(path.dirname(sourcePath), name) : name),
     Date: class extends Date { static now() { return now; } },
     setTimeout: (fn, ms) => { if (ms === 600) return setTimeout(fn, 0); state.waits++; fn(); },
     console: { warn() {}, log() {} },

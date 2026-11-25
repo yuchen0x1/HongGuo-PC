@@ -92,6 +92,9 @@ function playbackFailureMessage(error = {}) {
   if (error.requiresAccount === true || code === 'ACCOUNT_REQUIRED') {
     return '当前内容需要红果官方账号授权。';
   }
+  if (classifyPlaybackError(error) === 'WEB_EPISODE_UNAVAILABLE') {
+    return playbackRecoveryPolicy('WEB_EPISODE_UNAVAILABLE').message;
+  }
   if (code === 'SOURCE_REMOVED') return '该来源已移除，无法继续播放。';
   if (code === 'PREVIEW_ONLY' || sourceCodes.length === 1 && sourceCodes[0] === 'PREVIEW_ONLY') {
     return '官网目前只提供预览，无法作为完整一集播放。';

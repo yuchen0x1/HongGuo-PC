@@ -137,7 +137,7 @@ async function apiCall(apiPath, body, retries = 3, timeout = 25000, deadline = 0
       }
       const text = buf.toString('utf8');
       try {
-        return JSON.parse(text);
+        return JSON.parse(require('./app-source').preserveLargeJsonIntegers(text, ['vid', 'series_id']));
       } catch (e) {
         const err = new Error(`响应不是合法 JSON（HTTP 200，${buf.length} 字节）: ${text.slice(0, 100)}`);
         err.detail = signal;
@@ -284,6 +284,7 @@ function parseEpisodeListHtml(html, seriesId) {
     series_id: String(seriesId),
     series_title: seriesTitle,
     cover: cover || (episodes[0] && episodes[0].cover) || '',
+    description: typeof detail.series_intro === 'string' ? detail.series_intro : '',
     total: episodes.length,
     web_accessible_episodes: webAccessibleEpisodes,
     episodes,
@@ -312,7 +313,7 @@ async function fetchPlayUrlFromWeb(vid, sid, onFailure, options = {}) {
       const actualSid = String(data?.series_id || '');
       lastErr = { code: !data ? 'MISSING_MODEL' : data.isSuccess === false ? 'BUSINESS_REJECTED'
         : data.publicVideoSeo?.available === false ? 'NO_PLAYABLE_SOURCE' : 'INVALID_RESPONSE' };
-      if (!data || data.isSuccess === false || String(data.vid) !== String(vid) || !/^\d+$/.test(actualSid) ||
+      if (!data || data.isSuccess === false || !/^\d+$/.test(actualSid) ||
           (sid && actualSid !== String(sid)) || String(data.seriesDetail?.series_id) !== actualSid) continue;
       if (data.protectedPlayback === true) {
         // The official player uses a public API for explicitly permitted episodes;
@@ -325,6 +326,7 @@ async function fetchPlayUrlFromWeb(vid, sid, onFailure, options = {}) {
           });
         } catch (error) { throwIfAborted(options.signal); lastErr = error; break; }
       }
+      if (String(data.vid) !== String(vid)) continue;
       if (data.publicVideoSeo?.available !== true || String(data.publicVideoSeo.itemId) !== String(vid)
           || String(data.publicVideoSeo.seriesId) !== actualSid) continue;
       // Bind media to the current player, never a recommended video's URL elsewhere in the page.
@@ -563,11 +565,15 @@ async function fetchEpisodeListFresh(seriesId, { deadline = 0, signal } = {}) {
     throw new Error("备用接口返回的剧集与请求不一致");
   }
   const vd = d[sid]?.video_data || {};
-  if (vd.series_id && String(vd.series_id) !== sid) {
+  const validId = value => (typeof value === 'string' || Number.isSafeInteger(value)) && /^\d{1,30}$/.test(String(value));
+  if (vd.series_id && (!validId(vd.series_id) || String(vd.series_id) !== sid)) {
     throw new Error("备用接口返回的剧集与请求不一致");
   }
   const vl = vd.video_list || [];
-  if (vl.some(item => item?.series_id && String(item.series_id) !== sid)) {
+  if (!Array.isArray(vl) || vl.some(item => !validId(item?.vid))) {
+    throw new Error('备用接口分集编号无效或已失去精度');
+  }
+  if (vl.some(item => item?.series_id && (!validId(item.series_id) || String(item.series_id) !== sid))) {
     throw new Error("备用接口返回了其他剧集的分集");
   }
   const eps = vl.map((item) => ({
@@ -584,6 +590,7 @@ async function fetchEpisodeListFresh(seriesId, { deadline = 0, signal } = {}) {
     series_id: String(sid),
     series_title: vd.series_title || '未命名短剧',
     cover: vd.series_cover || vd.cover_url || (eps[0] && eps[0].cover) || '',
+    description: typeof vd.series_intro === 'string' ? vd.series_intro : '',
     total: eps.length,
     episodes: eps,
   };
@@ -719,7 +726,8 @@ async function fetchAppPlayUrlForQuality(vid, sid, quality, allowLowerQuality, o
       const web = await fetchPlayUrlFromWeb(vid, sid, webError => {
         const failed = sourceFailure('web', webError);
         sources.push(failed);
-        routeTrace.push(routeDiagnostic('web', { attempted: true, status: 'failed', code: failed.code }));
+        routeTrace.push(routeDiagnostic('web', { attempted: true, status: 'failed', code: failed.code,
+          anonymousAccess: ['PREVIEW_ONLY', 'WEB_EPISODE_UNAVAILABLE'].includes(failed.code) ? 'denied' : 'unknown' }));
       }, options);
       throwIfAborted(options.signal);
       if (web?.url) return { ...web, routeTrace: [...routeTrace, routeDiagnostic('web', {
@@ -734,6 +742,8 @@ function sourceFailure(source, error) {
   const message = String(error?.message || '');
   const code = String(error?.code || '');
   const faultCode = classifyPlaybackError(error, { stage: 'source' });
+  if (code === 'WEB_EPISODE_UNAVAILABLE') return { source, code,
+    message: '官网当前播放入口不提供本集，请在官方客户端查看可用播放方式。' };
   const mediaFailures = {
     MEDIA_URL_EXPIRED: '视频地址已过期，需要重新获取片源',
     CDN_UNAVAILABLE: '视频线路暂时不可用，请重新连接',
@@ -790,7 +800,7 @@ async function fetchPlayUrlFresh(vid, sid, skipWeb = false, options = {}) {
     sources.push(failure);
     routeTrace.push(routeDiagnostic('web', {
       attempted: true, status: 'failed',
-      anonymousAccess: failure.code === 'PREVIEW_ONLY' ? 'denied' : 'unknown',
+      anonymousAccess: ['PREVIEW_ONLY', 'WEB_EPISODE_UNAVAILABLE'].includes(failure.code) ? 'denied' : 'unknown',
       code: failure.code,
     }));
   }, options);
@@ -832,7 +842,7 @@ async function fetchPlayUrlFresh(vid, sid, skipWeb = false, options = {}) {
       sources.push(failure);
       routeTrace.push(routeDiagnostic('web', {
         attempted: true, status: 'failed',
-        anonymousAccess: failure.code === 'PREVIEW_ONLY' ? 'denied' : 'unknown',
+        anonymousAccess: ['PREVIEW_ONLY', 'WEB_EPISODE_UNAVAILABLE'].includes(failure.code) ? 'denied' : 'unknown',
         code: failure.code,
       }));
     }, options);

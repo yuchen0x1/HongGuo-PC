@@ -41,6 +41,11 @@ function load(fetchPlayUrlSingle, overrides = {}) {
   let completeDelayedBody;
   const server = http.createServer((r, s) => {
     hits.push({url:r.url, headers:r.headers});
+    if (r.url.split('?')[0] === '/stalled') {
+      s.writeHead(200, {'Content-Type':'video/mp4','Content-Length':'999'});
+      s.flushHeaders();
+      return;
+    }
     if (r.url === '/delayed') {
       const bytes = Buffer.from('delayed-body');
       s.writeHead(200, {'Content-Type':'video/mp4','Content-Length':bytes.length});
@@ -99,6 +104,46 @@ function load(fetchPlayUrlSingle, overrides = {}) {
     assert.equal(next.status, 206);
     assert.equal(await next.text(), 'mple');
     assert.equal(lookups, 1, 'a consumer seek does not invalidate the official media source');
+  });
+  await check('a header-only CDN response times out its demanded body and publishes a safe media failure', async () => {
+    const bodyModule = req('./src/native/media-response-body');
+    const h = harness(async () => info('/stalled?token=PRIVATE_MEDIA_TOKEN'), {
+      './src/native/media-response-body': { mediaResponseBody: (stream, options) =>
+        bodyModule.mediaResponseBody(stream, { ...options, idleTimeoutMs: 25 }) },
+    });
+    const prepared = await h.handlers['prepare-online-play']({}, { vid:'11', seriesId:'1', requestId:'stalled-body' });
+    const response = await h.protocols['hongguo-stream'](new Request(prepared.url));
+    let timer;
+    try {
+      await assert.rejects(Promise.race([response.text(), new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error('The stalled body did not time out')), 1000);
+      })]), error => error.code === 'MEDIA_TRANSFER_ERROR');
+    } finally { clearTimeout(timer); }
+    await sleep(10);
+    const event = h.rendererEvents.filter(item => item.channel === 'online-play-diagnostics').at(-1);
+    assert.equal(event.payload.requestId, 'stalled-body');
+    assert.equal(event.payload.faultCode, 'CDN_UNAVAILABLE');
+    assert.equal(event.payload.diagnostics.mediaRead, 'failed');
+    assert.equal(h.run(`onlineSessions.get(${JSON.stringify(prepared.streamId)}).requests.size`), 0);
+    assert.doesNotMatch(JSON.stringify(event), /127\.0\.0\.1|PRIVATE_MEDIA_TOKEN|token=/);
+  });
+  await check('request abort settles a pending media body without a false playback failure', async () => {
+    const h = harness(async () => info('/stalled'));
+    const prepared = await h.handlers['prepare-online-play']({}, { vid:'11', seriesId:'1', requestId:'aborted-body' });
+    const controller = new AbortController();
+    const response = await h.protocols['hongguo-stream'](new Request(prepared.url, { signal: controller.signal }));
+    const body = response.text();
+    controller.abort();
+    let timer;
+    try {
+      await assert.rejects(Promise.race([body, new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error('The aborted body did not settle')), 1000);
+      })]), error => error.name === 'AbortError' && error.code === 'ABORT_ERR');
+    } finally { clearTimeout(timer); }
+    await sleep(10);
+    assert.equal(h.run(`onlineSessions.get(${JSON.stringify(prepared.streamId)}).requests.size`), 0);
+    assert.equal(h.rendererEvents.some(event => event.channel === 'online-play-diagnostics'
+      && (event.payload.faultCode || event.payload.diagnostics?.mediaRead === 'failed')), false);
   });
   await check('download refreshes a failed address without another click',async()=>{
     const calls=[]; const h=harness(async(_v,_s,o)=>{ calls.push(o); return calls.length===1?info('/missing','web'):info('/ok'); });

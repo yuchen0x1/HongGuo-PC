@@ -1,7 +1,7 @@
 // Faults describe the layer with evidence; an empty body does not prove an auth or signature failure.
 const FAULT_CODES = Object.freeze([
   'ACCOUNT_EXPIRED', 'ACCOUNT_UNAUTHORIZED', 'DEVICE_IDENTITY_EXPIRED', 'SIGNATURE_INVALID',
-  'API_EMPTY_RESPONSE', 'API_RATE_LIMITED', 'API_FORBIDDEN', 'NETWORK_TIMEOUT',
+  'API_EMPTY_RESPONSE', 'API_RATE_LIMITED', 'API_FORBIDDEN', 'WEB_EPISODE_UNAVAILABLE', 'NETWORK_TIMEOUT',
   'NETWORK_DISCONNECTED', 'MEDIA_URL_EXPIRED', 'CDN_UNAVAILABLE', 'MEDIA_DECRYPT_FAILED',
   'CODEC_UNSUPPORTED', 'PLAYER_DECODE_FAILED',
 ]);
@@ -14,6 +14,7 @@ const POLICIES = Object.freeze(Object.fromEntries([
   ['API_EMPTY_RESPONSE', 'verified-fallback', 1, '播放接口返回空内容，未能取得可用片源，请稍后重试。'],
   ['API_RATE_LIMITED', 'stop', 0, '播放接口请求过于频繁，请稍后手动重试。'],
   ['API_FORBIDDEN', 'stop', 0, '官方播放接口拒绝了请求，请稍后重试或在官方 App 观看。'],
+  ['WEB_EPISODE_UNAVAILABLE', 'stop', 0, '官网当前播放入口不提供本集，请在官方客户端查看可用播放方式。'],
   ['NETWORK_TIMEOUT', 'retry-network', 1, '播放请求超时，请检查网络连接。'],
   ['NETWORK_DISCONNECTED', 'wait-network', 1, '网络连接已中断，网络恢复后可继续播放。'],
   ['MEDIA_URL_EXPIRED', 'refresh-source', 1, '视频地址已过期，请重新获取片源。'],
@@ -51,7 +52,8 @@ function classifyPlaybackError(error = {}, { stage = 'source', now = Date.now(),
   if (['ECONNRESET', 'EPIPE'].includes(code)) return 'NETWORK_DISCONNECTED';
   if (Array.isArray(error.sources)) {
     const nested = error.sources.map(item => classifyPlaybackError(item, { stage, now, expiresAt })).filter(Boolean);
-    return nested.find(item => ['ACCOUNT_EXPIRED', 'ACCOUNT_UNAUTHORIZED', 'API_FORBIDDEN', 'API_RATE_LIMITED'].includes(item)) || nested[0] || '';
+    return nested.find(item => ['ACCOUNT_EXPIRED', 'ACCOUNT_UNAUTHORIZED', 'API_FORBIDDEN', 'API_RATE_LIMITED'].includes(item))
+      || nested.find(item => item === 'WEB_EPISODE_UNAVAILABLE') || nested[0] || '';
   }
   return '';
 }

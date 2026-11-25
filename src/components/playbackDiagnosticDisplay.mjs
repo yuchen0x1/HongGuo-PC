@@ -9,6 +9,7 @@ const AUTHORIZATION = { unverified: '尚未验证', supported: '已验证支持'
 const FAULT = {
   ACCOUNT_EXPIRED: '账号登录过期', ACCOUNT_UNAUTHORIZED: '账号授权受限', DEVICE_IDENTITY_EXPIRED: '播放身份失效',
   SIGNATURE_INVALID: '请求签名无效', API_EMPTY_RESPONSE: '播放接口空响应', API_RATE_LIMITED: '接口限流',
+  WEB_EPISODE_UNAVAILABLE: '官网未提供本集播放入口',
   API_FORBIDDEN: '官方接口拒绝请求', NETWORK_TIMEOUT: '网络超时', NETWORK_DISCONNECTED: '网络中断',
   MEDIA_URL_EXPIRED: '媒体地址过期', CDN_UNAVAILABLE: '媒体线路不可用', MEDIA_DECRYPT_FAILED: '媒体解密失败',
   CODEC_UNSUPPORTED: '视频编码不受支持', PLAYER_DECODE_FAILED: '播放器解码失败',

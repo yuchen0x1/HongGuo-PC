@@ -48,6 +48,7 @@ const { safeCode, sanitizePlaybackDiagnostics, updatePlaybackRoute, playbackFail
 const { classifyPlaybackError, playbackRecoveryPolicy } = require('./src/native/playback-errors');
 const { isMediaExpired } = require('./src/native/media-url-manager');
 const { normalizeDownloadQuality, meetsDownloadQuality } = require('./src/native/download-quality');
+const { downloadErrorDetails } = require('./src/native/download-error');
 const { decryptInWorker } = require('./src/native/decrypt-worker.cjs');
 const store = require('./src/store');
 const watchHistory = require('./src/native/watch-history');
@@ -788,13 +789,14 @@ async function runTask(task) {
   try {
     await executeDownload(task);
   } catch (error) {
-    console.error('[Download Queue] 下载失败:', error);
+    const failure = downloadErrorDetails(error);
+    console.error('[Download Queue] 下载失败:', failure);
     // executeDownload normally owns its error state, but dispatch failures (for
     // example a corrupt/unknown task type) can happen before a task-specific
     // handler is entered. Never leave such a task visibly pending forever.
     if (task.status === 'pending' || task.status === 'downloading') {
       task.status = 'failed';
-      task.error = error?.message || '下载任务执行失败';
+      task.error = failure.message;
       task.endTime = Date.now();
       persistDownloadTasksQuietly('队列异常');
       sendToRenderer('download-failed', { id: task.id, error: task.error, retryAt: null, sourceRetries: 0, qualityNotice: '' });
@@ -1221,14 +1223,15 @@ async function executeHongguoDownload(task) {
       }
     } else {
       const retries = task.sourceRetries || 0;
-      task.status = 'failed'; task.error = error.message; task.endTime = Date.now();
+      const failure = downloadErrorDetails(error);
+      task.status = 'failed'; task.error = failure.message; task.endTime = Date.now();
       if (retries < SOURCE_RETRY_DELAYS.length && isDeferrableSourceError(task, error)) {
         const delays = error.code === 'SOURCE_UNAVAILABLE' || [404, 410].includes(error.mediaStatus)
           ? SOURCE_RETRY_DELAYS : TRANSFER_RETRY_DELAYS;
         const delay = delays[retries];
         task.sourceRetries = retries + 1; task.retryAt = Date.now() + delay;
         const wait = delays === SOURCE_RETRY_DELAYS ? `${delay / 60000} 分钟` : `${delay / 1000} 秒`;
-        task.error = `${error.message} 将在 ${wait}后自动重试（${retries + 1}/${SOURCE_RETRY_DELAYS.length}）。`;
+        task.error = `${failure.message} 将在 ${wait}后自动重试（${retries + 1}/${SOURCE_RETRY_DELAYS.length}）。`;
         armSourceRetry(task);
       }
       sendToRenderer('download-failed', { id, error: task.error, retryAt: task.retryAt || null, sourceRetries: task.sourceRetries || 0, qualityNotice: '' });
@@ -1779,6 +1782,7 @@ async function searchAtSourcePage(keyword, options = {}) {
           attempted.push(relaxed);
           if (hasTitleMatch(results)) break;
         } catch (error) {
+          if (error?.retryable === false) throw error;
           fuzzyErrors.push(error.message || '补搜失败');
           console.warn('[Search] 红果模糊补搜失败:', error.message);
         }
@@ -1831,6 +1835,7 @@ async function searchAtSourcePage(keyword, options = {}) {
     }
     return { success: true, results, pageTitle: '', via: 'api', channel: 'web', meta: webMeta, hasMore: !!response.hasMore, cursor: { page: response.page, nextPage: response.nextPage || null }, appError: appFallbackError };
   } catch (error) {
+    if (error?.retryable === false) throw error;
     const message = error?.message || String(error || '搜索失败');
     console.warn('[Search] 红果接口失败:', message);
     if (!appEnabled && options?.appSearch !== false && Date.now() >= appSearchCooldownUntil
@@ -3394,27 +3399,8 @@ function registerStreamProtocol() {
         // Later requests must reconnect by playback time, never reuse offsets against a new rendition.
         session.mediaStarted = true;
         session.mediaIdentity = identity;
-        const reader = Readable.toWeb(upstream.data, {
-          strategy: { highWaterMark: 64 * 1024, size: chunk => chunk.byteLength },
-        }).getReader();
-        const body = new (require('node:stream/web').ReadableStream)({
-          async pull(target) {
-            try {
-              const chunk = await reader.read();
-              if (controller.signal.aborted) return;
-              if (chunk.done) target.close();
-              else target.enqueue(chunk.value);
-            } catch (error) {
-              if (!controller.signal.aborted) target.error(error);
-            }
-          },
-          cancel(reason) {
-            // Mark a consumer seek/cancel before Axios can report ECONNRESET.
-            controller.abort();
-            return reader.cancel(reason).catch(error => {
-              if (!['ABORT_ERR', 'ERR_CANCELED'].includes(error?.code)) throw error;
-            });
-          },
+        const body = require('./src/native/media-response-body').mediaResponseBody(upstream.data, {
+          signal: controller.signal, onCancel: () => controller.abort(), idleTimeoutMs: MEDIA_IDLE_TIMEOUT_MS,
         });
         return new Response(body, { status: upstream.status, headers });
       });

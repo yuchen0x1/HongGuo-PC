@@ -7,6 +7,7 @@ import { readSearchHistory, saveSearchTerm, removeSearchTerm, clearSearchHistory
 import useMediaSources from './useMediaSources';
 import { mediaSourceLabel } from './mediaSourcesModel.mjs';
 import { rankSearchResults } from './searchRanking.mjs';
+import { waitForRequest } from './randomDramaModel.mjs';
 
 const SEARCH_SAFETY_TIMEOUT_MS = 25000;
 
@@ -242,7 +243,7 @@ function SearchPanel({ onSelectSeries, onSwitchToInput, active = true, seedTerm 
     setPickingId(item.series_id);
     setError('');
     try {
-      const res = await window.electronAPI.searchResolve(item.series_id);
+      const res = await waitForRequest(window.electronAPI.searchResolve(item.series_id), { message: '分集加载超时，请重试本剧' });
       if (request !== requestVersion.current) return;
       if (res && res.success && res.data) {
         onSelectSeries(res.data);

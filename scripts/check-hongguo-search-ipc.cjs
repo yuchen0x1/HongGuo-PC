@@ -9,7 +9,7 @@ const { EventEmitter } = require('node:events');
 const { createRequire } = require('node:module');
 const source = path.resolve(__dirname, '../main.js'), req = createRequire(source);
 
-function load(searchHongguo) {
+function load(searchHongguo, { onAppSearch = () => {}, onNewRelease = () => {} } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hongguo-search-ipc-'));
   const handlers = {}, app = new EventEmitter();
   Object.assign(app, {
@@ -24,8 +24,8 @@ function load(searchHongguo) {
     electron,
     './src/store': { getSettings: () => ({}) },
     './src/native/hongguo-search': { searchHongguo },
-    './src/native/hongguo-app-search': { searchApp: async () => { throw Object.assign(new Error('fixture App search unavailable'), { code: 'APP_EMPTY' }); } },
-    './src/native/hongguo-app-new': { searchNewReleasesDetailed: async () => ({ results: [], partial: false }) },
+    './src/native/hongguo-app-search': { searchApp: async () => { onAppSearch(); throw Object.assign(new Error('fixture App search unavailable'), { code: 'APP_EMPTY' }); } },
+    './src/native/hongguo-app-new': { searchNewReleasesDetailed: async () => { onNewRelease(); return { results: [], partial: false }; } },
     './src/native/hongguo': { fetchEpisodeList: async () => ({ episodes: [] }) },
   };
   const context = vm.createContext({
@@ -81,6 +81,30 @@ function failure(message, kind, fallback) {
   assert.equal(result.success, false);
   assert.match(result.error, /超时/);
   assert.equal(pageWaits, 0, 'a timeout must not add another page wait');
+  harness.cleanup();
+
+  for (const status of [401, 403, 429]) {
+    let appCalls = 0, newReleaseCalls = 0, sniffCalls = 0;
+    harness = load(async () => {
+      throw Object.assign(failure(`HTTP ${status}`, 'upstream', false), { retryable: false });
+    }, { onAppSearch: () => { appCalls++; }, onNewRelease: () => { newReleaseCalls++; } });
+    harness.context.runSearchSniff = async () => { sniffCalls++; return { success: true, results: [] }; };
+    result = await harness.handlers['search-series']({}, '明确拒绝测试', { source: 'hongguo' });
+    assert.equal(result.success, false);
+    assert.match(result.error, new RegExp(String(status)));
+    assert.equal(appCalls + newReleaseCalls + sniffCalls, 0, 'explicit refusals must not start another route');
+    harness.cleanup();
+  }
+
+  let relaxedAttempts = 0, refusedSupplements = 0;
+  harness = load(async () => {
+    if (relaxedAttempts++ === 0) return { results: [], total: 0, page: 1, totalPages: 1, hasMore: false };
+    throw Object.assign(failure('HTTP 429', 'upstream', false), { retryable: false });
+  }, { onAppSearch: () => { refusedSupplements++; }, onNewRelease: () => { refusedSupplements++; } });
+  result = await harness.handlers['search-series']({}, '补充，明确拒绝', { source: 'hongguo' });
+  assert.equal(result.success, false);
+  assert.equal(relaxedAttempts, 2, 'a refusal during relaxed search stops additional queries');
+  assert.equal(refusedSupplements, 0);
   harness.cleanup();
 
   const fuzzyCalls = [];
@@ -142,5 +166,5 @@ function failure(message, kind, fallback) {
   assert.equal(result.results.length, 1);
   harness.cleanup();
 
-  console.log('PASS hongguo search IPC: API first, format fallback, no page wait after timeout and bounded relaxed retries');
+  console.log('PASS hongguo search IPC: API first, format fallback, timeout handling, explicit refusal stops and bounded relaxed retries');
 })().catch(error => { console.error('FAIL hongguo search IPC: ' + error.message); process.exitCode = 1; });

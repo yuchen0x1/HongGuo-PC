@@ -83,6 +83,25 @@ test('an error code with an empty list stays an error and is not cached as an em
   assert.equal(calls, 3, 'the error must not be served from cache');
 });
 
+test('numeric business errors cannot masquerade as empty or populated search results', async () => {
+  for (const searchList of [[], payload.searchList]) {
+    for (const code of [7, 403, 429]) {
+      assert.throws(() => parseSearchResponse({ code, searchList }),
+        error => error instanceof HongguoSearchError && error.kind === 'upstream');
+    }
+  }
+  for (const code of [0, '0']) {
+    assert.equal(parseSearchResponse({ ...payload, code }).results.length, 2);
+  }
+  clearSearchCache();
+  let calls = 0;
+  const request = async () => { calls++; return { code: 7, searchList: [] }; };
+  for (let attempt = 0; attempt < 2; attempt++) {
+    await assert.rejects(searchHongguo('数字错误码', { request, cache: true, retries: 0 }), /暂不可用/);
+  }
+  assert.equal(calls, 2, 'a numeric business error must never populate the success cache');
+});
+
 test('a non-empty list without recognizable video entries is a format error, not an empty result', () => {
   assert.throws(
     () => parseSearchResponse({ searchList: [{ doc_type: 99, name: '无法识别的条目' }] }),
@@ -98,7 +117,28 @@ test('request errors are classified for retry and fallback decisions', () => {
   const changed = classifyRequestError({ response: { status: 404 } });
   assert.equal(changed.kind, 'format');
   assert.equal(changed.fallback, true);
-  assert.match(classifyRequestError({ response: { status: 403 } }).message, /接口已变化/);
+  for (const status of [401, 403, 429]) {
+    const rejected = classifyRequestError({ response: { status } });
+    assert.equal(rejected.kind, 'upstream');
+    assert.equal(rejected.fallback, false);
+    assert.equal(rejected.retryable, false);
+  }
+});
+
+test('rate limits and explicit refusals stop without automatic retries', async () => {
+  for (const status of [401, 403, 429]) {
+    let calls = 0;
+    const request = async () => { calls++; throw classifyRequestError({ response: { status } }); };
+    await assert.rejects(searchHongguo(`拒绝重试${status}`, { request, retries: 3, cache: false }),
+      error => error.retryable === false && error.fallback === false);
+    assert.equal(calls, 1);
+
+    calls = 0;
+    await assert.rejects(searchHongguo(`业务拒绝${status}`, { retries: 3, cache: false,
+      request: async () => { calls++; return { code: status, searchList: [] }; } }),
+    error => error.retryable === false && error.fallback === false);
+    assert.equal(calls, 1);
+  }
 });
 
 test('a transient failure is retried once and then succeeds', async () => {

@@ -14,6 +14,12 @@ function player(overrides = {}) {
     seriesDetail: { series_id: '123', pay_type: 0, vid_list: ['456', '457'], accessible_episode_cnt: 2 },
     publicVideoSeo: { available: true, itemId: '456', seriesId: '123', durationSeconds: 120 }, ...overrides };
 }
+function windowPlayer(index, overrides = {}) {
+  const vids = ['451', '452', '453', '454', '455', '456'];
+  return player({ vid: vids[index - 1],
+    seriesDetail: { series_id: '123', pay_type: 0, vid_list: vids, accessible_episode_cnt: 5 },
+    publicVideoSeo: { available: true, itemId: vids[index - 1], seriesId: '123', durationSeconds: 120 }, ...overrides });
+}
 function api(overrides = {}) {
   return { base_resp: { StatusCode: 0 }, main_url: MEDIA, server_time: NOW / 1000,
     url_expire: NOW / 1000 + 3600, ...overrides };
@@ -119,6 +125,57 @@ test('episode identity, explicit permission and public episode window are requir
     assert.equal(f.requests.length, 0);
   }
   assert.equal(publicEpisodePermission(player(), '456', '123').episodeIndex, 1);
+});
+
+test('the fifth public episode remains playable but the sixth stops before any playback API request', async () => {
+  const fifth = fixture();
+  const result = await resolveOfficialPublicPlayback(windowPlayer(5), { ...fifth.options, vid: '455' });
+  assert.equal(result.url, MEDIA);
+  assert.equal(fifth.requests.length, 2);
+
+  const sixth = fixture();
+  await assert.rejects(resolveOfficialPublicPlayback(windowPlayer(6), sixth.options),
+    error => error.code === 'WEB_EPISODE_UNAVAILABLE');
+  assert.equal(sixth.requests.length, 0);
+  const nonePublic = windowPlayer(1);
+  nonePublic.seriesDetail.accessible_episode_cnt = 0;
+  assert.throws(() => publicEpisodePermission(nonePublic, '451', '123'),
+    error => error.code === 'WEB_EPISODE_UNAVAILABLE');
+});
+
+test('a later episode redirected to the first retains the web window denial and never uses its media', async () => {
+  const f = fixture();
+  await assert.rejects(resolveOfficialPublicPlayback(windowPlayer(1), f.options),
+    error => error.code === 'WEB_EPISODE_UNAVAILABLE');
+  assert.equal(f.requests.length, 0);
+  assert.throws(() => publicEpisodePermission(windowPlayer(1), '455', '123'),
+    error => error.code === 'INVALID_RESPONSE', 'a wrong episode inside the public window is not a window denial');
+  assert.throws(() => publicEpisodePermission(windowPlayer(1, { series_id: '999' }), '456', '123'),
+    error => error.code === 'INVALID_RESPONSE', 'another series cannot establish this series public window');
+});
+
+test('invalid episode windows remain malformed responses instead of account or public window denials', async () => {
+  const invalid = [undefined, null, '', ' 5 ', true, {}, -1, 1.5, 7, Number.MAX_SAFE_INTEGER + 1]
+    .map(accessible => { const data = windowPlayer(6); data.seriesDetail.accessible_episode_cnt = accessible; return data; });
+  for (const vids of [undefined, [], ['451', '451', '456'], ['451', 'invalid', '456'], ['451', '452'],
+    ['451', '456', Number.MAX_SAFE_INTEGER + 1]]) {
+    const data = windowPlayer(6); data.seriesDetail.vid_list = vids; invalid.push(data);
+  }
+  for (const data of invalid) {
+    const f = fixture();
+    await assert.rejects(resolveOfficialPublicPlayback(data, f.options), error => error.code === 'INVALID_RESPONSE');
+    assert.equal(f.requests.length, 0);
+  }
+});
+
+test('explicit account requirements stay distinct from encrypted browser capability limits', () => {
+  for (const flag of ['pcLoginRequired', 'pcAuthenticatedPlayback']) {
+    const data = windowPlayer(6); data.req[flag] = true;
+    assert.throws(() => publicEpisodePermission(data, '456', '123'), error => error.code === 'ACCOUNT_REQUIRED');
+  }
+  const browserLimited = windowPlayer(1); browserLimited.req.encryptedBrowserAllowed = true;
+  assert.throws(() => publicEpisodePermission(browserLimited, '451', '123'),
+    error => error.code === 'WEB_EPISODE_UNAVAILABLE');
 });
 
 test('empty bodies, business refusal and encrypted response shapes remain distinct', async () => {
@@ -258,6 +315,71 @@ test('the web router invokes the public resolver once and refuses App fallback a
     assert.equal(result.sources[0].code, `HTTP_${status}`);
     assert.deepEqual(calls, ['page', 'public-api']);
   }
+});
+
+test('a web-only later-episode denial still allows the independent App provider without using wrong web media', async () => {
+  for (const data of [windowPlayer(6), windowPlayer(1)]) {
+    const calls = [];
+    const html = `window._ROUTER_DATA=${JSON.stringify({ loaderData: { 'player_(series_id)/(vid)/page': data } })}`;
+    const app = native({ axios: {
+      get: async () => { calls.push('page'); return { status: 200, data: html }; },
+      post: async () => assert.fail('a web window denial must not request a playback API'),
+    }, './app-source': { fetchAppPlayUrl: async vid => {
+      calls.push('app'); assert.equal(vid, '456'); return { url: MEDIA, source: 'app' };
+    } } });
+    const result = await app.fetchPlayUrlSingle('456', '123');
+    assert.equal(result.url, MEDIA);
+    assert.equal(result.source, 'app');
+    assert.equal(result.routeTrace[0].code, 'WEB_EPISODE_UNAVAILABLE');
+    assert.equal(result.routeTrace[0].anonymousAccess, 'denied');
+    assert.deepEqual(calls, ['page', 'app']);
+  }
+});
+
+test('web-first later-episode denial preserves both failures after one normal App attempt', async () => {
+  const calls = [], data = windowPlayer(1);
+  const html = `window._ROUTER_DATA=${JSON.stringify({ loaderData: { 'player_(series_id)/(vid)/page': data } })}`;
+  const app = native({ axios: {
+    get: async () => { calls.push('page'); return { status: 200, data: html }; },
+    post: async () => assert.fail('the denied website must not request playback APIs'),
+  }, './app-source': { fetchAppPlayUrl: async () => {
+    calls.push('app'); throw Object.assign(new Error('PRIVATE_ERROR'), { code: 'EMPTY_RESPONSE' });
+  } } });
+  const result = await app.fetchPlayUrlSingle('456', '123');
+  assert.equal(result.url, null);
+  assert.deepEqual(Array.from(result.sources, item => item.code), ['WEB_EPISODE_UNAVAILABLE', 'EMPTY_RESPONSE']);
+  assert.doesNotMatch(result.sources[0].message, /\bhttps?:|登录|账号|付费|DRM|签名/);
+  assert.deepEqual(calls, ['page', 'app']);
+});
+
+test('explicit website account requirements still stop the independent App route', async () => {
+  for (const flag of ['pcLoginRequired', 'pcAuthenticatedPlayback']) {
+    const data = windowPlayer(6); data.req[flag] = true;
+    const html = `window._ROUTER_DATA=${JSON.stringify({ loaderData: { 'player_(series_id)/(vid)/page': data } })}`;
+    const app = native({ axios: {
+      get: async () => ({ status: 200, data: html }),
+      post: async () => assert.fail('explicit account requirements stop public playback API requests'),
+    }, './app-source': { fetchAppPlayUrl: async () => assert.fail('explicit account requirements stop cross-route requests') } });
+    const result = await app.fetchPlayUrlSingle('456', '123');
+    assert.equal(result.url, null);
+    assert.equal(result.sources[0].code, 'ACCOUNT_UNAUTHORIZED');
+  }
+});
+
+test('automatic quality keeps the later-episode web denial after the initial App empty response', async () => {
+  const calls = [], data = windowPlayer(1);
+  const html = `window._ROUTER_DATA=${JSON.stringify({ loaderData: { 'player_(series_id)/(vid)/page': data } })}`;
+  const app = native({ axios: {
+    get: async () => { calls.push('page'); return { status: 200, data: html }; },
+    post: async () => assert.fail('no protected playback API is needed to identify the web window denial'),
+  }, './app-source': { fetchAppPlayUrl: async () => {
+    calls.push('app'); throw Object.assign(new Error('PRIVATE_ERROR'), { code: 'EMPTY_RESPONSE' });
+  } } });
+  const result = await app.fetchPlayUrlSingle('456', '123', { quality: '1080p', allowLowerQuality: true });
+  assert.equal(result.url, null);
+  assert.equal(result.sources.at(-1).code, 'WEB_EPISODE_UNAVAILABLE');
+  assert.deepEqual(calls, ['app', 'page']);
+  assert.doesNotMatch(JSON.stringify(result), /PRIVATE_ERROR/);
 });
 
 test('the web router resolves a complete public movie while leaving the App interface untouched', async () => {
