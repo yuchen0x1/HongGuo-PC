@@ -124,9 +124,97 @@ function runJs(expression, timeout = 15000) {
   });
 }
 
-const pwsh = (script, moreEnv = {}) => execFileSync('powershell.exe', ['-NoProfile', '-STA', '-Command', script], {
+const pwsh = (script, moreEnv = {}) => execFileSync('powershell.exe', ['-NoProfile', '-STA', '-Command',
+  '[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)\n' + script], {
   encoding: 'utf8', timeout: 10000, windowsHide: true, env: { ...process.env, ...moreEnv },
 }).trim();
+
+// NSIS uses native dialogs. UI Automation can expose no descendants on hosted runners.
+const installerControls = String.raw`
+Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class InstallerControls {
+  public class Window {
+    public long Handle;
+    public int ProcessId;
+    public int ControlId;
+    public string Text;
+    public string ClassName;
+    public bool Visible;
+    public bool Enabled;
+    public int ButtonType;
+  }
+  private delegate bool EnumCallback(IntPtr hwnd, IntPtr state);
+  [DllImport("user32.dll")] private static extern bool EnumWindows(EnumCallback callback, IntPtr state);
+  [DllImport("user32.dll")] private static extern bool EnumChildWindows(IntPtr parent, EnumCallback callback, IntPtr state);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetWindowText(IntPtr hwnd, StringBuilder text, int count);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetClassName(IntPtr hwnd, StringBuilder text, int count);
+  [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);
+  [DllImport("user32.dll")] private static extern int GetDlgCtrlID(IntPtr hwnd);
+  [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr hwnd);
+  [DllImport("user32.dll")] private static extern bool IsWindowEnabled(IntPtr hwnd);
+  [DllImport("user32.dll", EntryPoint = "GetWindowLongW")] private static extern int GetWindowLong(IntPtr hwnd, int index);
+  [DllImport("user32.dll")] private static extern IntPtr GetParent(IntPtr hwnd);
+  [DllImport("user32.dll", SetLastError = true)] private static extern bool PostMessage(IntPtr hwnd, uint message, IntPtr wparam, IntPtr lparam);
+  [DllImport("user32.dll", SetLastError = true)] private static extern IntPtr SendMessageTimeout(IntPtr hwnd, uint message, IntPtr wparam, IntPtr lparam, uint flags, uint timeout, out IntPtr result);
+  private static Window Describe(IntPtr hwnd) {
+    var text = new StringBuilder(2048);
+    var name = new StringBuilder(256);
+    GetWindowText(hwnd, text, text.Capacity);
+    GetClassName(hwnd, name, name.Capacity);
+    uint processId;
+    GetWindowThreadProcessId(hwnd, out processId);
+    return new Window { Handle = hwnd.ToInt64(), ProcessId = (int)processId, ControlId = GetDlgCtrlID(hwnd),
+      Text = text.ToString(), ClassName = name.ToString(), Visible = IsWindowVisible(hwnd),
+      Enabled = IsWindowEnabled(hwnd), ButtonType = GetWindowLong(hwnd, -16) & 15 };
+  }
+  public static Window[] Windows(long parent) {
+    var result = new List<Window>();
+    EnumCallback collect = delegate(IntPtr hwnd, IntPtr state) { result.Add(Describe(hwnd)); return true; };
+    if (parent == 0) EnumWindows(collect, IntPtr.Zero);
+    else EnumChildWindows(new IntPtr(parent), collect, IntPtr.Zero);
+    return result.ToArray();
+  }
+  public static bool Checked(long handle) {
+    IntPtr result;
+    if (SendMessageTimeout(new IntPtr(handle), 0x00F0, IntPtr.Zero, IntPtr.Zero, 2, 1000, out result) == IntPtr.Zero)
+      throw new InvalidOperationException("Could not read installer checkbox");
+    return result.ToInt64() == 1;
+  }
+  public static void Check(long handle) {
+    IntPtr result;
+    if (SendMessageTimeout(new IntPtr(handle), 0x00F1, new IntPtr(1), IntPtr.Zero, 2, 1000, out result) == IntPtr.Zero)
+      throw new InvalidOperationException("Could not select installer checkbox");
+  }
+  public static void Click(long handle) {
+    var hwnd = new IntPtr(handle);
+    if (!PostMessage(GetParent(hwnd), 0x0111, new IntPtr(GetDlgCtrlID(hwnd)), hwnd))
+      throw new InvalidOperationException("Could not advance installer dialog");
+  }
+}
+'@
+$allProcesses = @(Get-CimInstance -ClassName Win32_Process -ErrorAction Stop)
+$root = [System.IO.Path]::GetFullPath($env:HONGGUO_TEST_ROOT).TrimEnd('\') + '\'
+$trusted = [Collections.Generic.HashSet[int]]::new()
+foreach ($process in $allProcesses) {
+  if ($process.Name -eq ($env:HONGGUO_TEST_INSTALLER + '.exe') -and $process.ExecutablePath -and
+      [System.IO.Path]::GetFullPath($process.ExecutablePath).StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) {
+    [void]$trusted.Add([int]$process.ProcessId)
+  }
+}
+do {
+  $changed = $false
+  foreach ($process in $allProcesses) {
+    if ($trusted.Contains([int]$process.ParentProcessId) -and $trusted.Add([int]$process.ProcessId)) { $changed = $true }
+  }
+} while ($changed)
+$installerProcesses = @($allProcesses | Where-Object { $trusted.Contains([int]$_.ProcessId) } |
+  Select-Object ProcessId,ParentProcessId,Name,ExecutablePath,CommandLine)
+$installerWindows = @([InstallerControls]::Windows(0) | Where-Object { $trusted.Contains($_.ProcessId) })
+`;
 
 let lastInstallerActionAt = 0;
 function advanceInstaller() {
@@ -134,72 +222,78 @@ function advanceInstaller() {
   lastInstallerActionAt = Date.now();
   try {
     const output = pwsh([
-      'Add-Type -AssemblyName UIAutomationClient,UIAutomationTypes',
-      '$process = Get-Process -Name $env:HONGGUO_TEST_INSTALLER -ErrorAction SilentlyContinue',
+      installerControls,
       '$result = @()',
-      'foreach ($p in $process) {',
-      '  if (-not $p.MainWindowHandle) { continue }',
-      '  $win = [Windows.Automation.AutomationElement]::FromHandle($p.MainWindowHandle)',
-      '  $all = $win.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition)',
-      '  $buttons = @()',
-      '  $runCheckboxes = @()',
+      'foreach ($win in $installerWindows) {',
+      "  if ($win.ClassName -ne '#32770') { continue }",
+      '  $all = @([InstallerControls]::Windows($win.Handle))',
+      "  $buttons = @($all | Where-Object { $_.ClassName -eq 'Button' -and $_.Visible })",
+      '  $runCheckboxes = @($buttons | Where-Object { $_.ButtonType -in @(2,3,5,6) })',
       '  $checkboxes = @()',
-      '  foreach ($element in $all) {',
-      "    if ($element.Current.ControlType.ProgrammaticName -eq 'ControlType.Button' -and -not $element.Current.IsOffscreen) {",
-      '      $buttons += $element',
-      '    }',
-      "    if ($element.Current.ControlType.ProgrammaticName -eq 'ControlType.CheckBox' -and -not $element.Current.IsOffscreen) {",
-      '      $runCheckboxes += $element',
-      '    }',
-      '  }',
-      '  $labels = @($buttons | ForEach-Object { $_.Current.Name })',
       '  foreach ($checkbox in $runCheckboxes) {',
-      '    $pattern = $checkbox.GetCurrentPattern([Windows.Automation.TogglePattern]::Pattern)',
-      '    $checkboxes += [PSCustomObject]@{ name = $checkbox.Current.Name; checked = ($pattern.Current.ToggleState -eq [Windows.Automation.ToggleState]::On) }',
+      '    $checkboxes += [PSCustomObject]@{ name = $checkbox.Text; checked = [InstallerControls]::Checked($checkbox.Handle) }',
       '  }',
       '  $button = $buttons | Where-Object {',
-      "    $_.Current.IsEnabled -and $_.Current.Name.Trim().TrimStart('&') -match '^(Next(?:\\s*>.*)?|Install|Finish|下一步|下一页|安装|完成|完成安装)$'",
+      "    $label = ($_.Text -replace '\\(&.\\)', '' -replace '&', '').Trim()",
+      "    $_.Enabled -and $_.ControlId -eq 1 -and $label -match '^(Next(?:\\s*>.*)?|Install|Finish|下一步(?:\\s*>.*)?|下一页|安装|完成|完成安装)$'",
       '  } | Select-Object -First 1',
       '  $clicked = $null',
       '  if ($button) {',
-      '    $clicked = $button.Current.Name',
-      "    if ($clicked.Trim().TrimStart('&') -match '^(Finish|完成|完成安装)$') {",
-      "      $runCheckbox = $runCheckboxes | Where-Object { $_.Current.Name -match '(?i)(run|launch|start|open|运行|启动)' } | Select-Object -First 1",
+      '    $clicked = $button.Text',
+      "    if (($clicked -replace '\\(&.\\)', '' -replace '&', '').Trim() -match '^(Finish|完成|完成安装)$') {",
+      "      $runCheckbox = $runCheckboxes | Where-Object { $_.Text -match '(?i)(run|launch|start|open|运行|启动)' } | Select-Object -First 1",
       '      if ($runCheckbox) {',
-      '        $pattern = $runCheckbox.GetCurrentPattern([Windows.Automation.TogglePattern]::Pattern)',
-      '        if ($pattern.Current.ToggleState -ne [Windows.Automation.ToggleState]::On) { $pattern.Toggle() }',
-      '        $recordedCheckbox = $checkboxes | Where-Object { $_.name -eq $runCheckbox.Current.Name } | Select-Object -First 1',
-      '        if ($recordedCheckbox) { $recordedCheckbox.checked = ($pattern.Current.ToggleState -eq [Windows.Automation.ToggleState]::On) }',
+      '        [InstallerControls]::Check($runCheckbox.Handle)',
+      '        $recordedCheckbox = $checkboxes | Where-Object { $_.name -eq $runCheckbox.Text } | Select-Object -First 1',
+      '        if ($recordedCheckbox) { $recordedCheckbox.checked = [InstallerControls]::Checked($runCheckbox.Handle) }',
       '      }',
       '    }',
-      '    $button.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern).Invoke()',
+      '    [InstallerControls]::Click($button.Handle)',
       '  }',
-      '  $result += [PSCustomObject]@{ processId = $p.Id; title = $win.Current.Name; buttons = $labels; checkboxes = $checkboxes; clicked = $clicked }',
+      '  $result += [PSCustomObject]@{ processId = $win.ProcessId; title = $win.Text; buttons = @($buttons | ForEach-Object Text); checkboxes = $checkboxes; controls = $all; clicked = $clicked }',
       '}',
-      'ConvertTo-Json -InputObject @($result) -Compress -Depth 4',
-    ].join('\n'), { HONGGUO_TEST_INSTALLER: path.parse(targetInstaller).name });
+      'ConvertTo-Json -InputObject @($result) -Compress -Depth 5',
+    ].join('\n'), { HONGGUO_TEST_ROOT: root, HONGGUO_TEST_INSTALLER: path.parse(targetInstaller).name });
     const windows = output ? JSON.parse(output) : [];
     const latest = Array.isArray(windows) ? windows.at(-1) : windows;
     if (latest) {
-      receipt.installer = { processId: latest.processId, title: latest.title, buttons: latest.buttons, checkboxes: latest.checkboxes, clicked: latest.clicked };
+      receipt.installer = latest;
       if (latest.clicked) receipt.steps.push(`NSIS update wizard advanced via "${latest.clicked}"`);
     }
-  } catch {}
+  } catch (error) {
+    receipt.installerAutomationError = error.message;
+  }
 }
 
 function captureInstallDiagnostics() {
   try {
     const output = pwsh([
+      installerControls,
       '$path = [System.IO.Path]::GetFullPath($env:HONGGUO_TEST_EXE)',
       '$version = if (Test-Path -LiteralPath $path) { (Get-Item -LiteralPath $path).VersionInfo.ProductVersion } else { $null }',
-      '$name = $env:HONGGUO_TEST_INSTALLER + ".exe"',
-      "$filter = 'Name = ' + [char]39 + $name + [char]39",
-      '$installers = @(Get-CimInstance -ClassName Win32_Process -Filter $filter -ErrorAction SilentlyContinue | Select-Object ProcessId,ParentProcessId,ExecutablePath,CommandLine)',
-      '[PSCustomObject]@{ appExists = (Test-Path -LiteralPath $path); installedVersion = $version; installerProcesses = $installers } | ConvertTo-Json -Compress -Depth 4',
-    ].join('\n'), { HONGGUO_TEST_EXE: exe, HONGGUO_TEST_INSTALLER: path.parse(targetInstaller).name });
+      '$windows = @($installerWindows | ForEach-Object { [PSCustomObject]@{ window = $_; controls = @([InstallerControls]::Windows($_.Handle)) } })',
+      '[PSCustomObject]@{ appExists = (Test-Path -LiteralPath $path); installedVersion = $version; installerProcesses = $installerProcesses; windows = $windows } | ConvertTo-Json -Compress -Depth 6',
+    ].join('\n'), { HONGGUO_TEST_ROOT: root, HONGGUO_TEST_EXE: exe, HONGGUO_TEST_INSTALLER: path.parse(targetInstaller).name });
     receipt.installDiagnostics = JSON.parse(output);
   } catch (error) {
     receipt.installDiagnosticsError = error.message;
+  }
+  if (!receipt.passed) {
+    try {
+      fs.mkdirSync(path.dirname(out), { recursive: true });
+      pwsh([
+        'Add-Type -AssemblyName System.Drawing,System.Windows.Forms',
+        '$bounds = [Windows.Forms.SystemInformation]::VirtualScreen',
+        '$bitmap = [Drawing.Bitmap]::new($bounds.Width, $bounds.Height)',
+        '$graphics = [Drawing.Graphics]::FromImage($bitmap)',
+        'try {',
+        '  $graphics.CopyFromScreen($bounds.Left, $bounds.Top, 0, 0, $bounds.Size)',
+        '  $bitmap.Save($env:HONGGUO_TEST_SCREENSHOT, [Drawing.Imaging.ImageFormat]::Png)',
+        '} finally { $graphics.Dispose(); $bitmap.Dispose() }',
+      ].join('\n'), { HONGGUO_TEST_SCREENSHOT: out.replace(/\.json$/, '.png') });
+    } catch (error) {
+      receipt.screenshotError = error.message;
+    }
   }
 }
 
