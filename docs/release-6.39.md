@@ -52,4 +52,10 @@
 
 ## 发布回执
 
-待发布执行后补充标签、资产摘要与更新清单校验结果。
+- 发布于 2026-11-26 22:17:17（北京时间），标签 `v6.39` 指向公开提交 `41403a79e80a87512c903a9d0c5e83885d9cfe91`，Release 标记为最新版本。
+- 四项正式资产：`hongguo-downloader-6.39-win-x64-setup.exe`（157,171,695 字节，SHA-256 `817d6b9d480f5383b9bba18cbfa7a99b966487f822fdc53876cb35e26dbe492e`）、`latest.yml`（380 字节）、`hongguo-downloader-6.39-source.tar.gz`（5,652,505 字节，SHA-256 `fc22fb9b7f600b3733c274e2321ec2f745dfb1c35678b7a921c159c6643314a8`）、`hongguo-downloader-6.38-source.tar.gz`（5,650,291 字节）。
+- 旧客户端更新路径：从 `releases/download/v6.39` 实际下载 `latest.yml` 与安装包，清单与本机构建逐字节一致，安装包 SHA-512（`ii5qimja…tph+8Q==`）与字节数均与清单相符，公开下载返回 HTTP 200。
+- 对应源码：6.39 源码归档与本地构建逐字节一致，内含 `src/native/playback-profiles.js` 的 `VIDEO_MODEL_PROFILE`，版本号为 `6.39.0`；6.38 源码归档同时补挂。
+- README 同步工作流在发布后自动完成。
+- 标签推送触发的 `Windows x64 release candidate` 会用公开（不含取源实现）源码构建，已取消，避免产生与发行包不符的候选凭证。
+- 未执行：本机安装、重装、卸载清理、旧版应用内升级与声音输出验收。
