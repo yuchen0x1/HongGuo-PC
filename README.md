@@ -55,9 +55,9 @@ Windows x64 NSIS 安装版检查 GitHub 正式版本。自 6.32 起，下载完�
 
 <!-- github-release:start -->
 
-**[v6.40](https://github.com/yuchen0x1/HongGuo-PC/releases/tag/v6.40)** · 2026-11-26
+**[v6.41](https://github.com/yuchen0x1/HongGuo-PC/releases/tag/v6.41)** · 2026-11-26
 
-本次修复安装包问题：此前上传的 6.39 安装包把主程序截断写入，安装后应用无法打开，该包已撤回删除。重新构建的 6.40 已逐项核对安装结果，安装后正常启动与播放。功能与 6.38 相同；完整源码继续在公开仓库维护。
+本次更新修复官网分集目录改版后打开剧集失败的问题：当官网只返回 v1\_ 不透明分集标识时，应用会使用带 V5 签名的 App 目录请求恢复完整分集列表。既有播放线路、分集身份校验和下载流程保持不变。
 
 [全部发行记录](https://github.com/yuchen0x1/HongGuo-PC/releases)
 
