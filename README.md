@@ -55,9 +55,9 @@ Windows x64 NSIS 安装版检查 GitHub 正式版本。自 6.32 起，下载完�
 
 <!-- github-release:start -->
 
-**[v6.37](https://github.com/yuchen0x1/HongGuo-PC/releases/tag/v6.37)** · 2026-11-25
+**[v6.38](https://github.com/yuchen0x1/HongGuo-PC/releases/tag/v6.38)** · 2026-11-26
 
-本次更新改进 Windows 独立搜剧和播放的可靠性：修复详情加载不结束、收藏保存失败误报成功，以及视频线路停滞时未及时释放连接的问题。保留现有播放器和界面，详情页补充实际简介。官网公开线路继续只播放平台明确允许公开访问且通过完整性校验的分集，不扩大账号或内容授权。
+本次更新修复了中后段分集一直取不到片源、无法播放的问题：第 22 集等后续集现在可以真正取到片源并连续播放，Windows 打包程序已逐集实测通过。分集映射和剧号精度同时加固，界面、播放器、画中画、连播与兼容模式保持不变。
 
 [全部发行记录](https://github.com/yuchen0x1/HongGuo-PC/releases)
 
