@@ -2,7 +2,8 @@ name: Playback health probe
 on:
   schedule:
     # 轻量巡检：多部随机剧的首/中/末集，尽早发现目录或取源改版。
-    - cron: '*/25 * * * *'
+    # 避开整点，GitHub 的调度高峰在 :00 附近，容易延迟或被丢弃。
+    - cron: '7,37 * * * *'
     # 深度巡检：更多剧与采样点，用于确认轻量巡检的结论。
     - cron: '17 */6 * * *'
   workflow_dispatch:
