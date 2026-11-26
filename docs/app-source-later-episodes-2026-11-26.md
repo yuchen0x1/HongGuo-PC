@@ -103,14 +103,14 @@ body: biz_param + dr_scene=preload + video_id=<vid> + content_type=1
 
 ## 6. 回归
 
-- `npm test`：失败集合与改动前基线**完全一致**（17 项，均为既有失败，逐条按用例名比对），
-  新增 5 项单集路由用例全部通过。
-- `scripts/check-app-source.cjs` 13/15，两处失败为改动前既有
-  （`forced lookup bypasses settled play URL cache`、`old in-flight lookup cannot overwrite forced cache`）。
-- `scripts/check-app-source-recovery.cjs` 已把新路由加入阶梯并改为 9 段，
-  `check-source-routing`、`check-source-integration`、`check-source-retry`、`check-app-source-v5`、
-  `check-app-media`、`check-app-catalog`、`check-media-access`、`check-playback-resource-limits`、
-  `check-playback-observation` 全部通过。
+**2026-11-26 重新比对，修正上一稿结论。** 上一稿记录「失败集合与改动前基线完全一致（17 项）」，该比对不成立：把 `src`、`scripts` 回退到 `bf7d827` 后，同一测试列表只失败 8 项，且全部来自本轮新增的测试文件（单集路由 3 项、分集映射 4 项、受保护媒体 1 项），也就是说那 17 项是本次改动新引入的失败，不是既有失败。
+
+原因不只是新增路由：上一稿同时删除了默认播放顺序里的官网页面前置尝试（`fetchPlayUrlFresh`、`fetchAppPlayUrlForQuality` 的网页分支），并把网页线路改成只有 `options.allowOfficialWeb === true` 才执行，而仓库里没有任何调用方传这个选项，等于让官网公开线路整体失效。回归结果是 17 项既有线路契约测试失败，以及 `check-app-source`、`check-native-performance`、`check-source-recovery`、`check-streaming` 四个平台检查脚本由通过变为失败。
+
+本版恢复原有的网页优先顺序，只保留本轮已验证的改动（单集 `video_model` 路由与线路顺序、分集映射校验、剧号精度、诊断路由登记）：
+
+- `npm test`：主单元 778 项、平台检查 119 项全部通过，失败 0、跳过 0（`.local/analysis/npm-test-6.38-restored.log`）。
+- 同一次恢复后重新构建并逐集实测，第 6、22、34、68、88 集仍全部 `playing`，无需依赖被删除的网页前置改动（`dist/playback-later-20261126-release/result.json`）。
 
 ## 7. 未覆盖与限制
 
@@ -118,4 +118,13 @@ body: biz_param + dr_scene=preload + video_id=<vid> + content_type=1
 - `quality = auto` 时既有实现不返回 `width/height`（沿用原行为），下载结束以 ffprobe 实测质量为准。
 - `upstream-*` 五条记录仍为 `source-only`，本轮未取得它们的可用明文模型。
 - 手机端观察不构成本机证据；本轮未使用 ADB 或手机传输。
-- 未发布：未打标签、未上传安装资产、未推送更新。公开最新版仍为 `v6.37`。
+- 未做本机安装、重装、卸载清理、旧版应用内升级与声音输出验收。
+
+## 8. 发布状态（2026-11-26）
+
+- `v6.38` 已正式发布，标签指向公开提交 `b5fc12d6d02a4eb495631cdb945e0be49ec507bb`（只含文档），
+  正式资产为 `hongguo-downloader-6.38-win-x64-setup.exe` 与 `latest.yml`；公开下载校验通过。
+- 按用户 2026-11-26 要求，播放取源实现不再公开：本轮改动只保留在本地分支 `private/6.38-core`
+  与 `backups/638-core-fix-tracked-20261126.patch`、`backups/638-untracked-core-20261126.tgz`，
+  **不得推送**到公开仓库。
+- 公开仓库的定时 `Playback source probe` 因此仍会失败（公开源码不含本版取源实现），属预期状态。
