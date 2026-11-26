@@ -62,9 +62,9 @@ function routeFixture(appError = false) {
         publicVideoSeo: { available: true, itemId: '11', seriesId: '1', durationSeconds: 150 } },
     } })}</script><script type="application/ld+json">${JSON.stringify({ '@type': 'VideoObject', url: 'https://hongguoduanju.com/player/1/11', contentUrl: mediaUrl('web') })}</script>` }; } },
     './app-source': { fetchAppPlayUrl: async (_vid, options) => {
-      calls.push(options.allowLowerQuality ? options.quality + ':fallback' : options.quality || 'auto');
+      calls.push(options.allowLowerQuality ? options.quality + ':fallback' : options.quality);
       if (appError) throw new Error('没有符合所选清晰度的片源');
-      return { url: mediaUrl(`${options.quality || 'auto'}-${calls.length}`), quality: options.quality || 'auto' };
+      return { url: mediaUrl(`${options.quality}-${calls.length}`), quality: options.quality };
     } },
     './xifan': { fetchPlayUrlSingle: async () => { calls.push('xifan'); return { url: mediaUrl('xifan') }; } },
   });
@@ -152,14 +152,13 @@ const checks = [
     const auto = await f.fetchPlayUrlSingle('11', '1');
     const hd = await f.fetchPlayUrlSingle('11', '1', { quality: '1080p' });
     const sd = await f.fetchPlayUrlSingle('11', '1', { quality: '720p' });
-    assert.match(auto.url, /\/auto-\d+\.mp4$/); assert.equal(auto.quality, 'auto');
-    assert.equal(hd.quality, '1080p'); assert.equal(sd.quality, '720p');
+    assert.equal(auto.url, mediaUrl('web')); assert.equal(hd.quality, '1080p'); assert.equal(sd.quality, '720p');
     assert.equal((await f.fetchPlayUrlSingle('11', '1', { quality: '1080p' })).url, hd.url);
     const fresh = await f.fetchPlayUrlSingle('11', '1', { quality: '1080p', force: true });
     assert.notEqual(fresh.url, hd.url);
     assert.equal((await f.fetchPlayUrlSingle('11', '1', { quality: 'auto' })).url, auto.url);
     assert.equal((await f.fetchPlayUrlSingle('11', '1', { quality: '720p' })).url, sd.url);
-    assert.deepEqual(f.calls, ['auto', '1080p', '720p', '1080p']);
+    assert.deepEqual(f.calls, ['web', 'web-metadata', '1080p', '720p', '1080p']);
   }],
   ['explicit App failure returns no URL and never silently falls back to web', async () => {
     const f = routeFixture(true);
