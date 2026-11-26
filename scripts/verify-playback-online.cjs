@@ -5,11 +5,11 @@
 // --quality compat selects the existing H.264/public-web-first mode, without the automatic App-first quality ladder.
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const { createIsolatedPlaybackHarness } = require('./check-playback-live.cjs');
 
 const ROOT = path.resolve(__dirname, '..');
+const PROFILE_ROOT = path.join(ROOT, '.local', 'analysis', 'playback-profiles');
 const args = process.argv.slice(2);
 const throughSearch = args.includes('--through-search');
 function option(name) {
@@ -21,7 +21,9 @@ const qualityPreference = option('--quality') || 'auto';
 const check = (condition, message) => assert.ok(condition, message);
 const report = { schema: 1, startedAt: new Date().toISOString(), passed: false,
   scope: 'production Electron playSeries with official online sources and an empty independent download directory',
-  officialNetworkResolutionTested: true, accountAuthenticationTested: false, checks: {} };
+  officialNetworkResolutionTested: true, accountAuthenticationTested: false,
+  minimumContinuousSeconds: 30, audioOutputVerified: false, fullWindowsIndependentAcceptancePassed: false,
+  unverifiedChecks: ['audio-output', 'physical-phone-disconnection'], checks: {} };
 let profile, downloads, harness, manifest;
 let phase = 'manifest';
 
@@ -53,7 +55,8 @@ function readManifest() {
 }
 
 function prepareProfile() {
-  profile = fs.mkdtempSync(path.join(os.tmpdir(), 'hongguo-player-online-'));
+  fs.mkdirSync(PROFILE_ROOT, { recursive: true });
+  profile = fs.mkdtempSync(path.join(PROFILE_ROOT, 'hongguo-player-online-'));
   downloads = path.join(profile, 'independent-downloads');
   fs.mkdirSync(downloads);
   fs.writeFileSync(path.join(profile, 'data.json'), JSON.stringify({ settings: { root: downloads,
@@ -236,7 +239,8 @@ async function main() {
   phase = 'online-first-frame';
   const first = await harness.waitFor(async () => {
     const value = await harness.client.evaluate(harness.videoState);
-    return value?.firstFrame && value.decodedFrames > 0 && value.width > 0 && !value.paused && !value.busy && !value.errorCode && value;
+    return value?.firstFrame && value.sourceFrameCallbacks > 0 && value.decodedFrames > 0
+      && value.width > 0 && !value.paused && !value.busy && !value.errorCode && value;
   }, 'The real online video did not present its first decoded frame', 60000);
   check(Math.abs(first.duration - manifest.episodes[0].duration) < 0.15,
     'The actual online media duration does not match the complete first episode');
@@ -247,7 +251,7 @@ async function main() {
   }, 'The actual online first frame was not reported');
   checkOnlineRoute(report.checks.firstDiagnostics, 1);
   await harness.screenshot('online-first-frame.png');
-  phase = 'online-continuous-playback'; report.checks.continuous = await harness.advance(10);
+  phase = 'online-continuous-playback'; report.checks.continuous = await harness.advance(30);
   phase = 'online-seek'; report.checks.seek = await harness.seek(Math.min(30, first.duration / 3));
   await harness.screenshot('online-seek.png');
   report.checks.afterFirst = await noLocalMedia();
@@ -259,12 +263,13 @@ async function main() {
     const state = await harness.client.evaluate(harness.videoState);
     const hash = await sourceHash();
     return ended > endedBefore && state?.readyState >= 2 && !state.paused && !state.busy && !state.errorCode
-      && state.decodedFrames > 0 && Math.abs(state.duration - manifest.episodes[1].duration) < 0.15
+      && state.sourceFrameCallbacks > 0 && state.decodedFrames > 0
+      && Math.abs(state.duration - manifest.episodes[1].duration) < 0.15
       && hash && hash !== report.checks.firstFrame.sourceSha256 && { ...state, sourceSha256: hash, endedEvents: ended };
   }, 'The real online ended event did not start the next distinct complete episode', 60000);
   report.checks.automaticContinuation = { realEndedEvent: true, seekNearEndUsed: true,
     fromIndex: manifest.episodes[0].index, toIndex: manifest.episodes[1].index, firstFrame: second,
-    continued: await harness.advance(10) };
+    continued: await harness.advance(30) };
   phase = 'online-diagnostics';
   report.checks.finalDiagnostics = await diagnostics();
   checkOnlineRoute(report.checks.finalDiagnostics, 2);
@@ -286,7 +291,8 @@ async function main() {
     check(reopened?.success, 'The independent application could not reopen the real series after restart');
     const restarted = await harness.waitFor(async () => {
       const state = await harness.client.evaluate(harness.videoState);
-      return state?.firstFrame && state.decodedFrames > 0 && !state.paused && !state.busy && !state.errorCode && state;
+      return state?.firstFrame && state.sourceFrameCallbacks > 0 && state.decodedFrames > 0
+        && !state.paused && !state.busy && !state.errorCode && state;
     }, 'The independent application did not decode online video after restart', 60000);
     check(Math.abs(restarted.duration - manifest.episodes[0].duration) < 0.15,
       'The restarted online media is not the complete official episode');
@@ -322,7 +328,7 @@ if (require.main === module) main().catch(async error => {
   try { await harness?.stop(); } catch { report.cleanupFailed = true; process.exitCode = 1; }
   if (profile && !report.cleanupFailed) {
     const resolved = path.resolve(profile);
-    check(path.dirname(resolved) === path.resolve(os.tmpdir()) && path.basename(resolved).startsWith('hongguo-player-online-'),
+    check(path.dirname(resolved) === path.resolve(PROFILE_ROOT) && path.basename(resolved).startsWith('hongguo-player-online-'),
       'Refusing cleanup outside the independent online profile');
     fs.rmSync(resolved, { recursive: true, force: true });
   }

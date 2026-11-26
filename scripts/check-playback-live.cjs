@@ -3,11 +3,12 @@
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const { spawn, spawnSync } = require('node:child_process');
+const { createPlaybackObservation } = require('./playback-observation.cjs');
 
 const ROOT = path.resolve(__dirname, '..');
+const PROFILE_ROOT = path.join(ROOT, '.local', 'analysis', 'playback-profiles');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const args = process.argv.slice(2);
 const option = name => {
@@ -17,7 +18,9 @@ const option = name => {
 let output = path.resolve(option('--output-dir') || path.join(ROOT, 'dist', 'playback-live'));
 const report = { schema: 1, startedAt: new Date().toISOString(), passed: false,
   scope: 'production Electron player with independently supplied official complete media',
-  officialNetworkResolutionTested: false, accountAuthenticationTested: false, checks: {} };
+  officialNetworkResolutionTested: false, accountAuthenticationTested: false,
+  audioOutputVerified: false, fullWindowsIndependentAcceptancePassed: false,
+  formalAcceptanceScope: 'local supplied-media player interactions only; not official source or audio output acceptance', checks: {} };
 let profile;
 let child;
 let client;
@@ -100,7 +103,8 @@ function readManifest() {
 }
 
 function prepareProfile(manifest) {
-  profile = fs.mkdtempSync(path.join(os.tmpdir(), 'hongguo-player-live-'));
+  fs.mkdirSync(PROFILE_ROOT, { recursive: true });
+  profile = fs.mkdtempSync(path.join(PROFILE_ROOT, 'hongguo-player-live-'));
   const downloads = path.join(profile, 'independent-downloads');
   fs.mkdirSync(downloads);
   const now = Date.now();
@@ -193,17 +197,25 @@ async function launch() {
   await client.evaluate(`(() => {
     localStorage.setItem('hongguo:playback-preferences', JSON.stringify({ rate: 1, volume: 0, muted: true }));
     localStorage.setItem('hongguo:online-quality', ${JSON.stringify(onlineQualityPreference)});
-    window.__liveMedia = { frames: 0, firstFrame: false, silenceViolations: 0, errors: [], ended: 0, events: [] };
+    window.__liveMedia = { frames: 0, firstFrame: false, silenceViolations: 0, errors: [], ended: 0, events: [], generation: 0 };
     window.__liveVideos = new WeakSet();
+    window.__liveMediaStates = new WeakMap();
     const observe = () => document.querySelectorAll('video').forEach(video => {
       if (window.__liveVideos.has(video)) return;
       window.__liveVideos.add(video);
+      const state = { sourceGeneration: ++window.__liveMedia.generation, frames: 0, seekGeneration: 0 };
+      window.__liveMediaStates.set(video, state);
       video.muted = true; video.volume = 0;
       video.addEventListener('volumechange', () => {
         if (!video.muted || video.volume !== 0) window.__liveMedia.silenceViolations++;
       });
       video.addEventListener('error', () => window.__liveMedia.errors.push(video.error?.code || 0));
       video.addEventListener('ended', () => window.__liveMedia.ended++);
+      video.addEventListener('seeking', () => state.seekGeneration++);
+      video.addEventListener('loadstart', () => {
+        state.sourceGeneration = ++window.__liveMedia.generation;
+        state.frames = 0;
+      });
       for (const type of ['loadstart', 'emptied', 'loadedmetadata', 'loadeddata', 'error', 'playing', 'pause']) {
         video.addEventListener(type, () => {
           window.__liveMedia.events.push({ type, at: performance.now(), time: video.currentTime,
@@ -213,6 +225,7 @@ async function launch() {
       }
       const frame = () => {
         window.__liveMedia.frames++;
+        state.frames++;
         window.__liveMedia.firstFrame ||= video.videoWidth > 0 && video.videoHeight > 0;
         video.requestVideoFrameCallback(frame);
       };
@@ -246,6 +259,7 @@ const videoState = `(() => {
   const video = document.querySelector('.player-video');
   if (!video) return null;
   const quality = video.getVideoPlaybackQuality();
+  const source = window.__liveMediaStates?.get(video);
   return { time: video.currentTime, duration: video.duration, paused: video.paused, muted: video.muted,
     volume: video.volume, rate: video.playbackRate, width: video.videoWidth, height: video.videoHeight,
     readyState: video.readyState, decodedFrames: quality.totalVideoFrames,
@@ -253,6 +267,8 @@ const videoState = `(() => {
     busy: video.getAttribute('aria-busy') === 'true',
     sourceMatchesAttribute: video.currentSrc === video.getAttribute('src'),
     firstFrame: window.__liveMedia.firstFrame, frameCallbacks: window.__liveMedia.frames,
+    sourceGeneration: source?.sourceGeneration || 0, sourceFrameCallbacks: source?.frames || 0,
+    seeking: video.seeking, seekGeneration: source?.seekGeneration ?? null,
     silenceViolations: window.__liveMedia.silenceViolations };
 })()`;
 
@@ -311,23 +327,16 @@ async function screenshot(name) {
 
 async function advance(seconds) {
   const start = await client.evaluate(videoState);
-  check(start?.muted && start.volume === 0 && !start.paused, 'The production video is not silently playing');
-  const started = Date.now();
-  let previous = start;
-  while (Date.now() - started < seconds * 1000) {
+  const started = performance.now();
+  const observation = createPlaybackObservation(start, started, seconds);
+  while (!observation.complete()) {
+    check(performance.now() - started <= (seconds + 5) * 1000,
+      'The video did not advance through the required continuous observation');
     await sleep(500);
     const current = await client.evaluate(videoState);
-    check(current && current.muted && current.volume === 0 && !current.paused && !current.errorCode,
-      'Silent continuous playback was interrupted');
-    check(current.time + 0.1 >= previous.time, 'Unexpected playback position regression');
-    previous = current;
+    observation.sample(current, performance.now());
   }
-  check(previous.time - start.time >= seconds * start.rate - 1.5, 'The video did not advance continuously');
-  check(previous.decodedFrames > start.decodedFrames && previous.frameCallbacks > start.frameCallbacks,
-    'The actual player did not decode and present more frames');
-  return { secondsObserved: (Date.now() - started) / 1000, mediaSecondsAdvanced: previous.time - start.time,
-    additionalDecodedFrames: previous.decodedFrames - start.decodedFrames,
-    additionalPresentedFrames: previous.frameCallbacks - start.frameCallbacks };
+  return observation.finish();
 }
 
 async function navigate(manifest, resume = false) {
@@ -365,12 +374,13 @@ async function main() {
   }
   const first = await waitFor(async () => {
     const state = await client.evaluate(videoState);
-    return state?.firstFrame && state.decodedFrames > 0 && state.width > 0 && !state.paused && !state.busy && state;
+    return state?.firstFrame && state.sourceFrameCallbacks > 0 && state.decodedFrames > 0
+      && state.width > 0 && !state.paused && !state.busy && state;
   }, 'The real production player did not present a decoded first frame', 30000);
   check(Math.abs(first.duration - manifest.episodes[0].duration) < 0.15, 'The player loaded an unexpected episode');
   report.checks.firstFrame = first;
   await screenshot('first-frame.png');
-  phase = 'continuous-playback'; report.checks.continuous = await advance(10);
+  phase = 'continuous-playback'; report.checks.continuous = await advance(30);
   phase = 'seek'; report.checks.seek = await seek(Math.min(30, first.duration / 3));
   phase = 'speed'; await click('button[aria-label="增加播放速度"]');
   await waitFor(async () => (await client.evaluate(videoState))?.rate === 1.25, 'The production speed button did not change playback');
@@ -503,7 +513,7 @@ async function main() {
     }, 'The real ended event did not advance to the next distinct complete episode', 45000);
     report.checks.automaticContinuation = { passed: true, realEndedEvent: true,
       fromIndex: manifest.episodes[0].index, toIndex: manifest.episodes[1].index,
-      continued: await advance(10) };
+    continued: await advance(30) };
     await screenshot('automatic-continuation.png');
   } else report.checks.automaticContinuation = { passed: false, skipped: 'Only one distinct complete episode supplied' };
   const final = await client.evaluate(videoState);
@@ -519,7 +529,7 @@ function createIsolatedPlaybackHarness(options) {
   check(options.onlineQuality === undefined || ['auto', 'compat'].includes(options.onlineQuality), 'Unsupported acceptance quality');
   onlineQualityPreference = options.onlineQuality || 'auto';
   const isolatedProfile = path.resolve(options.profile);
-  check(path.dirname(isolatedProfile) === path.resolve(os.tmpdir())
+  check(path.dirname(isolatedProfile) === path.resolve(PROFILE_ROOT)
     && path.basename(isolatedProfile).startsWith('hongguo-player-'), 'The isolated profile is outside its temporary root');
   if (options.executable != null) {
     check(typeof options.executable === 'string' && path.isAbsolute(options.executable)
@@ -562,7 +572,7 @@ if (require.main === module) main().catch(async error => {
   report.isolatedData = true;
   if (profile && !report.cleanupFailed) {
     const resolved = path.resolve(profile);
-    check(path.dirname(resolved) === path.resolve(os.tmpdir()) && path.basename(resolved).startsWith('hongguo-player-live-'),
+    check(path.dirname(resolved) === path.resolve(PROFILE_ROOT) && path.basename(resolved).startsWith('hongguo-player-live-'),
       'Refusing cleanup outside the dedicated temporary profile');
     fs.rmSync(resolved, { recursive: true, force: true });
   }

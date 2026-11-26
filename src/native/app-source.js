@@ -12,7 +12,7 @@ const { registerPlaybackDevice, createPlaybackIdentityManager } = require('./pla
 const { signPlayer } = require('./playback-signature');
 const { signPlaybackV5 } = require('./playback-v5');
 const { getPlaybackProfile, getPlaybackProfileStatus, LEGACY_PLAYBACK, requestProfiles,
-    UPSTREAM_PLAYBACK_PROFILE, getPlaybackRouteProfile } = require('./playback-profiles');
+    UPSTREAM_PLAYBACK_PROFILE, VIDEO_MODEL_PROFILE, getPlaybackRouteProfile } = require('./playback-profiles');
 const { abortError, throwIfAborted, boundedSignal, networkFailure } = require('./request-signal');
 const sm3 = require('./sm3');
 const { normalizeDownloadQuality, meetsDownloadQuality } = require('./download-quality');
@@ -242,6 +242,36 @@ function upstreamPlaybackRequest(routeId, identity, videoId) {
         body, now: Date.now() });
     return { ...signed, body, method: 'POST', headers: { ...signed.headers,
         'User-Agent': profile.userAgent, ...profile.headers } };
+}
+
+// Single-video model request. The player family returns one plain model for one
+// episode ID; the body carries only biz_param, dr_scene, video_id and content_type.
+function videoModelRequest(identity, vid) {
+    if (typeof vid !== 'string' || !/^\d{1,30}$/.test(vid)
+        || ![identity?.device_id, identity?.iid].every(value => typeof value === 'string' && /^\d{1,30}$/.test(value))
+        || typeof identity?.cdid !== 'string' || !/^[a-f0-9-]{36}$/i.test(identity.cdid)) {
+        throw new TypeError('Invalid single-video model identity or episode');
+    }
+    const profile = VIDEO_MODEL_PROFILE;
+    const body = gzipSync(Buffer.from(JSON.stringify({ ...profile.body, video_id: vid, content_type: 1 })));
+    const signed = signPlaybackV5({ base: profile.routes[0].endpoint, profileId: profile.id,
+        values: { ...profile.app, iid: identity.iid, cdid: identity.cdid, device_id: identity.device_id },
+        body, now: Date.now() });
+    return { ...signed, body, method: 'POST', headers: { ...signed.headers,
+        'User-Agent': profile.userAgent, ...profile.headers } };
+}
+
+// The single-video route answers { code, data: { video_model: "<json string>" } }.
+function appVideoModel(response) {
+    if (Number(response?.Code || response?.code || 0) !== 0) {
+        throw Object.assign(new Error('App 接口暂未提供本集播放信息'), { code: 'BUSINESS_REJECTED' });
+    }
+    const container = response?.data?.video_model;
+    const model = typeof container === 'string' ? jsonBody(container) : container;
+    if (!model || typeof model !== 'object' || Array.isArray(model)) {
+        throw Object.assign(new Error('App 接口未返回本集片源模型'), { code: 'MISSING_MODEL' });
+    }
+    return model;
 }
 
 function parseSearchInteger(value) {
@@ -569,7 +599,10 @@ function inspectPlaybackAuthProbeResponse(payload, vid) {
 
 async function fetchAppPlayUrlFresh(vid, options) {
     const profile = getPlaybackProfile();
-    const routes = [...profile.routes, ...UPSTREAM_PLAYBACK_PROFILE.routes];
+    // The verified single-video route is a bundled candidate, so it precedes the
+    // source-only upstream records: an unverified candidate's protected model must
+    // not veto the route that actually returned playable media.
+    const routes = [...profile.routes, VIDEO_MODEL_PROFILE.routes[0], ...UPSTREAM_PLAYBACK_PROFILE.routes];
     const payload = JSON.stringify({
         ...profile.body,
         mixed_video_id_map: { '1004': [vid] },
@@ -597,8 +630,10 @@ async function fetchAppPlayUrlFresh(vid, options) {
             throwIfAborted(signal);
             try {
                 for (const [index, route] of routes.entries()) {
-                    const upstream = index >= profile.routes.length;
-                    const signed = upstream ? upstreamPlaybackRequest(route.id, identity, vid)
+                    const singleVideo = route.kind === 'video-model';
+                    const upstream = !singleVideo && index >= profile.routes.length;
+                    const signed = singleVideo ? videoModelRequest(identity, vid)
+                        : upstream ? upstreamPlaybackRequest(route.id, identity, vid)
                         : route.method === 'GET' ? videoTabRequest(identity, vid) : playbackRequest(payload, identity, vid, index === 1);
                     signed.headers.Connection = 'close';
                     const started = Date.now();
@@ -610,9 +645,10 @@ async function fetchAppPlayUrlFresh(vid, options) {
                     try {
                         const response = await requestJson(signed.url, { method: signed.method, headers: signed.headers, data: signed.body }, deadline, signal);
                         responseReceived = true;
-                        model = playbackModel(response, vid, upstream, options);
+                        model = singleVideo ? appVideoModel(response) : playbackModel(response, vid, upstream, options);
                         routeId = route.id;
                         selectedProfile = getPlaybackRouteProfile(routeId);
+                        if (singleVideo) validateAppModelIdentity(model, options, true);
                         if (upstream) clearResult = parseClearUpstreamModel(model, vid, options);
                         requestElapsedMs = Date.now() - started;
                         observe({ routeId, elapsedMs: requestElapsedMs, status: 200, code: '', attempt: requestCount, modelValid: true });
@@ -627,7 +663,11 @@ async function fetchAppPlayUrlFresh(vid, options) {
                         throwIfAborted(signal);
                         // Compatibility routes are attempted only for an observed empty
                         // body, never for forbidden/rate-limited/business rejections.
-                        if (error.code !== 'EMPTY_RESPONSE' || index === routes.length - 1
+                        // An absent or shape-invalid model from the single-video route is not
+                        // a refusal, so the multi-video candidates are still attempted.
+                        const retryable = error.code === 'EMPTY_RESPONSE'
+                            || singleVideo && ['MISSING_MODEL', 'INVALID_RESPONSE'].includes(error.code);
+                        if (!retryable || index === routes.length - 1
                             || overallDeadline - Date.now() < profile.timeout.minimumRouteMs) throw error;
                     }
                 }
@@ -678,7 +718,11 @@ async function fetchAppPlayUrlFresh(vid, options) {
             return ready(parseAppPlayModel(info, vid, options, false, true));
         }
         try {
-            return ready(parseAppPlayModel(model, vid, options, true));
+            const parsed = parseAppPlayModel(model, vid, options, true);
+            // The single-video model states the complete episode length; keep it as
+            // independent full-length evidence for playback and download acceptance.
+            return ready(selectedProfile === VIDEO_MODEL_PROFILE
+                ? { ...parsed, duration: Number(model.video_duration) } : parsed);
         } catch (error) {
             // Only absent encryption metadata enables this recovery path; the fallback
             // must independently pass identity, duration, encryption and URL validation.
@@ -792,7 +836,10 @@ function parseAppPlayModel(info, vid, options, inline, requireEncryptionMetadata
                         ? decryptSpadeUrl(candidate, Buffer.from(info.key_seed, 'base64'))
                         : cleanUrl(candidate);
                     const url = checkedUrl(media, ['qznovelvod.com', 'fqnovelvod.com', 'douyinvod.com']);
-                    const format = appMediaFormat(url);
+                    const detected = appMediaFormat(url);
+                    // A CDN path without a suffix is still the model's own video asset;
+                    // declare it only when the model states video content.
+                    const format = detected === 'unknown' && info.media_type === 'video' ? 'mp4' : detected;
                     const contentKey = key ? key.toString('hex') : null;
                     const identity = `${url}:${contentKey || ''}`;
                     if (seen.has(identity)) continue;

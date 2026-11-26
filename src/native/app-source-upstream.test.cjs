@@ -10,7 +10,7 @@ const assetId = 'synthetic-media-asset';
 const mediaUrl = 'https://qznovelvod.com/upstream-clear-fixture.mp4';
 const duration = 56.007;
 const routeIds = ['upstream-grouped-b', 'upstream-player-b', 'upstream-player-a', 'upstream-model-a', 'upstream-model-c'];
-const allRouteIds = ['preload-primary', 'preload-alternate', 'video-tab', ...routeIds];
+const allRouteIds = ['preload-primary', 'preload-alternate', 'video-tab', 'app-video-model', ...routeIds];
 const identity = Object.freeze({
   device_id: '1000000000000001', iid: '1000000000000002',
   cdid: '12345678-1234-4234-8234-123456789abc',
@@ -198,21 +198,21 @@ for (const [name, patch] of protectedPatches) {
 
 for (const [index, routeId] of routeIds.entries()) {
   test(`the empty-response ladder reaches ${routeId} and accepts its clear model`, async () => {
-    const f = fixture((_config, count) => count < 4 + index ? emptyResponse() : modelResponse());
+    const f = fixture((_config, count) => count < 5 + index ? emptyResponse() : modelResponse());
     const events = [];
     const result = await f.fetchAppPlayUrl(vid, { onPlaybackEvent: value => events.push(value) });
     assert.equal(result.routeId, routeId);
     assert.equal(result.vid, vid);
     assert.equal(result.url, mediaUrl);
     assert.equal(result.contentKey, null);
-    assert.equal(f.calls.length, 4 + index);
+    assert.equal(f.calls.length, 5 + index);
     assert.equal(f.registrations, 1);
-    assert.deepEqual(events.map(event => event.routeId), allRouteIds.slice(0, 4 + index));
+    assert.deepEqual(events.map(event => event.routeId), allRouteIds.slice(0, 5 + index));
     assertNoProtectedWork(f);
   });
 }
 
-test('all eight empty responses exhaust exactly one ladder without resetting the device', async () => {
+test('all nine empty responses exhaust exactly one ladder without resetting the device', async () => {
   const f = fixture(emptyResponse);
   const events = [];
   await assert.rejects(f.fetchAppPlayUrl(vid, { onPlaybackEvent: value => events.push(value) }), { code: 'EMPTY_RESPONSE' });
@@ -224,18 +224,18 @@ test('all eight empty responses exhaust exactly one ladder without resetting the
 });
 
 test('a wrong outer episode mapping cannot play a clear model from another episode', async () => {
-  const f = fixture((_config, count) => count <= 3 ? emptyResponse() : modelResponse(model(), otherVid));
+  const f = fixture((_config, count) => count <= 4 ? emptyResponse() : modelResponse(model(), otherVid));
   await assert.rejects(f.fetchAppPlayUrl(vid), error => ['MISSING_MODEL', 'INVALID_RESPONSE'].includes(error.code));
-  assert.equal(f.calls.length, 4);
+  assert.equal(f.calls.length, 5);
   assert.equal(f.registrations, 1);
   assertNoProtectedWork(f);
 });
 
 for (const [name, patch] of protectedPatches) {
   test(`an upstream ${name} is terminal and cannot fall into the legacy key parser`, async () => {
-    const f = fixture((_config, count) => count <= 3 ? emptyResponse() : modelResponse(patch(model())));
+    const f = fixture((_config, count) => count <= 4 ? emptyResponse() : modelResponse(patch(model())));
     await assert.rejects(f.fetchAppPlayUrl(vid), { code: 'DRM_UNSUPPORTED' });
-    assert.equal(f.calls.length, 4);
+    assert.equal(f.calls.length, 5);
     assert.equal(f.registrations, 1);
     assertNoProtectedWork(f);
   });
@@ -243,18 +243,18 @@ for (const [name, patch] of protectedPatches) {
 
 for (const status of [401, 403, 429]) {
   test(`an upstream HTTP ${status} stops without another candidate or registration`, async () => {
-    const f = fixture((_config, count) => count <= 3 ? emptyResponse() : { status, headers: {}, data: 'SYNTHETIC_DENIAL' });
+    const f = fixture((_config, count) => count <= 4 ? emptyResponse() : { status, headers: {}, data: 'SYNTHETIC_DENIAL' });
     await assert.rejects(f.fetchAppPlayUrl(vid), error => error.status === status);
-    assert.equal(f.calls.length, 4);
+    assert.equal(f.calls.length, 5);
     assert.equal(f.registrations, 1);
     assertNoProtectedWork(f);
   });
 }
 
 test('an upstream business denial is terminal even though its HTTP status is 200', async () => {
-  const f = fixture((_config, count) => count <= 3 ? emptyResponse() : jsonResponse({ code: 403, message: 'SYNTHETIC_DENIAL' }));
+  const f = fixture((_config, count) => count <= 4 ? emptyResponse() : jsonResponse({ code: 403, message: 'SYNTHETIC_DENIAL' }));
   await assert.rejects(f.fetchAppPlayUrl(vid), { code: 'BUSINESS_REJECTED' });
-  assert.equal(f.calls.length, 4);
+  assert.equal(f.calls.length, 5);
   assert.equal(f.registrations, 1);
   assertNoProtectedWork(f);
 });
@@ -264,7 +264,7 @@ test('cancelling an active upstream request aborts the transport and prevents la
   let started;
   const entered = new Promise(resolve => { started = resolve; });
   const f = fixture((config, count) => {
-    if (count <= 3) return emptyResponse();
+    if (count <= 4) return emptyResponse();
     activeSignal = config.signal;
     started();
     return new Promise((_resolve, reject) => config.signal.addEventListener('abort', () => {
@@ -278,7 +278,7 @@ test('cancelling an active upstream request aborts the transport and prevents la
   controller.abort();
   await assert.rejects(pending, { code: 'ERR_CANCELED' });
   assert.equal(activeSignal.aborted, true);
-  assert.equal(f.calls.length, 4);
+  assert.equal(f.calls.length, 5);
   assert.equal(f.registrations, 1);
   assertNoProtectedWork(f);
 });

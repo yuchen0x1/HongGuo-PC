@@ -1,13 +1,14 @@
 // Real later-episode acceptance. No local media, account credentials, or phone transport.
 // node scripts/verify-playback-later.cjs --manifest dist/independent-audit/manifest.json
-// Optional: --indexes 5,6,34,68 --executable dist/win-unpacked/app.exe --ended-transition
+// Optional: --indexes 6,22,34,68,88 --executable dist/win-unpacked/app.exe --ended-transition
 const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const { createIsolatedPlaybackHarness } = require('./check-playback-live.cjs');
 
 const ROOT = path.resolve(__dirname, '..');
+const PROFILE_ROOT = path.join(ROOT, '.local', 'analysis', 'playback-profiles');
 const args = process.argv.slice(2);
 const sleep = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
 const check = (value, message) => assert.ok(value, message);
@@ -21,7 +22,7 @@ const option = name => {
 const CASE_TIMEOUT = 60000;
 const REJECTION_OBSERVATION = 16000;
 const output = path.resolve(option('--output-dir') || path.join(ROOT, 'dist', 'playback-later'));
-const indexes = (option('--indexes') || '5,6,34,68').split(',').map(value => {
+const indexes = (option('--indexes') || '6,22,34,68,88').split(',').map(value => {
   check(/^\d+$/.test(value.trim()), 'Episode indexes must be positive comma-separated integers');
   const index = Number(value.trim());
   check(Number.isSafeInteger(index) && index > 0 && index <= 1000000, 'An episode index is outside the supported range');
@@ -33,6 +34,8 @@ const report = {
   scope: 'production playSeries, actual registered official directory, fresh process for each requested episode',
   officialNetworkResolutionTested: false, accountAuthenticationTested: false,
   adbOrPhoneTransportUsed: false, physicalPhonePowerStateObserved: false,
+  minimumContinuousSeconds: 30, audioOutputVerified: false, fullWindowsIndependentAcceptancePassed: false,
+  unverifiedChecks: ['audio-output', 'search-through-UI', 'restart-progress-restoration', 'physical-phone-disconnection'],
   isolation: { newTemporaryProfile: true, initiallyEmptyLibrary: true, emptyDownloadDirectory: true,
     suppliedLocalMedia: false, isolatedCasePrefetchEnabled: false, commandLineMutedBeforeStartup: true },
   requestedIndexes: indexes, cases: [],
@@ -46,35 +49,60 @@ function safeText(value) {
       '[credential omitted]').slice(0, 1200);
 }
 
-function readManifest() {
-  const filename = option('--manifest');
-  check(filename, 'Supply --manifest with documented random official series provenance');
+function readManifest(filename = option('--manifest')) {
+  check(filename, 'Supply --manifest with documented official series provenance');
   const supplied = JSON.parse(fs.readFileSync(path.resolve(filename), 'utf8'));
-  check(Number.isSafeInteger(supplied.selectedRandomlyFrom) && supplied.selectedRandomlyFrom > 1,
-    'The official series must have documented random selection provenance');
+  const targeted = supplied.selection === 'development'
+    && supplied.sourceEvidence?.kind === 'targeted-official-catalog';
+  if (!targeted) check(Number.isSafeInteger(supplied.selectedRandomlyFrom) && supplied.selectedRandomlyFrom > 1,
+    'Supply documented random provenance or explicit targeted-official-catalog development evidence');
   check(Array.isArray(supplied.episodes) && supplied.episodes.length > 0, 'The real series manifest has no episode provenance');
   const first = supplied.episodes[0];
   check(/^\d{1,30}$/.test(String(first.seriesId)) && typeof first.title === 'string' && first.title.trim(),
     'The manifest must identify a real official series');
   const durations = new Map();
+  const expectedEpisodes = new Map();
   for (const episode of supplied.episodes) {
     check(String(episode.seriesId) === String(first.seriesId) && /^\d{1,30}$/.test(String(episode.episodeId))
       && Number.isSafeInteger(episode.episodeIndex) && episode.episodeIndex > 0,
     'The manifest episode identities must belong to the same real series');
-    check(episode.source === 'web' && episode.profileId === 'hongguo-official-web-public-v1'
+    check(!expectedEpisodes.has(episode.episodeIndex)
+      && ![...expectedEpisodes.values()].includes(String(episode.episodeId)), 'The manifest contains duplicate episode identities');
+    expectedEpisodes.set(episode.episodeIndex, String(episode.episodeId));
+    if (targeted) {
+      check(episode.source === 'official-catalog' && !episode.file && !episode.url && !episode.mediaUrl,
+        'Targeted catalog provenance must not claim supplied media or playback addresses');
+    } else check(episode.source === 'web' && episode.profileId === 'hongguo-official-web-public-v1'
       && episode.routeId === 'official-web-public-fallback', 'The real manifest source provenance is not the verified public route');
-    if (Number.isFinite(episode.duration) && episode.duration > 0) {
+    if (!targeted && Number.isFinite(episode.duration) && episode.duration > 0) {
       durations.set(episode.episodeIndex, { vid: String(episode.episodeId), duration: episode.duration });
     }
   }
-  report.provenance = { selectedRandomlyFrom: supplied.selectedRandomlyFrom,
+  let sourceEvidence;
+  if (targeted) {
+    const evidence = supplied.sourceEvidence;
+    check(typeof evidence.observedAt === 'string' && Number.isFinite(Date.parse(evidence.observedAt))
+      && typeof evidence.reference === 'string' && evidence.reference.trim(),
+    'Targeted catalog evidence must identify its observation time and retained local record');
+    const evidenceFile = path.resolve(path.dirname(path.resolve(filename)), evidence.reference);
+    const relative = path.relative(ROOT, evidenceFile);
+    check(relative && !relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative)
+      && fs.statSync(evidenceFile, { throwIfNoEntry: false })?.isFile(),
+    'The retained target catalog evidence must be a file inside the project');
+    sourceEvidence = { kind: evidence.kind, observedAt: evidence.observedAt, reference: relative,
+      sha256: crypto.createHash('sha256').update(fs.readFileSync(evidenceFile)).digest('hex'), mediaObtained: false };
+  }
+  const provenance = { selection: targeted ? 'development' : 'random',
+    ...(targeted ? { sourceEvidence } : { selectedRandomlyFrom: supplied.selectedRandomlyFrom }),
     seriesId: String(first.seriesId), title: safeText(first.title),
     manifestEpisodeIndexes: supplied.episodes.map(episode => episode.episodeIndex) };
-  return { seriesId: String(first.seriesId), title: first.title, durations };
+  report.provenance = provenance;
+  return { seriesId: String(first.seriesId), title: first.title, durations, expectedEpisodes, provenance };
 }
 
 function prepareProfile() {
-  profile = fs.mkdtempSync(path.join(os.tmpdir(), 'hongguo-player-later-'));
+  fs.mkdirSync(PROFILE_ROOT, { recursive: true });
+  profile = fs.mkdtempSync(path.join(PROFILE_ROOT, 'hongguo-player-later-'));
   downloads = path.join(profile, 'independent-downloads');
   fs.mkdirSync(downloads);
   fs.writeFileSync(path.join(profile, 'data.json'), JSON.stringify({
@@ -157,6 +185,8 @@ async function registerDirectory() {
     && data.episodes.every(episode => Number.isSafeInteger(episode.index) && episode.index > 0 && /^\d{1,30}$/.test(episode.vid)),
   'The real official directory contains invalid or duplicate episode identities');
   check(indexes.every(index => data.episodes.some(episode => episode.index === index)), 'A requested index is absent from the actual directory');
+  check([...manifest.expectedEpisodes].every(([index, vid]) => data.episodes.some(episode =>
+    episode.index === index && episode.vid === vid)), 'The actual official directory contradicts the retained target episode identities');
   report.directory = { ...data, title: safeText(data.title), registeredBy: 'production searchResolve',
     registeredEpisodeCount: data.episodes.length, fabricatedRegistryEntries: false };
   return data;
@@ -241,7 +271,8 @@ async function waitForOutcome(index, before, minimumSources = 1, minimumPlayback
       const media = current.media;
       if (delta.sourceSuccesses >= minimumSources && delta.playbackSuccesses >= minimumPlayback
         && current.sourceSha256 && current.sourceSha256 !== before.sourceSha256
-        && media?.decodedFrames > 0 && media.frameCallbacks > (before.media?.frameCallbacks || 0)
+        && media?.decodedFrames > 0 && media.sourceFrameCallbacks > 0
+        && media.frameCallbacks > (before.media?.frameCallbacks || 0)
         && media.width > 0 && media.height > 0 && media.readyState >= 2 && !media.paused && !media.errorCode
         && Number.isFinite(media.duration) && media.duration > 0) {
         assertIdentity(current, index);
@@ -262,6 +293,7 @@ async function waitForOutcome(index, before, minimumSources = 1, minimumPlayback
 async function verifyOutcome(index, before, outcome, label) {
   const result = { index, episodeId: directory.episodes.find(episode => episode.index === index).vid,
     outcome: outcome.outcome, playbackPassed: false, technicalChecksPassed: false,
+    videoPlaybackStatus: 'not-tested', audioOutputStatus: 'not-tested',
     before, firstOutcome: outcome.state, diagnosticDelta: outcome.diagnosticDelta };
   if (outcome.outcome === 'playing') {
     const known = manifest.durations.get(index);
@@ -272,7 +304,7 @@ async function verifyOutcome(index, before, outcome, label) {
       productionOfficialSourceValidated: outcome.state.diagnostics.sourceRoute === 'web'
         && outcome.state.diagnostics.routeId === 'official-web-public-fallback',
       directoryProvidesDuration: false };
-    result.continuousPlayback = await harness.advance(3);
+    result.continuousPlayback = await harness.advance(30);
     const after = await snapshot();
     assertIdentity(after, index);
     assertSilent(after);
@@ -281,7 +313,9 @@ async function verifyOutcome(index, before, outcome, label) {
     'The actual source or duration changed during the episode observation');
     result.after = after;
     result.playbackPassed = true;
+    result.videoPlaybackStatus = 'passed';
   } else {
+    result.videoPlaybackStatus = 'blocked-at-source';
     check(outcome.locked || outcome.state.diagnostics.lastErrorCode,
       'The production rejection did not expose an actual diagnostic fault');
     check(outcome.diagnosticDelta.playbackSuccesses === 0, 'A rejected episode reported a new playback success');
@@ -324,7 +358,9 @@ function safeFailure(error) {
 }
 
 async function runCase(index, first) {
-  let result = { index, technicalChecksPassed: false, playbackPassed: false };
+  let result = { index, technicalChecksPassed: false, playbackPassed: false,
+    videoPlaybackStatus: 'not-tested', audioOutputStatus: 'not-tested' };
+  let reachedPlaying = false;
   try {
     phase = `episode-${index}-launch`;
     await launch(false);
@@ -345,8 +381,10 @@ async function runCase(index, first) {
     check(navigation?.success, 'The production playSeries navigation rejected the registered real episode');
     phase = `episode-${index}-actual-outcome`;
     const outcome = await waitForOutcome(index, before);
+    reachedPlaying = outcome.outcome === 'playing';
     result = await verifyOutcome(index, before, outcome, 'isolated');
   } catch (error) {
+    result.videoPlaybackStatus = reachedPlaying ? 'failed' : 'blocked-before-playback';
     result.failure = { phase, reason: safeFailure(error) };
     if (harness.client) {
       try { result.failure.state = await snapshot(); await harness.screenshot(`isolated-episode-${index}-failure.png`); } catch {}
@@ -358,12 +396,16 @@ async function runCase(index, first) {
 }
 
 async function runEndedTransition() {
-  if (!report.cases.some(value => value.index === 5 && value.playbackPassed)) {
-    report.endedTransition = { attempted: false, reason: 'Episode 5 did not genuinely play in its isolated case' };
+  const fromIndex = indexes.includes(22) ? 22 : indexes[0];
+  const toIndex = fromIndex + 1;
+  if (!report.cases.some(value => value.index === fromIndex && value.playbackPassed)) {
+    report.endedTransition = { attempted: false, fromIndex, toIndex,
+      reason: 'The transition start episode did not genuinely play in its isolated case' };
     return;
   }
-  if (![5, 6].every(index => directory.episodes.some(episode => episode.index === index))) {
-    report.endedTransition = { attempted: false, reason: 'The actual directory does not contain both episodes 5 and 6' };
+  if (![fromIndex, toIndex].every(index => directory.episodes.some(episode => episode.index === index))) {
+    report.endedTransition = { attempted: false, fromIndex, toIndex,
+      reason: 'The actual directory does not contain both transition episodes' };
     return;
   }
   report.endedTransition = { attempted: true, technicalChecksPassed: false, playbackPassed: false };
@@ -373,10 +415,10 @@ async function runEndedTransition() {
     await noLocalMedia();
     const processBaseline = await snapshot();
     const navigation = await productionCall(`window.electronAPI.playSeries(${JSON.stringify({
-      seriesId: manifest.seriesId, vidIndex: 5, resume: false })})`, 'The production episode 5 navigation did not finish');
-    check(navigation?.success, 'The production episode 5 navigation was rejected');
-    const fifth = await waitForOutcome(5, processBaseline);
-    check(fifth.outcome === 'playing', 'Episode 5 did not genuinely decode before the ended transition');
+      seriesId: manifest.seriesId, vidIndex: fromIndex, resume: false })})`, 'The production transition start navigation did not finish');
+    check(navigation?.success, 'The production transition start navigation was rejected');
+    const startEpisode = await waitForOutcome(fromIndex, processBaseline);
+    check(startEpisode.outcome === 'playing', 'The transition start episode did not genuinely decode before the ended transition');
     await harness.advance(3);
     const beforeEnded = await snapshot();
     phase = 'ended-transition-real-ended';
@@ -384,16 +426,16 @@ async function runEndedTransition() {
     await harness.waitFor(async () => (await snapshot()).endedEvents > beforeEnded.endedEvents,
       'The production media did not emit a genuine ended event', 15000);
     // A permitted target may already have been sourced by production prefetch. Its new
-    // source success is measured from this fresh process; its first frame is measured from 5's end.
+    // source success is measured from this fresh process; its first frame is measured from the previous episode's end.
     const transitionBaseline = { ...processBaseline, media: beforeEnded.media,
       sourceSha256: beforeEnded.sourceSha256,
       diagnostics: { ...processBaseline.diagnostics, counts: { ...processBaseline.diagnostics.counts,
         playbackSuccesses: beforeEnded.diagnostics.counts.playbackSuccesses } } };
-    const outcome = await waitForOutcome(6, transitionBaseline, 2, 1);
+    const outcome = await waitForOutcome(toIndex, transitionBaseline, 2, 1);
     report.endedTransition = { attempted: true, realEndedEvent: true, seekNearEndUsed: true,
-      fromIndex: 5, toIndex: 6, prefetchEnabled: true,
-      sourceCountBaseline: 'fresh process, includes the successful episode 5 and any production prefetch',
-      ...await verifyOutcome(6, transitionBaseline, outcome, 'ended-transition') };
+      fromIndex, toIndex, prefetchEnabled: true,
+      sourceCountBaseline: 'fresh process, includes the transition start episode and any production prefetch',
+      ...await verifyOutcome(toIndex, transitionBaseline, outcome, 'ended-transition') };
   } catch (error) {
     report.endedTransition.failure = { phase, reason: safeFailure(error) };
     try { report.endedTransition.failure.state = await snapshot(); await harness.screenshot('ended-transition-failure.png'); } catch {}
@@ -412,7 +454,7 @@ async function main() {
     if (!directory) break;
   }
   if (args.includes('--ended-transition') && directory) await runEndedTransition();
-  else report.endedTransition = { attempted: false, reason: 'Enable --ended-transition for genuine 5 to 6 boundary coverage' };
+  else report.endedTransition = { attempted: false, reason: 'Enable --ended-transition for genuine next-episode boundary coverage' };
   report.technicalChecksPassed = report.cases.length === indexes.length
     && report.cases.every(value => value.technicalChecksPassed)
     && (!report.endedTransition.attempted || report.endedTransition.technicalChecksPassed);
@@ -423,6 +465,8 @@ async function main() {
   else if (!report.laterPlaybackPassed) process.exitCode = 2;
 }
 
+module.exports = { readManifest };
+
 if (require.main === module) main().catch(error => {
   report.failure = { phase, reason: safeFailure(error) };
   process.exitCode = 1;
@@ -430,7 +474,7 @@ if (require.main === module) main().catch(error => {
   try { await harness?.stop(); } catch { report.cleanupFailed = true; process.exitCode = 1; }
   if (profile && !report.cleanupFailed) {
     const resolved = path.resolve(profile);
-    if (path.dirname(resolved) === path.resolve(os.tmpdir()) && path.basename(resolved).startsWith('hongguo-player-later-')) {
+    if (path.dirname(resolved) === path.resolve(PROFILE_ROOT) && path.basename(resolved).startsWith('hongguo-player-later-')) {
       fs.rmSync(resolved, { recursive: true, force: true });
     } else { report.cleanupFailed = true; process.exitCode = 1; }
   }

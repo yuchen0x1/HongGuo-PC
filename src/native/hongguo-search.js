@@ -7,6 +7,7 @@
  * 接口未公开，字段或可用性可能变化：调用方应保留页面嗅探作为兜底。
  */
 const axios = require('axios');
+const { preserveLargeJsonIntegers } = require('./app-source');
 
 const SITE_ORIGIN = 'https://hongguoduanju.com';
 const SEARCH_ENDPOINT = `${SITE_ORIGIN}/api/search/result`;
@@ -104,7 +105,9 @@ function parseSearchResponse(payload) {
     const videoData = item?.video_data;
     const video = videoData && typeof videoData === 'object' && Object.keys(videoData).length ? videoData : item;
     // 有些结果把剧集编号放在 item.keyword（video_data 为空）；不能因此当成解析失败。
-    const seriesId = String(video?.series_id || item?.series_id || item?.keyword || '').trim();
+    const rawSeriesId = video?.series_id || item?.series_id || item?.keyword;
+    if (typeof rawSeriesId !== 'string' && !Number.isSafeInteger(rawSeriesId)) continue;
+    const seriesId = String(rawSeriesId).trim();
     const title = cleanText(video?.series_name || video?.series_title || item?.name || video?.title || '');
     if (!/^\d{6,}$/.test(seriesId) || !title || seen.has(seriesId)) continue;
     seen.add(seriesId);
@@ -171,7 +174,10 @@ async function defaultRequest(keyword, page, { timeout }) {
         'Referer': `${SITE_ORIGIN}/`,
       },
       timeout,
-      responseType: 'json',
+      // IDs are often longer than JavaScript's exact integer range. Preserve
+      // their original digits before JSON parsing can round them to another drama.
+      responseType: 'text',
+      transformResponse: [(data) => data],
       maxContentLength: SEARCH_MAX_RESPONSE_BYTES,
       maxBodyLength: SEARCH_MAX_RESPONSE_BYTES,
       maxRedirects: 5,
@@ -179,7 +185,13 @@ async function defaultRequest(keyword, page, { timeout }) {
   } catch (error) {
     throw classifyRequestError(error);
   }
-  return response?.data;
+  if (typeof response?.data !== 'string') return response?.data;
+  try {
+    return JSON.parse(preserveLargeJsonIntegers(response.data, ['series_id', 'keyword']));
+  } catch (_) {
+    // Keep the existing empty/non-JSON classification in parseSearchResponse.
+    return response.data;
+  }
 }
 
 function remember(key, value) {

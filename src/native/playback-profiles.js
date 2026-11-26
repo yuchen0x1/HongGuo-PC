@@ -68,8 +68,27 @@ const UPSTREAM_PLAYBACK_PROFILE = freeze({
   },
 });
 
-const signingProfiles = new Map([MODEL_PROFILE, UPSTREAM_PLAYBACK_PROFILE].map(profile => [profile.id, profile]));
-const routeProfiles = new Map([MODEL_PROFILE, UPSTREAM_PLAYBACK_PROFILE]
+// Single-video model route. The multi_video_model family answers HTTP 200 with an
+// empty body for later episodes, while this endpoint returns the plain media model
+// for the same episode ID. Verified 2026-11-26 against episodes 6/22/34/68/88 of a
+// public 88-episode series: code 0, five H.264/HEVC renditions, real MP4 bytes.
+const VIDEO_MODEL_PROFILE = freeze({
+  id: 'hongguo-app-74532-video-model-v1', version: '2026-11-26.1', schema: 1,
+  evidence: { document: 'docs/release-6.28.md', date: '2026-11-26', scope: 'source-and-media' },
+  app: MODEL_PROFILE.app,
+  userAgent: MODEL_PROFILE.userAgent,
+  signature: MODEL_PROFILE.signature,
+  headers: MODEL_PROFILE.headers,
+  routes: [{ id: 'app-video-model', endpoint: 'https://reading.snssdk.com/novel/player/video_model/v1/',
+    method: 'POST', kind: 'video-model' }],
+  body: { biz_param: { ...MODEL_PROFILE.body.biz_param, video_platform: 3 }, dr_scene: 'preload' },
+  timeout: MODEL_PROFILE.timeout,
+  recovery: MODEL_PROFILE.recovery,
+});
+
+const signingProfiles = new Map([MODEL_PROFILE, UPSTREAM_PLAYBACK_PROFILE, VIDEO_MODEL_PROFILE]
+  .map(profile => [profile.id, profile]));
+const routeProfiles = new Map([MODEL_PROFILE, UPSTREAM_PLAYBACK_PROFILE, VIDEO_MODEL_PROFILE]
   .flatMap(profile => profile.routes.map(route => [route.id, profile])));
 
 function getPlaybackSigningProfile(profileId = MODEL_PROFILE.id) {
@@ -148,7 +167,7 @@ function createRequestProfileManager({ profiles = [MODEL_PROFILE], activeId = MO
   if (!compatibleProfile(baseline)) throw new TypeError('A compatible, previously verified bundled profile is required');
   let active = baseline, lastVerified = baseline, fallbackCount = 0;
   let lastShapeFailureAt = 0, lastModelSuccessAt = 0;
-  const stats = new Map([...MODEL_PROFILE.routes, ...UPSTREAM_PLAYBACK_PROFILE.routes]
+  const stats = new Map([...MODEL_PROFILE.routes, ...UPSTREAM_PLAYBACK_PROFILE.routes, ...VIDEO_MODEL_PROFILE.routes]
     .map(route => [route.id, { requests: 0, succeeded: 0, failed: 0, lastError: '', lastElapsedMs: 0 }]));
   const select = id => {
     const candidate = registry.get(id);
@@ -192,5 +211,5 @@ function createRequestProfileManager({ profiles = [MODEL_PROFILE], activeId = MO
 const requestProfiles = createRequestProfileManager();
 const getPlaybackProfile = () => requestProfiles.current();
 const getPlaybackProfileStatus = () => requestProfiles.status();
-module.exports = { MODEL_PROFILE, UPSTREAM_PLAYBACK_PROFILE, LEGACY_PLAYBACK, DEVICE_REGISTRATION, createRequestProfileManager,
+module.exports = { MODEL_PROFILE, UPSTREAM_PLAYBACK_PROFILE, VIDEO_MODEL_PROFILE, LEGACY_PLAYBACK, DEVICE_REGISTRATION, createRequestProfileManager,
   getPlaybackSigningProfile, getPlaybackRouteProfile, getPlaybackProfile, getPlaybackProfileStatus, requestProfiles };

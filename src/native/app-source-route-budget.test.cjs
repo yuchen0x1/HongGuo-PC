@@ -12,7 +12,7 @@ const vid = '7100000000000401';
 const otherVid = '7100000000000402';
 const routeId = 'upstream-grouped-b';
 const expectedRoutes = [
-  'preload-primary', 'preload-alternate', 'video-tab', routeId,
+  'preload-primary', 'preload-alternate', 'video-tab', 'app-video-model', routeId,
   'upstream-player-b', 'upstream-player-a', 'upstream-model-a', 'upstream-model-c',
 ];
 const identity = Object.freeze({
@@ -127,15 +127,15 @@ test('PR17 grouped candidate constructs only the recorded HTTPS route and ordina
 });
 
 test('the recorded grouped candidate follows the original three routes and accepts only its clear model', async () => {
-  const f = fixture((_config, count) => count <= 3 ? emptyResponse() : modelResponse());
+  const f = fixture((_config, count) => count <= 4 ? emptyResponse() : modelResponse());
   const result = await f.run();
   assert.equal(result.routeId, routeId);
   assert.equal(result.profileId, UPSTREAM_PLAYBACK_PROFILE.id);
   assert.equal(result.profileVersion, UPSTREAM_PLAYBACK_PROFILE.version);
   assert.equal(result.url, mediaUrl);
   assert.equal(result.contentKey, null);
-  assert.deepEqual(f.events.map(event => event.routeId), expectedRoutes.slice(0, 4));
-  assert.equal(f.calls.length, 4);
+  assert.deepEqual(f.events.map(event => event.routeId), expectedRoutes.slice(0, 5));
+  assert.equal(f.calls.length, 5);
   assertRequestBudgets(f);
   assertOrdinaryOnly(f);
 });
@@ -147,16 +147,16 @@ test('slow empty candidates do not consume a shared first-request deadline', asy
   });
   const result = await f.run();
   assert.equal(result.routeId, routeId);
-  assert.equal(f.calls.length, 4);
-  assert.equal(f.calls[3].requestedAt, f.startedAt + 12000);
-  assert.ok(f.calls[3].timeout >= MODEL_PROFILE.timeout.minimumRouteMs);
+  assert.equal(f.calls.length, 5);
+  assert.equal(f.calls[4].requestedAt, f.startedAt + 12000);
+  assert.ok(f.calls[4].timeout >= MODEL_PROFILE.timeout.minimumRouteMs);
   assertRequestBudgets(f);
   assertOrdinaryOnly(f);
 });
 
 test('exhausting the model budget cannot dispatch an additional compatibility candidate', async () => {
   const f = fixture((_config, count, advance) => {
-    advance(count <= 3 ? 6000 : 2000);
+    advance(count <= 4 ? 6000 : 2000);
     return emptyResponse();
   });
   await assert.rejects(f.run(), error => ['EMPTY_RESPONSE', 'ETIMEDOUT'].includes(error.code));
@@ -187,7 +187,7 @@ test('a network retry retains the original model budget and anonymous identity',
   assertOrdinaryOnly(f);
 });
 
-test('all empty responses walk exactly one eight-route ladder without rotating devices', async () => {
+test('all empty responses walk exactly one nine-route ladder without rotating devices', async () => {
   const f = fixture(emptyResponse);
   await assert.rejects(f.run(), { code: 'EMPTY_RESPONSE' });
   assert.equal(f.calls.length, expectedRoutes.length);
@@ -199,10 +199,10 @@ test('all empty responses walk exactly one eight-route ladder without rotating d
 
 for (const status of [401, 403, 429]) {
   test(`grouped HTTP ${status} is terminal without another candidate or device registration`, async () => {
-    const f = fixture((_config, count) => count <= 3 ? emptyResponse()
+    const f = fixture((_config, count) => count <= 4 ? emptyResponse()
       : { status, headers: {}, data: 'SYNTHETIC_DENIAL' });
     await assert.rejects(f.run(), error => error.status === status);
-    assert.equal(f.calls.length, 4);
+    assert.equal(f.calls.length, 5);
     assert.equal(f.events.at(-1).routeId, routeId);
     assert.equal(f.events.at(-1).modelValid, false);
     assertOrdinaryOnly(f);
@@ -220,9 +220,9 @@ for (const [name, response, code] of [
   ['protected model', modelResponse({ ...clearModel(), protected: true }), 'DRM_UNSUPPORTED'],
 ]) {
   test(`a grouped ${name} stops before later candidates and key processing`, async () => {
-    const f = fixture((_config, count) => count <= 3 ? emptyResponse() : response);
+    const f = fixture((_config, count) => count <= 4 ? emptyResponse() : response);
     await assert.rejects(f.run(), { code });
-    assert.equal(f.calls.length, 4);
+    assert.equal(f.calls.length, 5);
     assert.equal(f.events.at(-1).routeId, routeId);
     assert.equal(f.events.at(-1).modelValid, false);
     assertOrdinaryOnly(f);
@@ -234,7 +234,7 @@ test('cancelling the grouped request aborts its transport and stops the candidat
   let started;
   const entered = new Promise(resolve => { started = resolve; });
   const f = fixture((config, count) => {
-    if (count <= 3) return emptyResponse();
+    if (count <= 4) return emptyResponse();
     activeSignal = config.signal;
     started();
     return new Promise((_resolve, reject) => config.signal.addEventListener('abort', () => {
@@ -250,6 +250,6 @@ test('cancelling the grouped request aborts its transport and stops the candidat
   await assert.rejects(pending, { code: 'ERR_CANCELED' });
   assert.equal(activeUrl.pathname, '/novel/player/multi_video_model/v1/');
   assert.equal(activeSignal.aborted, true);
-  assert.equal(f.calls.length, 4);
+  assert.equal(f.calls.length, 5);
   assertOrdinaryOnly(f);
 });

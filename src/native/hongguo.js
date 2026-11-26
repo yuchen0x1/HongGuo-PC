@@ -605,9 +605,21 @@ async function fetchEpisodeListFresh(seriesId, { deadline = 0, signal } = {}) {
   if (vl.some(item => item?.series_id && (!validId(item.series_id) || String(item.series_id) !== sid))) {
     throw new Error("备用接口返回了其他剧集的分集");
   }
-  const eps = vl.map((item) => ({
+  const indexes = vl.map(item => {
+    const value = item.vid_index;
+    const index = Number(value);
+    if ((typeof value !== 'number' && (typeof value !== 'string' || !/^\d+$/.test(value.trim())))
+        || !Number.isSafeInteger(index) || index <= 0) {
+      throw new Error('备用接口分集集数无效，无法确认分集映射');
+    }
+    return index;
+  });
+  if (new Set(vl.map(item => String(item.vid))).size !== vl.length || new Set(indexes).size !== indexes.length) {
+    throw new Error('备用接口分集编号或集数重复，无法确认分集映射');
+  }
+  const eps = vl.map((item, index) => ({
     vid: String(item.vid),
-    vid_index: item.vid_index || 0,
+    vid_index: indexes[index],
     title: item.title || '',
     series_id: String(item.series_id || sid),
     series_title: vd.series_title || '',
@@ -750,18 +762,8 @@ async function fetchAppPlayUrlForQuality(vid, sid, quality, allowLowerQuality, o
     const sources = [failure], routeTrace = [routeDiagnostic('app', {
       attempted: true, status: 'failed', initialization, code: failure.code,
     })];
-    if (allowLowerQuality && failure.code === 'EMPTY_RESPONSE') {
-      const web = await fetchPlayUrlFromWeb(vid, sid, webError => {
-        const failed = sourceFailure('web', webError);
-        sources.push(failed);
-        routeTrace.push(routeDiagnostic('web', { attempted: true, status: 'failed', code: failed.code,
-          anonymousAccess: ['PREVIEW_ONLY', 'WEB_EPISODE_UNAVAILABLE'].includes(failed.code) ? 'denied' : 'unknown' }));
-      }, options);
-      throwIfAborted(options.signal);
-      if (web?.url) return { ...web, routeTrace: [...routeTrace, routeDiagnostic('web', {
-        attempted: true, status: 'address-found', anonymousAccess: 'explicitly-allowed', mediaAddress: true,
-      })] };
-    }
+    // A quality-specific App failure is terminal. The web preview must never
+    // replace the requested App source or make a later episode look playable.
     throw unavailableSources(sources, allowLowerQuality ? 'auto' : quality, routeTrace);
   }
 }
@@ -841,30 +843,12 @@ function unavailableSources(sources, quality = 'auto', routeTrace = []) {
 async function fetchPlayUrlFresh(vid, sid, skipWeb = false, options = {}) {
   const sources = [];
   const routeTrace = [];
-  const web = !skipWeb && await fetchPlayUrlFromWeb(vid, sid, error => {
-    const failure = sourceFailure('web', error);
-    sources.push(failure);
-    routeTrace.push(routeDiagnostic('web', {
-      attempted: true, status: 'failed',
-      anonymousAccess: ['PREVIEW_ONLY', 'WEB_EPISODE_UNAVAILABLE'].includes(failure.code) ? 'denied' : 'unknown',
-      code: failure.code,
-    }));
-  }, options);
-  throwIfAborted(options.signal);
-  // A missing public HTML route is not a refusal from the independent App provider.
-  if (sources.some(item => (!item.stage || item.stage === 'source') && /^HTTP_4\d{2}$/.test(item.code)
-    && !['HTTP_404', 'HTTP_410'].includes(item.code) || ['BUSINESS_REJECTED', 'ACCOUNT_REQUIRED',
-    'ACCOUNT_EXPIRED', 'ACCOUNT_UNAUTHORIZED', 'API_FORBIDDEN', 'API_RATE_LIMITED', 'DRM_UNSUPPORTED'].includes(item.code))) {
-    throw unavailableSources(sources, 'auto', routeTrace);
-  }
-  if (skipWeb) routeTrace.push(routeDiagnostic('web', { status: 'skipped' }));
-  if (web && web.url) return { ...web, routeTrace: [...routeTrace, routeDiagnostic('web', {
-    attempted: true, status: 'address-found', anonymousAccess: 'explicitly-allowed', mediaAddress: true,
-  })] };
 
+  // Default playback is App-only. The public web player is preview-oriented
+  // and must not win merely because its first few episodes are available.
   try {
     const result = await require('./app-source').fetchAppPlayUrl(String(vid), options);
-    return { ...result, routeTrace: [...routeTrace, routeDiagnostic('app', {
+    return { ...result, routeTrace: [routeDiagnostic('app', {
       attempted: true, status: 'address-found', initialization: 'unknown',
       anonymousAccess: 'unknown', mediaAddress: true,
     })] };
@@ -877,15 +861,11 @@ async function fetchPlayUrlFresh(vid, sid, skipWeb = false, options = {}) {
       initialization: error.code === 'DEVICE_REGISTRATION_FAILED' ? 'failed' : 'completed',
       code: failure.code,
     }));
-    if (['HTTP_401', 'HTTP_403', 'HTTP_429', 'BUSINESS_REJECTED', 'ACCOUNT_REQUIRED',
-      'ACCOUNT_EXPIRED', 'ACCOUNT_UNAUTHORIZED', 'SIGNATURE_INVALID', 'API_FORBIDDEN', 'API_RATE_LIMITED', 'DRM_UNSUPPORTED'].includes(failure.code)) {
-      throw unavailableSources(sources, 'auto', routeTrace);
-    }
   }
 
-  // A transient CDN failure changes priority, not permanent source availability.
-  if (skipWeb) {
-    const lastWeb = await fetchPlayUrlFromWeb(vid, sid, error => {
+  // Web playback is opt-in only and is never an implicit fallback for App.
+  if (options.allowOfficialWeb === true && !skipWeb) {
+    const web = await fetchPlayUrlFromWeb(vid, sid, error => {
       const failure = sourceFailure('web', error);
       sources.push(failure);
       routeTrace.push(routeDiagnostic('web', {
@@ -894,10 +874,13 @@ async function fetchPlayUrlFresh(vid, sid, skipWeb = false, options = {}) {
         code: failure.code,
       }));
     }, options);
-    if (lastWeb?.url) return { ...lastWeb, routeTrace: [...routeTrace, routeDiagnostic('web', {
+    if (web?.url) return { ...web, routeTrace: [...routeTrace, routeDiagnostic('web', {
       attempted: true, status: 'address-found', anonymousAccess: 'explicitly-allowed', mediaAddress: true,
     })] };
+  } else {
+    routeTrace.push(routeDiagnostic('web', { status: 'skipped' }));
   }
+
   throw unavailableSources(sources, 'auto', routeTrace);
 }
 

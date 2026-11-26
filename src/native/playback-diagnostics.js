@@ -36,8 +36,9 @@ function safeHttpStatus(value) {
 
 const TRACE_STEPS = ['source-request', 'response', 'source-validation', 'media-load', 'decode', 'first-frame'];
 const TRACE_STATUSES = new Set(['not-run', 'pending', 'passed', 'failed']);
-const TRACE_ROUTE_IDS = new Set(['preload-primary', 'preload-alternate', 'video-tab', 'upstream-grouped-b',
-  'upstream-player-b', 'upstream-player-a', 'upstream-model-a', 'upstream-model-c', 'official-web-public-fallback']);
+const TRACE_ROUTE_IDS = new Set(['preload-primary', 'preload-alternate', 'video-tab', 'app-video-model',
+  'upstream-grouped-b', 'upstream-player-b', 'upstream-player-a', 'upstream-model-a', 'upstream-model-c',
+  'official-web-public-fallback']);
 const validDiagnosticId = value => typeof value === 'string' && /^PLAY-\d{8}-[a-f0-9]{12}$/.test(value);
 
 function safeTraceEvent(value) {
@@ -180,17 +181,19 @@ function boundedNumber(value, maximum) {
 
 function createPlaybackDiagnostics({ appVersion = '', now = Date.now } = {}) {
   // Profile identifiers come from the shipped configuration, never from request URLs or remote error text.
-  const { getPlaybackProfile, UPSTREAM_PLAYBACK_PROFILE } = require('./playback-profiles');
+  const { getPlaybackProfile, UPSTREAM_PLAYBACK_PROFILE, VIDEO_MODEL_PROFILE } = require('./playback-profiles');
   const profile = getPlaybackProfile();
   const { OFFICIAL_WEB_PROFILE } = require('./official-web-playback');
   const knownProfiles = new Map([
     [profile.id, { version: profile.version, source: 'app' }],
     [UPSTREAM_PLAYBACK_PROFILE.id, { version: UPSTREAM_PLAYBACK_PROFILE.version, source: 'app' }],
+    [VIDEO_MODEL_PROFILE.id, { version: VIDEO_MODEL_PROFILE.version, source: 'app' }],
     [OFFICIAL_WEB_PROFILE.id, { version: OFFICIAL_WEB_PROFILE.version, source: 'web' }],
   ]);
   const knownRoutes = new Map([
     ...profile.routes.map(route => [route.id, 'app']),
     ...UPSTREAM_PLAYBACK_PROFILE.routes.map(route => [route.id, 'app']),
+    ...VIDEO_MODEL_PROFILE.routes.map(route => [route.id, 'app']),
     [OFFICIAL_WEB_PROFILE.routeId, 'web'],
   ]);
   const version = /^\d{1,3}\.\d{1,3}\.\d{1,3}(?:-[a-z]{1,12}\.\d{1,3})?$/.test(appVersion) ? appVersion : 'unknown';

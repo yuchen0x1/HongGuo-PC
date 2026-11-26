@@ -53,6 +53,45 @@ test('empty video_data falls back to the item keyword id and name', () => {
   assert.equal(parsed.results[0].cover, '');
 });
 
+test('already rounded numeric drama IDs are rejected rather than requested as another drama', () => {
+  const parsed = parseSearchResponse({ searchList: [
+    { video_data: { series_id: 7706404415887903806, series_title: 'Rounded ID' } },
+    { keyword: Number.MAX_SAFE_INTEGER + 1, name: 'Rounded keyword ID', video_data: {} },
+    { video_data: { series_id: 1234567, series_title: 'Safe numeric ID' } },
+    { video_data: { series_id: '7706404415887903806', series_title: 'Exact string ID' } },
+  ] });
+  assert.deepEqual(parsed.results.map(item => item.series_id), ['1234567', '7706404415887903806']);
+  assert.throws(() => parseSearchResponse({ searchList: [
+    { video_data: { series_id: Number.MAX_SAFE_INTEGER + 1, series_title: 'Unsafe only result' } },
+  ] }), error => error.kind === 'format' && error.fallback === true);
+});
+
+test('website transport preserves unquoted drama and keyword ID digits before parsing JSON', async t => {
+  const axios = require('axios');
+  const raw = '{"searchList":[{"video_data":{"series_id":7706404415887903806,"series_title":"Exact drama ID"}},{"keyword":7673067074104593432,"name":"Exact keyword ID","video_data":{}}]}';
+  let calls = 0;
+  t.mock.method(axios, 'get', async (_url, options) => {
+    calls++;
+    assert.equal(options.responseType, 'text');
+    assert.equal(options.transformResponse[0](raw), raw);
+    return { data: raw };
+  });
+  const result = await searchHongguo('Website integer identity', { cache: false, retries: 0 });
+  assert.equal(calls, 1);
+  assert.deepEqual(result.results.map(item => item.series_id), ['7706404415887903806', '7673067074104593432']);
+});
+
+test('invalid website JSON keeps its safe upstream error without returning the response body', async t => {
+  const axios = require('axios');
+  t.mock.method(axios, 'get', async () => ({ data: '<html>private-response-content</html>' }));
+  await assert.rejects(searchHongguo('Invalid JSON transport', { cache: false, retries: 0 }), error => {
+    assert.equal(error.kind, 'upstream');
+    assert.equal(error.fallback, false);
+    assert.doesNotMatch(error.message, /private-response-content/);
+    return true;
+  });
+});
+
 test('unsafe covers are dropped and HTML entities are decoded', () => {
   const parsed = parseSearchResponse({
     searchList: [

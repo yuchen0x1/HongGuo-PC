@@ -19,7 +19,7 @@ function requestVideoId(config) {
   return payload.video_id || payload.mixed_video_id_map['1004'][0];
 }
 const emptyLadder = [
-  'preload-primary', 'preload-alternate', 'video-tab',
+  'preload-primary', 'preload-alternate', 'video-tab', 'app-video-model',
   'upstream-grouped-b', 'upstream-player-b', 'upstream-player-a', 'upstream-model-a', 'upstream-model-c',
 ];
 
