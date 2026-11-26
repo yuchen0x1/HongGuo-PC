@@ -1,17 +1,28 @@
-name: Playback source probe
+name: Playback health probe
 on:
   schedule:
-    - cron: '23 20 * * *'
+    # 轻量巡检：多部随机剧的首/中/末集，尽早发现目录或取源改版。
+    - cron: '*/25 * * * *'
+    # 深度巡检：更多剧与采样点，用于确认轻量巡检的结论。
+    - cron: '17 */6 * * *'
   workflow_dispatch:
+    inputs:
+      scope:
+        description: '探针深度'
+        required: true
+        default: light
+        type: choice
+        options: [light, full]
 permissions:
   contents: read
+  issues: write
 concurrency:
-  group: playback-source-probe
+  group: playback-health-probe
   cancel-in-progress: false
 jobs:
   probe:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -21,22 +32,101 @@ jobs:
           node-version: '22'
           cache: npm
       - run: npm ci --no-audit --no-fund
-      - name: Probe a random real episode without printing identities or media URLs
+      - name: Probe episode lists, play addresses and media headers
+        id: probe
+        continue-on-error: true
+        env:
+          PROBE_SCOPE: ${{ github.event.inputs.scope || (github.event.schedule == '17 */6 * * *' && 'full') || 'light' }}
         run: |
           set -o pipefail
-          node scripts/diagnose-playback.cjs | tee playback-probe.json
-          node -e '
-            const report = require("./playback-probe.json");
-            if (!report.sourceAvailable) {
-              console.error(`Playback source unavailable: code=${report.code} routes=${JSON.stringify(report.routes)}`);
-              process.exit(1);
-            }
-            console.log(`Playback source OK: ${report.episodes} episodes, source in ${report.elapsedMs}ms`);
-          '
+          node scripts/probe-playback-health.cjs --scope "$PROBE_SCOPE" --output playback-health.json
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           archive: true
-          name: playback-probe
-          path: playback-probe.json
+          name: playback-health
+          path: playback-health.json
           if-no-files-found: warn
+      - name: Report the outcome to a deduplicated issue
+        if: always()
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          retries: 3
+          script: |
+            const fs = require('fs')
+            const { owner, repo } = context.repo
+            const runUrl = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`
+            // 报告缺失说明探针自身崩溃，按探针故障报警，不能静默。
+            let report
+            try { report = JSON.parse(fs.readFileSync('playback-health.json', 'utf8')) }
+            catch { report = { healthy: false, scope: 'unknown', layers: [], samples: [], failures: [{ layer: 'probe', code: 'PROBE_CRASHED' }], fingerprint: 'probe-crashed' } }
+
+            const prefix = '[playback-health:'
+            const open = await github.paginate(github.rest.issues.listForRepo, { owner, repo, state: 'open', per_page: 100 })
+            const tracked = open.filter(issue => !issue.pull_request && issue.title.includes(prefix))
+            const marker = `${prefix}${report.fingerprint || 'healthy'}]`
+
+            function table() {
+              const rows = report.layers.map(layer =>
+                `| ${layer.layer} | ${layer.status} | ${layer.code || '-'} | ${layer.checkedSeries ?? layer.sampled ?? layer.probed ?? '-'} |`)
+              return ['| 层 | 状态 | 错误码 | 计数 |', '| --- | --- | --- | --- |', ...rows].join('\n')
+            }
+            function routes() {
+              const rows = (report.routes || []).map(route => `| ${route.source} | ${route.status} | ${route.samples} |`)
+              return rows.length
+                ? ['| 线路 | 状态 | 采样数 |', '| --- | --- | --- |', ...rows].join('\n')
+                : '无线路记录'
+            }
+            function body() {
+              const failures = report.failures.map(item => `- ${item.layer}: ${item.code}`).join('\n') || '- 无'
+              return [
+                `探针运行：${runUrl}`,
+                `深度：\`${report.scope}\`　耗时：${report.elapsedMs ?? '?'} ms　版本：${report.version || '?'}`,
+                '',
+                '### 故障',
+                failures,
+                '',
+                '### 分层状态',
+                table(),
+                '',
+                '### 线路矩阵',
+                routes(),
+                '',
+                `故障指纹：\`${report.fingerprint || '-'}\`（同指纹合并到本 issue）`,
+                '',
+                '本 issue 由定时探针自动维护：同指纹只在持续故障时追加评论，恢复健康后自动关闭。',
+                '报告不含媒体地址、设备标识或账号信息。',
+              ].join('\n')
+            }
+
+            if (report.healthy) {
+              for (const issue of tracked) {
+                await github.rest.issues.createComment({ owner, repo, issue_number: issue.number,
+                  body: `探针已恢复正常（${runUrl}）。` })
+                await github.rest.issues.update({ owner, repo, issue_number: issue.number, state: 'closed' })
+              }
+              console.log('Playback health OK; no issue opened.')
+              return
+            }
+
+            const existing = tracked.find(issue => issue.title.includes(marker))
+            if (existing) {
+              // 同一天已评论过就不再追加，避免持续故障把 issue 刷满。
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                owner, repo, issue_number: existing.number, per_page: 100 })
+              const today = new Date().toISOString().slice(0, 10)
+              const commented = comments.some(comment => comment.body?.includes(runUrl))
+              const sameDay = comments.some(comment => String(comment.created_at || '').slice(0, 10) === today)
+              if (!commented && !sameDay) {
+                await github.rest.issues.createComment({ owner, repo, issue_number: existing.number,
+                  body: `故障仍在持续。\n\n${body()}` })
+              }
+              console.log(`Updated existing issue #${existing.number}`)
+              return
+            }
+
+            const [layer] = report.failures.length ? report.failures : [{ layer: 'unknown', code: 'UNKNOWN' }]
+            const created = await github.rest.issues.create({ owner, repo,
+              title: `${marker} 播放健康探针失败：${layer.layer}/${layer.code}`,
+              body: body() })
+            console.log(`Opened issue #${created.data.number}`)

@@ -96,7 +96,9 @@ test('the source test suite runs for the tags that publication checks', () => {
 
 test('scheduled maintenance is bounded and read-only where possible', () => {
   const probe = load('playback-probe.yml');
-  assert.deepEqual(probe.permissions, { contents: 'read' });
+  // 探针需要自己维护告警 issue，除此之外只读仓库。
+  assert.deepEqual(probe.permissions, { contents: 'read', issues: 'write' },
+    'the playback probe may only read the repository and manage its own alert issues');
   assert.ok(probe.on.schedule?.length, 'the playback probe must be scheduled');
   assert.equal(probe.concurrency['cancel-in-progress'], false);
   const codeql = load('codeql.yml');
