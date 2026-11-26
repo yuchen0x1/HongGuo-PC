@@ -57,7 +57,12 @@ function fixture({ web = true, api = false, app = false, blockedVids = [], html 
   };
   const context = {
     module: { exports: {} }, Buffer, AbortController, process: { env: {} },
-    require: name => name === 'axios' ? axios : name === './app-source' ? { preserveLargeJsonIntegers, fetchAppPlayUrl: async vid => { state.appCalls++; if (!state.app) throw Error('app unavailable'); return { url: `https://media.example/app-${vid}.mp4`, contentKey: '01'.repeat(16), source: 'app', vid: String(vid), format: 'mp4', duration: 150 }; } } : require(name.startsWith('.') ? path.join(path.dirname(sourcePath), name) : name),
+    require: name => name === 'axios' ? axios : name === './app-source' ? {
+      preserveLargeJsonIntegers,
+      signedEpisodeListRequest: seriesId => ({ url: `https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_detail/preload/v1?series_id=${seriesId}`,
+        body: Buffer.from('{}'), headers: {} }),
+      fetchAppPlayUrl: async vid => { state.appCalls++; if (!state.app) throw Error('app unavailable'); return { url: `https://media.example/app-${vid}.mp4`, contentKey: '01'.repeat(16), source: 'app', vid: String(vid), format: 'mp4', duration: 150 }; },
+    } : require(name.startsWith('.') ? path.join(path.dirname(sourcePath), name) : name),
     Date: class extends Date { static now() { return now; } },
     setTimeout: (fn, ms) => { if (ms === 600) return setTimeout(fn, 0); state.waits++; fn(); },
     console: { warn() {}, log() {} },

@@ -21,7 +21,6 @@ function getPlaybackManager() {
 }
 const playbackDiagnostics = createPlaybackDiagnostics({ appVersion: require('../../package.json').version });
 
-const API = "https://api5-normal-sinfonlineb.fqnovel.com";
 const UA = "com.phoenix.read/71532 (Linux; U; Android 9; SM-N9860; Build/PQ3A.190705.10241111;tt-ok/3.12.13.20)";
 const VIDEO_REFERER = "https://novelquickapp.com/";
 
@@ -42,75 +41,19 @@ const WEB_REFERER = SITE_ORIGIN + "/";
 const API_MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 const WEB_HTML_MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 
-const COMMON_QUERY = {
-  ...Object.fromEntries([
-    ['klink_egdi', process.env.HONGGUO_KLINK_EGDI],
-    ['iid', process.env.HONGGUO_IID],
-    ['device_id', process.env.HONGGUO_DEVICE_ID],
-    ['cdid', process.env.HONGGUO_CDID],
-  ].filter(([, value]) => value)),
-  ac: "wifi",
-  channel: "oppo_8662_64",
-  aid: "8662",
-  app_name: "novelread",
-  version_code: "71532",
-  version_name: "7.1.5.32",
-  device_platform: "android",
-  os: "android",
-  ssmix: "a",
-  device_type: "SM-N9860",
-  device_brand: "Samsung",
-  language: "zh",
-  os_api: "28",
-  os_version: "9",
-  manifest_version_code: "71532",
-  resolution: "900*1600",
-  dpi: "320",
-  update_version_code: "71532",
-  host_abi: "arm64-v8a",
-  dragon_device_type: "pad",
-  pv_player: "71532",
-  compliance_status: "0",
-  need_personal_recommend: "1",
-  player_so_load: "1",
-  is_android_pad_screen: "0",
-  rom_version: "PQ3A.190705.10241111+release-keys",
-};
-
-const HEADERS = {
-  "User-Agent": UA,
-  "Accept-Encoding": "gzip",
-  "Accept": "application/json; charset=utf-8,application/x-protobuf",
-  "Content-Type": "application/json; charset=utf-8",
-  "Host": "api5-normal-sinfonlineb.fqnovel.com",
-};
-
-const DETAIL_BIZ_PARAM = {
-  detail_page_version: 0,
-  disable_digg_stat: false,
-  image_shrink_datas_str: "W3siaW1hZ2VfdHlwZSI6MywiaW1hZ2Vfd2lkdGgiOjkwMCwic2hyaW5rX3R5cGUiOjN9LHsiaW1hZ2VfdHlwZSI6NCwiaW1hZ2Vfd2lkdGgiOjcyLCJzaHJpbmtfdHlwZSI6NH1d\n",
-  need_all_video_definition: false,
-  need_mp4_align: false,
-  screen_width_px: "900",
-  source: 7,
-  use_os_player: false,
-  use_server_dns: false,
-};
-
 /**
- * API 调用封装
+ * 已签名 App 接口调用封装（重试、空响应与 logid 诊断）
+ * request 由 app-source 的签名器生成：{ url, body, headers }
  */
-async function apiCall(apiPath, body, retries = 3, timeout = 25000, deadline = 0, abortSignal) {
-  const q = { ...COMMON_QUERY, _rticket: Date.now().toString() };
+async function apiCall(request, retries = 3, timeout = 25000, deadline = 0, abortSignal) {
   for (let i = 0; i < retries; i++) {
     throwIfAborted(abortSignal);
     const remaining = deadline ? deadline - Date.now() : timeout;
     if (remaining <= 0) throw new Error('请求超时');
     const signal = {}; // 供错误信息回溯（HTTP 状态 / 字节数 / CDN logid）
     try {
-      const res = await axios.post(API + apiPath, body, {
-        params: q,
-        headers: HEADERS,
+      const res = await axios.post(request.url, request.body, {
+        headers: request.headers,
         timeout: Math.min(timeout, remaining),
         signal: abortSignal,
         maxContentLength: API_MAX_RESPONSE_BYTES,
@@ -572,16 +515,14 @@ async function fetchEpisodeListFresh(seriesId, { deadline = 0, signal } = {}) {
     throwIfAborted(signal);
     webError = error;
   }
-  const body = {
-    biz_param: DETAIL_BIZ_PARAM,
-    dr_scene: "preload",
-    series_id: seriesId,
-  };
+  // 官网页不再下发明文数字分集编号（2026-11-27 起只有 v1_ 不透明标识，且只给 3 个），
+  // 备用接口必须带 V5 签名才返回完整分集；未签名请求一律 HTTP 200 空正文。
   let j;
   try {
-    j = await apiCall("/novel/player/multi_video_detail/preload/v1", body, 3, 25000, deadline, signal);
+    const request = require('./app-source').signedEpisodeListRequest(seriesId);
+    j = await apiCall(request, 3, 25000, deadline, signal);
   } catch (e) {
-    throw new Error(`获取分集失败：官网数据源（${webError.message}），备用接口（${e.message}）`);
+    throw new Error(`获取分集失败：官网数据源（${webError.message}），备用接口（${e.message || '请求失败'}）`);
   }
   if (!j || j.code !== 0) {
     throw new Error("detail API 失败: " + JSON.stringify(j || {}).slice(0, 200));

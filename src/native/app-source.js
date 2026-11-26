@@ -12,7 +12,7 @@ const { registerPlaybackDevice, createPlaybackIdentityManager } = require('./pla
 const { signPlayer } = require('./playback-signature');
 const { signPlaybackV5 } = require('./playback-v5');
 const { getPlaybackProfile, getPlaybackProfileStatus, LEGACY_PLAYBACK, requestProfiles,
-    UPSTREAM_PLAYBACK_PROFILE, VIDEO_MODEL_PROFILE, getPlaybackRouteProfile } = require('./playback-profiles');
+    MODEL_PROFILE, UPSTREAM_PLAYBACK_PROFILE, VIDEO_MODEL_PROFILE, getPlaybackRouteProfile } = require('./playback-profiles');
 const { abortError, throwIfAborted, boundedSignal, networkFailure } = require('./request-signal');
 const sm3 = require('./sm3');
 const { normalizeDownloadQuality, meetsDownloadQuality } = require('./download-quality');
@@ -343,6 +343,31 @@ function signedMetadataRequest(apiPath, values = {}, payload = null) {
     };
     if (body) { headers['Content-Type'] = 'application/json; charset=utf-8'; headers['x-ss-stub'] = md5(body); }
     return { url, headers, body };
+}
+
+// Episode-list read from the App detail endpoint. The official player page stopped
+// publishing plain numeric vids (2026-11-27: three `v1_`-prefixed opaque IDs for an
+// 88-episode series, with the full count only in metadata), and this endpoint answers
+// HTTP 200 with an empty body unless the request carries the V5 signature. Verified
+// 2026-11-27: one signed request returned all 88 numeric episodes with vid_index 1..88.
+const EPISODE_LIST_ENDPOINT = 'https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_detail/preload/v1';
+
+// A read-only directory request carries its own anonymous identity, like the catalogue
+// and search families; playback identity registration stays scoped to playback.
+function signedEpisodeListRequest(seriesId) {
+    const sid = String(seriesId == null ? '' : seriesId);
+    if (!/^\d{1,30}$/.test(sid)) throw new TypeError('A valid series ID is required');
+    const profile = VIDEO_MODEL_PROFILE;
+    const body = gzipSync(Buffer.from(JSON.stringify({
+        biz_param: MODEL_PROFILE.body.biz_param,
+        dr_scene: 'preload',
+        series_id: sid,
+    })));
+    const signed = signPlaybackV5({ base: EPISODE_LIST_ENDPOINT, profileId: profile.id,
+        values: { ...profile.app, iid: localId(), device_id: localId(), cdid: crypto.randomUUID() },
+        body, now: Date.now() });
+    return { url: signed.url, body, method: 'POST', headers: { ...signed.headers,
+        'User-Agent': profile.userAgent, ...profile.headers } };
 }
 
 // Account reads use the registered device identity plus the website login cookie.
@@ -865,7 +890,8 @@ function parseAppPlayModel(info, vid, options, inline, requireEncryptionMetadata
         });
 }
 
-module.exports = { fetchAppPlayUrl, signedSearchRequest, signedMetadataRequest, signedAccountRequest, parseSearchInteger,
+module.exports = { fetchAppPlayUrl, signedSearchRequest, signedMetadataRequest, signedAccountRequest, signedEpisodeListRequest,
+    parseSearchInteger,
     preserveLargeJsonIntegers, requestJson, SEARCH_API, SEARCH_UA, getPlaybackProfileStatus,
     upstreamPlaybackRequest, parseClearUpstreamModel,
     getPlaybackIdentityStatus: () => playbackIdentity.status(), createPlaybackAuthProbeRequest, inspectPlaybackAuthProbeResponse };

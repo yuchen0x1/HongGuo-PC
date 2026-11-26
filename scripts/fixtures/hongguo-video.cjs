@@ -79,7 +79,9 @@ async function downloadTestMedia(directory) {
       const router = readRouterData(response.data);
       const player = router.loaderData?.['player_(series_id)/page'] || router.loaderData?.['player_(series_id)/(vid)/page'];
       const vid = String(player?.vid || '');
-      if (String(player?.series_id) !== String(series.series_id) || !/^\d{6,30}$/.test(vid)
+      // The official player now publishes opaque v1_ episode IDs instead of numeric ones
+      // (2026-11-27); both forms identify the current player's episode, so accept each.
+      if (String(player?.series_id) !== String(series.series_id) || !/^(?:\d{6,30}|v1_[A-Za-z0-9_-]{10,64})$/.test(vid)
         || player.publicVideoSeo?.available !== true || String(player.publicVideoSeo.itemId) !== vid) {
         throw Object.assign(new Error('No public episode'), { code: 'NO_PUBLIC_EPISODE' });
       }
