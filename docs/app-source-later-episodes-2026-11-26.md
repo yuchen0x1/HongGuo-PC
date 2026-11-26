@@ -122,9 +122,10 @@ body: biz_param + dr_scene=preload + video_id=<vid> + content_type=1
 
 ## 8. 发布状态（2026-11-26）
 
-- `v6.38` 已正式发布，标签指向公开提交 `b5fc12d6d02a4eb495631cdb945e0be49ec507bb`（只含文档），
-  正式资产为 `hongguo-downloader-6.38-win-x64-setup.exe` 与 `latest.yml`；公开下载校验通过。
-- 按用户 2026-11-26 要求，播放取源实现不再公开：本轮改动只保留在本地分支 `private/6.38-core`
-  与 `backups/638-core-fix-tracked-20261126.patch`、`backups/638-untracked-core-20261126.tgz`，
-  **不得推送**到公开仓库。
-- 公开仓库的定时 `Playback source probe` 因此仍会失败（公开源码不含本版取源实现），属预期状态。
+- `v6.38` 已正式发布，标签指向公开提交 `b5fc12d6d02a4eb495631cdb945e0be49ec507bb`，
+  正式资产为 `hongguo-downloader-6.38-win-x64-setup.exe` 与 `latest.yml`；公开下载校验通过，
+  隔离安装主程序完整。
+- 本轮改动（单集 `video_model` 路由、网页优先顺序恢复、分集映射与剧号精度）**已在公开 `main` 上**，
+  仓库即完整源码；此前"源码不进公开仓库"的临时做法作废。
+- 本地分支 `private/6.38-core` 与 `backups/` 备份保留作历史对照，不再是唯一来源。
+- `v6.39` 安装包存在主程序截断缺陷（详见 `docs/release-6.39.md`），不能用于安装。

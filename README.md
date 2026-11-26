@@ -284,7 +284,6 @@ npm run build:installer       # 构建 Windows x64 NSIS 安装程序
 
 - 本仓库是 [jackotom/hongguo-drama](https://github.com/jackotom/hongguo-drama)（GPL-3.0）的社区二次开发版，**不是红果 / 西饭的官方客户端**，未获平台背书，不提供付费分集解锁。
 - 延续上游 **[GPL-3.0](LICENSE)** 许可并保留修改与来源声明；上游与算法致谢见 [NOTICE](NOTICE)，第三方组件许可见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。
-- **对应源码位置**：自 6.38 起，每个发行版本的完整源码以 `hongguo-downloader-<版本>-source.tar.gz` 随对应 Release 附带；本仓库的 Git 历史不包含 6.38 及之后的部分播放取源实现，源码仍按 GPL-3.0 向二进制接收者提供。
 - 开源许可只适用于软件本身，不授予剧集内容的再分发权。安装包不含任何剧集媒体；作品版权归原平台及创作者所有。请仅处理你有权访问、下载或备份的内容，遵守平台条款与相关法律。
 
 ---
